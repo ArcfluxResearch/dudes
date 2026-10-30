@@ -677,6 +677,39 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(())
     }
 
+    /// Append the catalog revision of every explicitly configured project that has none yet, then
+    /// observe again so each observation carries its acknowledged position. A project configured by
+    /// a plain folder is never recorded. The command is not idempotent, so an observation that
+    /// already names a recorded revision is skipped.
+    pub(super) fn record_missing_project_catalogs(&mut self) -> Result<()> {
+        let missing: Vec<_> = self
+            .ctx
+            .enrollment
+            .profiles
+            .iter()
+            .filter(|profile| profile.repositories.is_some())
+            .filter_map(|profile| {
+                let observed = self.ctx.current_repositories.observed.get(&profile.id)?;
+                observed
+                    .lsn
+                    .is_none()
+                    .then(|| (profile.id.clone(), observed.repositories.clone()))
+            })
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        for (project, repositories) in missing {
+            self.pump(dudes_supervisor::Input::Command(
+                dudes_supervisor::Command::RecordProjectRepositories {
+                    project,
+                    repositories,
+                },
+            ))?;
+        }
+        self.observe_repository_enrollment()
+    }
+
     pub(super) fn observe_repository_enrollment(&mut self) -> Result<()> {
         let profiles = self.ctx.enrollment.profiles.clone();
         let mut observed = BTreeMap::new();

@@ -78,7 +78,7 @@ impl Browser {
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("read timeout");
-        let request = page.upgrade_head("/floor/stream", "dudes-floor-v5");
+        let request = page.upgrade_head("/floor/stream", "dudes-floor-v6");
         stream.write_all(request.as_bytes()).expect("upgrade");
         let head = read_head(&mut stream);
         assert!(head.starts_with("HTTP/1.1 101"), "{head}");

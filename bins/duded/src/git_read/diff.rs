@@ -12,12 +12,16 @@ mod text;
 
 pub use manifest::{Candidate, CandidateManifest, EncodedResponse, SampledPair};
 pub use path::RepoPath;
-pub use reader::{BaselineCapture, DiffReader, ReviewCapture};
+pub use reader::{
+    BaselineCapture, DiffReader, ReviewBatch, ReviewBatchCapture, ReviewCapture, ReviewSubject,
+};
 
 /// Text and sensitive-content recognizer version used by this reader.
 pub const TEXT_POLICY_VERSION: u32 = text::POLICY_VERSION;
 /// Ordered eligible-pair sampling algorithm version.
 pub const SAMPLER_VERSION: u32 = 2;
+/// Repository-qualified sampling domain, incompatible with scalar samples.
+pub const REPOSITORY_SAMPLER_VERSION: u32 = 3;
 
 /// Identity of the opened recorded checkout root. Replacing its pathname never substitutes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

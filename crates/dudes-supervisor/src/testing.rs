@@ -401,7 +401,23 @@ pub enum Seen {
         /// The goal judged.
         goal: GoalId,
     },
-    /// A baseline observation request for a ticket round.
+    /// A declared baseline observation, answered explicitly by the test.
+    CaptureRepositoryBaseline {
+        /// Exact declared observation requested by the machine.
+        capture: Box<crate::effect::RepositoryCapture>,
+    },
+    /// A scoped post-check observation, answered explicitly by the test.
+    CaptureRepositoryStamp {
+        /// Exact declared observation requested by the machine.
+        capture: Box<crate::effect::RepositoryCapture>,
+        /// Baseline batch position.
+        baseline_lsn: Lsn,
+        /// Complete baseline batch.
+        baseline: Box<dudes_proto::repository_review::RepositoryBaselineBatch>,
+        /// Predicate result position.
+        check_lsn: Lsn,
+    },
+    /// A baseline observation request for a historical singleton round.
     CaptureBaseline {
         /// The claimant.
         agent: AgentId,
@@ -605,6 +621,20 @@ impl Seen {
             },
             Effect::Probe { turn, .. } => Self::Probe { turn: *turn },
             Effect::RunPredicate { goal, .. } => Self::RunPredicate { goal: *goal },
+            Effect::CaptureRepositoryBaseline { capture } => Self::CaptureRepositoryBaseline {
+                capture: capture.clone(),
+            },
+            Effect::CaptureRepositoryStamp {
+                capture,
+                baseline_lsn,
+                baseline,
+                check_lsn,
+            } => Self::CaptureRepositoryStamp {
+                capture: capture.clone(),
+                baseline_lsn: *baseline_lsn,
+                baseline: baseline.clone(),
+                check_lsn: *check_lsn,
+            },
             Effect::CaptureBaseline {
                 agent,
                 card,
@@ -680,6 +710,8 @@ impl Seen {
             Self::RunPredicate { .. } => "RunPredicate",
             Self::CaptureBaseline { .. } => "CaptureBaseline",
             Self::CaptureStamp { .. } => "CaptureStamp",
+            Self::CaptureRepositoryBaseline { .. } => "CaptureRepositoryBaseline",
+            Self::CaptureRepositoryStamp { .. } => "CaptureRepositoryStamp",
             Self::Reply { .. } => "Reply",
             Self::Notify { .. } => "Notify",
             Self::OpenPty { .. } => "OpenPty",
@@ -1009,7 +1041,8 @@ impl Harness {
         clippy::too_many_lines,
         reason = "one match executes every effect the flags allow"
     )]
-    fn follow_up(&mut self, seen: Seen) -> Option<Input> {
+    /// Answer one effect through the enabled fake seams. A caller may own persistence separately.
+    pub fn follow_up(&mut self, seen: Seen) -> Option<Input> {
         match seen {
             Seen::ResolveInstructionRecoveryTicket {
                 request,

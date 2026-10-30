@@ -13,7 +13,7 @@ import type { FloorState } from '../floor/store.ts';
 import { handFocusAfterLeave, handFocusOnLeave } from '../focus.ts';
 import { RelativeTime } from '../RelativeTime.tsx';
 import { recordedTime } from '../format.ts';
-import { getGitState, loadGit, refusalText, subscribeToGit } from '../git/git.ts';
+import { getGitState, gitSelectionKey, loadGit, refusalText, subscribeToGit } from '../git/git.ts';
 import type { GitChangeKind } from '../git/git.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
@@ -83,7 +83,7 @@ const readingKey = (card: CardRow): string => `${card.id}:${card.seq}`;
 export async function loadChangedFiles(card: CardRow, deps: ControlDeps = browserControlDeps): Promise<void> {
   const agent = card.claimed_by;
   if (agent === null) return;
-  await loadGit(agent, deps);
+  await loadGit(agent, deps, { scope: 'declared', card: card.id, expected_seq: card.seq });
   const now = getGitState();
   if (now.agent === agent && now.phase === 'ready' && !now.busy && now.view?.state === 'ok') shownFor = readingKey(card);
 }
@@ -106,20 +106,22 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
     </section>;
   }
   const mine = agent !== null && git.agent === agent;
-  const belongs = mine && shownFor === readingKey(card);
+  const belongs = mine && shownFor === readingKey(card)
+    && git.selection === gitSelectionKey({ scope: 'declared', card: card.id, expected_seq: card.seq });
   const view = belongs ? git.view : null;
   const problem = mine ? refusalText(view, git.failure, git.busy) : null;
-  const rows = view === null || view.state !== 'ok' ? [] : [
-    ...view.committed.items.map((file) => ({ kind: KIND_LABEL[file.kind], ink: KIND_INK[file.kind], path: file.path, cut: file.cut })),
-    ...view.changes.items.map((file) => ({ kind: KIND_LABEL[file.kind], ink: KIND_INK[file.kind], path: file.path, cut: file.cut })),
-  ];
+  const rows = view === null || view.state !== 'ok' ? [] : (view.repositories ?? [{ repo_id: null, view }]).flatMap((repo) => [
+    ...repo.view.committed.items.map((file) => ({ kind: KIND_LABEL[file.kind], ink: KIND_INK[file.kind], repo_id: repo.repo_id, path: file.path, cut: file.cut })),
+    ...repo.view.changes.items.map((file) => ({ kind: KIND_LABEL[file.kind], ink: KIND_INK[file.kind], repo_id: repo.repo_id, path: file.path, cut: file.cut })),
+  ]);
   const loading = mine && git.phase === 'loading';
   return <section aria-label="Changed files"><h4>Changed files</h4>
     {loading ? <p role="status">Reading the checkout…</p> : null}
     {problem === null ? null : <p className={HINT} role="status">{problem}</p>}
-    {view !== null && view.state === 'ok' ? (rows.length === 0 ? <p>No changed files.</p>
+    {view?.repositories?.map((repo) => repo.view.state === 'ok' ? null : <p key={repo.repo_id} className={HINT}><strong>{repo.repo_id}</strong>: {refusalText(repo.view, null)}</p>)}
+    {view !== null && view.state === 'ok' ? (rows.length === 0 ? <p>No changed files are listed.</p>
       : <ul className={FILE_LIST}>{rows.map((file, at) => <li key={at} className={FILE_ROW}>
-        <span className={cn('git-kind w-24 shrink-0 text-caption font-medium', file.ink)}>{file.kind}</span>{' '}<span className={PATH}>{file.path}{file.cut ? '…' : ''}</span>
+        <span className={cn('git-kind w-24 shrink-0 text-caption font-medium', file.ink)}>{file.kind}</span>{' '}<span className={PATH}>{file.repo_id === null ? null : <><strong>{file.repo_id}</strong>: </>}{file.path}{file.cut ? '…' : ''}</span>
       </li>)}</ul>) : null}
     {agent === null ? null : <Button size="sm" className="ticket-look self-start" disabled={loading}
       title={loading ? 'Wait for the checkout to finish loading.' : undefined}
@@ -136,15 +138,17 @@ function InstructionEvidence({ floor, review, reviewing }: {
   const holding = groupGaps(review);
   return <section aria-label="Instruction review"><h4>Instruction review</h4>
     <p>{!reviewing ? 'Dudes is watching the instruction files while the agent works. You can review the work when it is ready.'
-      : holding.length === 0 ? 'Nothing unusual was recorded about the instruction files.'
+      : review.changed_paths.length > 0 ? 'Instruction files changed. Review these changes before accepting the work.'
+        : holding.length === 0 ? 'No instruction changes or coverage gaps were recorded.'
         : 'Dudes could not see everything the agent relied on, so look over the work yourself.'}</p>
+    <p className={HINT}>Instruction review covers every hired repository, including repositories outside this ticket’s work.</p>
     <h5>Known changed paths</h5>
     {review.changed_paths.length === 0 ? <p>No known changed paths were retained.</p>
       : <ul className={FILE_LIST}>{review.changed_paths.map((row, at) => <li key={at} className={FILE_ROW}>
-        <span className={PATH}>{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>{' '}({instructionContextText(row.context)})
+        <span className={PATH}>{row.repo_id == null ? null : <><strong>{row.repo_id}</strong>: </>}{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>{' '}({instructionContextText(row.context)})
       </li>)}</ul>}
     <h5>Why this needs your review</h5>
-    {review.gaps.length === 0 ? <p>No coverage gaps were recorded.</p>
+    {review.gaps.length === 0 && (review.repository_gaps?.length ?? 0) === 0 ? <p>No coverage gaps were recorded.</p>
       : holding.length === 0 ? null : <ul>{holding.map((group, at) => <li key={at}>
         {group.sentence}
         {group.others.length === 0 ? null : <> Other agents: {group.others.map((id) => {
@@ -152,7 +156,8 @@ function InstructionEvidence({ floor, review, reviewing }: {
           return typeof name === 'string' && name !== '' ? name : 'a recorded agent';
         }).join(', ')}.</>}
       </li>)}</ul>}
-    {!reviewing ? null : <p>Look at the changed files above{holding.length === 0 ? '' : ' or the paths named here'}, then Accept if the work is fine.
+    {review.coverage_unknown ? <p role="status">Some hired repositories have unknown instruction coverage. Accept is unavailable until that coverage is complete. You can still ask for changes.</p> : null}
+    {!reviewing || review.coverage_unknown ? null : <p>Look at the changed files above{holding.length === 0 ? '' : ' or the paths named here'}, then Accept if the work is fine.
       {holding.length === 0 ? ' Accept records that you reviewed the change.'
         : ' Accept records that you reviewed it despite these gaps.'} If it is not fine, choose Ask for changes.</p>}
     {review.pending_comparison ? <p role="status">Dudes is still comparing the instruction files. Review actions are unavailable until it finishes.</p> : null}
@@ -160,23 +165,23 @@ function InstructionEvidence({ floor, review, reviewing }: {
       <p>These observations compare sampled endpoints. They do not identify an exclusive writer or prove that instructions were unchanged between samples.</p>
       <p>Review through record {review.watermark.through_lsn}.</p>
       <p>Review digest <code className="font-mono text-[0.88em]">{review.watermark.set_digest}</code>.</p>
-      {review.gaps.length === 0 ? null : <>
+      {review.gaps.length === 0 && (review.repository_gaps?.length ?? 0) === 0 ? null : <>
         <h5>Gap details</h5>
-        <ul>{review.gaps.map((row, at) => <li key={at}>
-          Coverage gap {at + 1}. {row.reason.replaceAll('_', ' ')}. {instructionContextDetails(row.context)}.
+        <ul>{[...review.gaps, ...(review.repository_gaps ?? [])].map((row, at) => <li key={at}>
+          {row.repo_id === undefined ? null : <><strong>{row.repo_id}</strong>: </>}Coverage gap {at + 1}. {row.reason.replaceAll('_', ' ')}. {instructionContextDetails(row.context)}.
           {row.agent === null ? null : <> Participant <code className="font-mono text-[0.88em]">{row.agent}</code>.</>}
-          {row.display === null ? null : <> <span className={PATH}>{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>.</>}
+          {row.display === null ? null : <> <span className={PATH}>{row.repo_id == null ? null : <><strong>{row.repo_id}</strong>: </>}{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>.</>}
           {row.origin === 'declared' ? ' Standing engine limit.' : ' Found during this ticket.'}
         </li>)}</ul>
       </>}
       {review.changed_paths.length === 0 ? null : <><h5>Changed path details</h5>
         <ul>{review.changed_paths.map((row, at) => <li key={at}>
-          {row.display}: {instructionContextDetails(row.context)}
+          {row.repo_id == null ? null : <><strong>{row.repo_id}</strong>: </>}{row.display}: {instructionContextDetails(row.context)}
         </li>)}</ul>
       </>}
       <h5>Observed intervals</h5>
       <ul>{review.intervals.map((row, at) => <li key={at}>
-        {row.kind.replaceAll('_', ' ')} for agent <code className="font-mono text-[0.88em]">{row.agent}</code>
+        {(row.repositories?.length ?? 0) === 0 ? null : <>Repositories {row.repositories?.join(', ')}. </>}{row.kind.replaceAll('_', ' ')} for agent <code className="font-mono text-[0.88em]">{row.agent}</code>
         {row.turn === null ? null : <> and turn <code className="font-mono text-[0.88em]">{row.turn}</code></>}.
         {' '}Goal <code className="font-mono text-[0.88em]">{row.goal}</code>. Assignment record {row.assignment_lsn}, recorded ticket sequence {row.seq_at_start}.
         {row.attachment_lsn === null ? null : <> Attachment record {row.attachment_lsn}.</>}
@@ -421,6 +426,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery, onOpenGit }
   const reviewing = card.status === 'review' || card.status === 'blocked';
   const needsReview = requiresInstructionReview(card) && reviewing;
   const reviewReady = !needsReview || reviewedWatermark(detail, card) !== null;
+  const unknownCoverage = shown?.instruction_review?.coverage_unknown === true;
   const noteUnread = actions.includes('edit') && editable === null;
   const readHint = needsReview ? 'Read the current instruction evidence before reviewing this ticket.'
     : noteUnread ? 'Read the complete current note before editing this ticket.' : null;
@@ -430,10 +436,12 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery, onOpenGit }
     className={cn('ticket-action', action === 'remove' || action === 'stop' ? 'text-danger' : 'flex-1 max-[801px]:h-11 max-[801px]:text-body')}
     data-action={action}
     disabled={sending || (action === 'edit' && editable === null)
-      || ((action === 'accept' || action === 'changes') && !reviewReady)}
+      || ((action === 'accept' || action === 'changes') && !reviewReady)
+      || (action === 'accept' && unknownCoverage)}
     title={sending ? 'Wait for the current request to finish.' : action === 'edit' && editable === null
       ? 'Read the complete current note before editing.' : (action === 'accept' || action === 'changes') && !reviewReady
-        ? 'Read the current instruction review first.' : undefined}
+        ? 'Read the current instruction review first.' : action === 'accept' && unknownCoverage
+          ? 'Instruction coverage is unknown in a hired repository.' : undefined}
     onClick={() => press(action)}>{ACTION_LABEL[action]}</Button>;
 
   function press(action: TicketAction): void {
@@ -448,7 +456,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery, onOpenGit }
         break;
       }
       case 'remove': setMode('remove'); break;
-      case 'accept': if (!reviewReady) return; void changeTicket(card, { verb: 'accept' }); break;
+      case 'accept': if (!reviewReady || unknownCoverage) return; void changeTicket(card, { verb: 'accept' }); break;
       case 'stop': setMode('stop'); break;
     }
   }

@@ -373,3 +373,84 @@ fn an_owed_pre_expansion_singleton_stays_frozen_and_unlaunched_with_warm_and_col
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
 }
+
+fn catalog_records(fixture: &Fixture) -> usize {
+    fixture
+        .entries()
+        .iter()
+        .filter(|(_, entry)| matches!(entry.record, Record::ProjectRepositoriesRecorded { .. }))
+        .count()
+}
+
+#[test]
+fn a_multi_repository_project_gets_one_catalog_record_across_starts_and_reloads() {
+    let fixture = Fixture::new();
+    let roots = tempfile::tempdir().unwrap();
+    let root = roots.path().canonicalize().unwrap();
+    let origins: Vec<_> = ["web", "api", "docs"]
+        .iter()
+        .map(|name| create_origin(&root, name))
+        .collect();
+    let (mut settings, config) = configured(&fixture, &origins);
+    let configured_enrollment = std::mem::take(&mut settings.enrollment.profiles);
+    let host = SharedHost::new();
+    let mut running = common::start(
+        boot(
+            &settings,
+            common::seams(
+                &settings,
+                host.clone(),
+                Arc::new(RealRunner(OneShot::new())),
+                Arc::new(TestClock::new()),
+                Witness::default(),
+            ),
+        )
+        .unwrap(),
+    );
+    let before = fixture.entries();
+    let checked = call(&settings, Method::FloorEnrollmentReload, json!({}));
+    assert_eq!(checked.result.as_ref().unwrap()["applied"], false);
+    assert_eq!(fixture.entries(), before);
+    let valid = std::fs::read(&config).unwrap();
+    std::fs::write(&config, "[invalid").unwrap();
+    assert!(
+        call(&settings, Method::FloorEnrollmentReload, json!({}))
+            .error
+            .is_some()
+    );
+    std::fs::write(&config, valid).unwrap();
+    assert_eq!(fixture.entries(), before);
+    let applied = call(
+        &settings,
+        Method::FloorEnrollmentReload,
+        json!({"apply": {
+            "sha256": checked.result.unwrap()["sha256"], "added": ["service"],
+            "removed": [], "changed": [],
+        }}),
+    );
+    assert!(applied.error.is_none(), "{:?}", applied.error);
+    assert_eq!(catalog_records(&fixture), 1);
+    let unchanged = authority_regressions::reload_current(&settings);
+    assert!(unchanged.error.is_none(), "{:?}", unchanged.error);
+    assert_eq!(catalog_records(&fixture), 1);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    settings.enrollment.profiles = configured_enrollment;
+    for _ in 0..2 {
+        let mut running = common::start(
+            boot(
+                &settings,
+                common::seams(
+                    &settings,
+                    host.clone(),
+                    Arc::new(RealRunner(OneShot::new())),
+                    Arc::new(TestClock::new()),
+                    Witness::default(),
+                ),
+            )
+            .unwrap(),
+        );
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+        assert_eq!(catalog_records(&fixture), 1);
+    }
+    assert!(host.spawned().is_empty());
+}

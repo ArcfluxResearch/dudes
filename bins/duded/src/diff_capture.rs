@@ -13,11 +13,17 @@ use dudes_proto::diff_stamp::{
     BaselineOutcome, BaselinePayload, CaptureInterval, DigestHex, STAMP_PAYLOAD_VERSION,
     SamplerVersions, StampOutcome, StampPayload, StampPayloadError, TicketBinding,
 };
+use dudes_proto::repository::{OwnedRepository, RepositorySet};
+use dudes_proto::repository_review::{
+    REVIEW_BATCH_VERSION, RepositoryBaselineBatch, RepositoryBaselineMember,
+    RepositoryReviewBinding, RepositoryStampBatch, RepositoryStampMember, RepositoryStampOutcome,
+};
 use dudes_types::{Lsn, Timestamp};
 
 use crate::git_read::Tree;
 use crate::git_read::diff::{
-    BaselineCapture, DiffReader, ReviewCapture, RootIdentity, SAMPLER_VERSION, TEXT_POLICY_VERSION,
+    BaselineCapture, DiffReader, REPOSITORY_SAMPLER_VERSION, ReviewBatch, ReviewCapture,
+    ReviewSubject, RootIdentity, SAMPLER_VERSION, TEXT_POLICY_VERSION,
 };
 
 /// The one slot every capture and every Floor diff read takes in turn.
@@ -107,6 +113,190 @@ impl DiffCapture {
     #[must_use]
     pub fn slot(&self) -> Arc<ReadSlot> {
         Arc::clone(&self.slot)
+    }
+
+    /// Observe every declared member under one capture slot and deadline.
+    #[must_use]
+    pub fn baseline_batch(
+        &self,
+        subjects: &[ReviewSubject],
+        binding: RepositoryReviewBinding,
+        cancelled: Arc<AtomicBool>,
+    ) -> RepositoryBaselineBatch {
+        let _one_at_a_time = self.slot.capture();
+        let started_at = (self.clock)();
+        let samples = ReviewBatch::for_evidence(subjects, &binding)
+            .map(|batch| self.reader.capture_baseline_batch(batch, cancelled));
+        let interval = self.interval(started_at);
+        RepositoryBaselineBatch {
+            v: REVIEW_BATCH_VERSION,
+            binding,
+            members: subjects
+                .iter()
+                .enumerate()
+                .map(|(index, subject)| {
+                    let outcome = samples
+                        .as_ref()
+                        .map_err(|reason| *reason)
+                        .and_then(|samples| samples[index].1.as_ref().map_err(|reason| *reason));
+                    RepositoryBaselineMember {
+                        repo_id: subject.repo_id.clone().expect("declared member identity"),
+                        interval,
+                        versions: repository_versions(),
+                        outcome: match outcome {
+                            Ok(capture) => BaselineOutcome::Captured {
+                                device: capture.root.device,
+                                inode: capture.root.inode,
+                                head: capture.head,
+                                preexisting_tracked: capture.preexisting_tracked,
+                                preexisting_untracked: capture.preexisting_untracked,
+                            },
+                            Err(reason) => BaselineOutcome::Unavailable { reason },
+                        },
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Sample every declared member under the review reader's shared count and byte allowance.
+    #[must_use]
+    pub fn stamp_batch(
+        &self,
+        subjects: &[ReviewSubject],
+        binding: RepositoryReviewBinding,
+        baseline_lsn: Lsn,
+        check_lsn: Lsn,
+        cancelled: Arc<AtomicBool>,
+    ) -> RepositoryStampBatch {
+        let _one_at_a_time = self.slot.capture();
+        let started_at = (self.clock)();
+        let samples = ReviewBatch::for_evidence(subjects, &binding)
+            .map(|batch| self.reader.capture_review_batch(batch, cancelled));
+        let interval = self.interval(started_at);
+        RepositoryStampBatch {
+            v: REVIEW_BATCH_VERSION,
+            binding,
+            baseline_lsn,
+            check_lsn,
+            members: subjects
+                .iter()
+                .enumerate()
+                .map(|(index, subject)| {
+                    let sample = samples
+                        .as_ref()
+                        .map_err(|reason| *reason)
+                        .and_then(|samples| {
+                            samples.members[index].1.as_ref().map_err(|reason| *reason)
+                        });
+                    let outcome = sample.map_or_else(
+                        |reason| RepositoryStampOutcome::Unavailable { reason },
+                        |capture| match sampled(capture) {
+                            StampOutcome::Sampled {
+                                complete,
+                                digest,
+                                omitted,
+                                omitted_lower_bound,
+                                untracked,
+                                untracked_lower_bound,
+                            } => {
+                                let root = subject
+                                    .baseline
+                                    .as_ref()
+                                    .expect("successful sample has a baseline")
+                                    .root;
+                                RepositoryStampOutcome::Sampled {
+                                    root: dudes_proto::record::FileIdentity {
+                                        device: root.device,
+                                        inode: root.inode,
+                                    },
+                                    complete,
+                                    digest,
+                                    omitted,
+                                    omitted_lower_bound,
+                                    untracked,
+                                    untracked_lower_bound,
+                                }
+                            }
+                            StampOutcome::Unavailable { reason } => {
+                                RepositoryStampOutcome::Unavailable { reason }
+                            }
+                            _ => RepositoryStampOutcome::Unavailable {
+                                reason: DiffRefusal::Unreadable,
+                            },
+                        },
+                    );
+                    RepositoryStampMember {
+                        repo_id: subject.repo_id.clone().expect("declared member identity"),
+                        interval,
+                        versions: repository_versions(),
+                        outcome,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// A finite baseline failure for every declared member when its worker cannot start.
+    #[must_use]
+    pub fn baseline_batch_unavailable(
+        &self,
+        repositories: &RepositorySet<OwnedRepository>,
+        binding: RepositoryReviewBinding,
+    ) -> RepositoryBaselineBatch {
+        let at = (self.clock)();
+        RepositoryBaselineBatch {
+            v: REVIEW_BATCH_VERSION,
+            binding,
+            members: repositories
+                .entries()
+                .iter()
+                .map(|entry| RepositoryBaselineMember {
+                    repo_id: entry.repo_id.clone(),
+                    interval: CaptureInterval {
+                        started_at: at,
+                        ended_at: at,
+                    },
+                    versions: repository_versions(),
+                    outcome: BaselineOutcome::Unavailable {
+                        reason: DiffRefusal::Unreadable,
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    /// A finite post-check failure for every declared member when its worker cannot start.
+    #[must_use]
+    pub fn stamp_batch_unavailable(
+        &self,
+        repositories: &RepositorySet<OwnedRepository>,
+        binding: RepositoryReviewBinding,
+        baseline_lsn: Lsn,
+        check_lsn: Lsn,
+    ) -> RepositoryStampBatch {
+        let at = (self.clock)();
+        RepositoryStampBatch {
+            v: REVIEW_BATCH_VERSION,
+            binding,
+            baseline_lsn,
+            check_lsn,
+            members: repositories
+                .entries()
+                .iter()
+                .map(|entry| RepositoryStampMember {
+                    repo_id: entry.repo_id.clone(),
+                    interval: CaptureInterval {
+                        started_at: at,
+                        ended_at: at,
+                    },
+                    versions: repository_versions(),
+                    outcome: RepositoryStampOutcome::Unavailable {
+                        reason: DiffRefusal::Unreadable,
+                    },
+                })
+                .collect(),
+        }
     }
 
     /// Observe the round-start state of `tree` for `binding`.
@@ -250,6 +440,13 @@ impl DiffCapture {
 fn versions() -> SamplerVersions {
     SamplerVersions {
         sampler: SAMPLER_VERSION,
+        policy: TEXT_POLICY_VERSION,
+    }
+}
+
+fn repository_versions() -> SamplerVersions {
+    SamplerVersions {
+        sampler: REPOSITORY_SAMPLER_VERSION,
         policy: TEXT_POLICY_VERSION,
     }
 }

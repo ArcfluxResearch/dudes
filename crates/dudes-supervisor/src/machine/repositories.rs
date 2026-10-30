@@ -147,12 +147,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             .get(&agent)
             .is_some_and(|row| matches!(row.repositories, HireRepositories::Scoped(_)))
         {
-            return self
-                .world
-                .active_repository_round(agent)
-                .map_or(true, |round| {
-                    round.is_some_and(|round| !self.repository_baseline_ready(round.goal))
-                });
+            return self.hold_for_repository_baseline(agent);
         }
         self.hold_for_ticket_baseline(agent)
     }

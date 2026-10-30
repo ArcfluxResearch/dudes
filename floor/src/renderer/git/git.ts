@@ -18,6 +18,7 @@
 // ARIA label or a data attribute. The tab is evidence the
 // operator reads. Nothing here is a verdict.
 
+import { floorSessionGeneration } from '../../session.ts';
 import type { ControlDeps } from '../control/control.ts';
 
 export const MAX_GIT_VIEW_BYTES = 64 * 1024;
@@ -44,7 +45,7 @@ const SLASH = String.fromCharCode(0x2f);
 export const GIT_STATES = [
   'ok', 'agent_unknown', 'not_a_checkout_root', 'gitfile_unsupported', 'unsupported_storage',
   'unsupported_platform', 'git_unavailable', 'busy', 'timed_out', 'unreadable',
-  'worktree_mismatch', 'worktree_released', 'worktree_removed',
+  'worktree_mismatch', 'worktree_released', 'worktree_removed', 'invalid_selection', 'response_limit',
 ] as const;
 export type GitState = (typeof GIT_STATES)[number];
 
@@ -81,7 +82,13 @@ export interface GitSection<T> {
   readonly dropped: number;
 }
 
+export type GitSelection = { readonly scope: 'hired' } | { readonly scope: 'repository'; readonly repo_id: string }
+  | { readonly scope: 'declared'; readonly card: string; readonly expected_seq: number };
+export const gitSelectionKey = (selection: GitSelection): string => JSON.stringify(selection);
+const HIRED: GitSelection = Object.freeze({ scope: 'hired' });
 export interface GitView {
+  readonly repositories?: readonly { readonly repo_id: string; readonly view: GitView }[];
+  readonly binding_id?: string;
   readonly state: GitState;
   readonly read_at: number;
   readonly head: GitHead | null;
@@ -191,6 +198,34 @@ export function decodeGitView(body: string): GitView | null {
   } catch {
     return null;
   }
+  if (typeof value === 'object' && value !== null && !Array.isArray(value) && 'repositories' in value) {
+    const raw = value as Record<string, unknown>;
+    if (!exactly(raw, ['state', 'read_at', 'head', 'branches', 'commits', 'committed', 'changes', 'repositories', 'binding_id'])
+      || raw.state !== 'ok' || raw.head !== null || !Array.isArray(raw.repositories)
+      || raw.repositories.length < 1 || raw.repositories.length > 8
+      || typeof raw.binding_id !== 'string' || !/^[0-9a-f]{64}$/.test(raw.binding_id)) return null;
+    const repositories: { readonly repo_id: string; readonly view: GitView }[] = [];
+    for (const member of raw.repositories) {
+      if (!exactly(member, ['repo_id', 'view']) || typeof member.repo_id !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(member.repo_id)) return null;
+      const view = decodeSingle(member.view);
+      if (view === null || repositories.some((repo) => repo.repo_id === member.repo_id)) return null;
+      repositories.push(Object.freeze({ repo_id: member.repo_id, view }));
+    }
+    const outer = decodeSingle({ state: 'unreadable', read_at: raw.read_at, head: null,
+      branches: raw.branches, commits: raw.commits, committed: raw.committed, changes: raw.changes });
+    if (outer === null) return null;
+    for (const [key, limit] of [['branches', MAX_GIT_BRANCH_BYTES], ['commits', MAX_GIT_COMMIT_BYTES],
+      ['committed', MAX_GIT_COMMITTED_BYTES], ['changes', MAX_GIT_CHANGE_BYTES]] as const) {
+      if (repositories.reduce((total, repo) => total + bytes(repo.view[key]), 0) > limit + 8 * 64) return null;
+    }
+    if (repositories.reduce((total, repo) => total + repo.view.branches.items.length, 0) > MAX_GIT_BRANCHES
+      || repositories.reduce((total, repo) => total + repo.view.commits.items.length, 0) > MAX_GIT_COMMITS) return null;
+    return Object.freeze({ ...outer, state: 'ok', binding_id: raw.binding_id, repositories: Object.freeze(repositories) });
+  }
+  return decodeSingle(value);
+}
+
+function decodeSingle(value: unknown): GitView | null {
   if (!exactly(value, ['state', 'read_at', 'head', 'branches', 'commits', 'committed', 'changes'])) return null;
   const state = (GIT_STATES as readonly unknown[]).includes(value.state) ? value.state as GitState : null;
   if (state === null || typeof value.read_at !== 'number' || !Number.isSafeInteger(value.read_at)) return null;
@@ -214,8 +249,8 @@ export type GitOutcome =
   | { readonly kind: 'unavailable' }
   | { readonly kind: 'unknown' };
 
-/** The one request: the agent, and nothing else. */
-export async function postGit(agent: string, fetch: ControlDeps['fetch']): Promise<GitOutcome> {
+/** Select recorded repositories, with the exact ticket revision for its declared work. */
+export async function postGit(agent: string, fetch: ControlDeps['fetch'], selection: GitSelection = HIRED): Promise<GitOutcome> {
   let status: number;
   let body: string;
   try {
@@ -225,7 +260,8 @@ export async function postGit(agent: string, fetch: ControlDeps['fetch']): Promi
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_id: agent }),
+      body: JSON.stringify({ agent_id: agent, repositories: selection.scope === 'declared' ? { scope: 'declared' } : selection,
+        ...(selection.scope === 'declared' ? { card: selection.card, expected_seq: selection.expected_seq } : {}) }),
     });
     status = response.status;
     body = await response.text();
@@ -234,6 +270,8 @@ export async function postGit(agent: string, fetch: ControlDeps['fetch']): Promi
   }
   if (status === 200) {
     const view = decodeGitView(body);
+    if (view !== null && selection.scope === 'repository'
+      && (view.repositories?.length !== 1 || view.repositories[0]?.repo_id !== selection.repo_id)) return Object.freeze({ kind: 'unknown' });
     return view === null ? Object.freeze({ kind: 'unknown' }) : Object.freeze({ kind: 'view', view });
   }
   if (status === 403) return Object.freeze({ kind: 'forbidden' });
@@ -261,6 +299,8 @@ export function copyablePath(path: string): string {
 export type GitPhase = 'idle' | 'loading' | 'ready' | 'failed';
 
 export interface GitTabState {
+  readonly selection?: string;
+  readonly generation?: number;
   readonly agent: string | null;
   readonly phase: GitPhase;
   readonly view: GitView | null;
@@ -301,7 +341,8 @@ function commitState(next: GitTabState): void {
 
 /** Whether showing the tab should read: the first time for this agent, and never again by itself. */
 export function needsRead(current: GitTabState, agent: string, active: boolean): boolean {
-  return active && current.agent !== agent;
+  return active && (current.agent !== agent || (current.selection !== undefined && current.selection !== gitSelectionKey(HIRED))
+    || (current.generation !== undefined && current.generation !== floorSessionGeneration()));
 }
 
 /**
@@ -309,30 +350,35 @@ export function needsRead(current: GitTabState, agent: string, active: boolean):
  * Refresh, and by nothing else. The last view stays on screen while the next
  * one is read.
  */
-export async function loadGit(agent: string, deps: ControlDeps): Promise<void> {
-  const sameAgent = state.agent === agent;
+export async function loadGit(agent: string, deps: ControlDeps, selection: GitSelection = HIRED): Promise<void> {
+  const scope = gitSelectionKey(selection);
+  const generation = floorSessionGeneration();
+  const sameAgent = state.agent === agent && state.selection === scope && state.generation === generation;
   if (!deps.signedIn()) {
-    commitState({ agent, phase: 'failed', view: sameAgent ? state.view : null,
+    commitState({ agent, selection: scope, generation, phase: 'failed', view: sameAgent ? state.view : null,
       failure: Object.freeze({ kind: 'forbidden' }), busy: false });
     return;
   }
   const ticket = ++latest;
-  commitState({ agent, phase: 'loading', view: sameAgent ? state.view : null, failure: null, busy: false });
-  const outcome = await postGit(agent, deps.fetch);
+  commitState({ agent, selection: scope, generation, phase: 'loading', view: sameAgent ? state.view : null, failure: null, busy: false });
+  const outcome = await postGit(agent, deps.fetch, selection);
   if (ticket !== latest) return;
+  if (generation !== floorSessionGeneration()) { commitState(INITIAL); return; }
   if (outcome.kind === 'view') {
     // `busy` says nothing about the repository, so it does not wipe a reading already on screen.
     const keep = outcome.view.state === 'busy' && sameAgent && state.view?.state === 'ok';
-    commitState({ agent, phase: 'ready', view: keep ? state.view : outcome.view, failure: null, busy: keep });
+    commitState({ agent, selection: scope, generation, phase: 'ready', view: keep ? state.view : outcome.view, failure: null, busy: keep });
     return;
   }
-  commitState({ agent, phase: 'failed', view: sameAgent ? state.view : null, failure: outcome, busy: false });
+  commitState({ agent, selection: scope, generation, phase: 'failed', view: sameAgent ? state.view : null, failure: outcome, busy: false });
   // An empty 403 may mean the session ended or that this page can no longer act with it;
   // a fresh subscription tells the two apart.
   if (outcome.kind === 'forbidden') deps.refresh();
 }
 
 const REFUSALS: Readonly<Record<Exclude<GitState, 'ok'>, string>> = Object.freeze({
+  invalid_selection: 'This request does not match a recorded repository selection.',
+  response_limit: 'Earlier repositories filled this reading. This repository was not read.',
   agent_unknown: 'Dudes does not know this agent.',
   not_a_checkout_root: 'This agent does not work at the root of a Git checkout, so there is nothing to read.',
   // A gitfile also comes from a submodule checkout or a separated git directory, so this does not say "linked worktree".

@@ -1402,6 +1402,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let missing = self.missing_worktrees();
         self.pump(Input::MissingWorktrees(missing))?;
         self.pump(Input::Started)?;
+        self.record_missing_project_catalogs()?;
         self.detach_gone_attachments()?;
         if self.sup.recovering_closing() {
             let attached: Vec<_> = self.sup.closing_recovery_attachments().collect();
@@ -1671,8 +1672,40 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let answer = self.browser_model(&session, &request);
                     let _ = reply.send(answer);
                 }
-                Job::GitTarget { agent, reply } => {
-                    let _ = reply.send(crate::floor_git::GitTarget::of(self.sup.world(), agent));
+                Job::GitTarget { request, reply } => {
+                    let target = if let Some((card, seq)) = request.ticket {
+                        match self.ctx.projections.ticket(card) {
+                            Ok(Some((view, ticket)))
+                                if view.seq == seq && view.claimed_by == Some(request.agent) =>
+                            {
+                                if ticket.repositories.declared().is_none() {
+                                    crate::floor_git::GitTarget::of(self.sup.world(), request.agent)
+                                } else {
+                                    Some(
+                                        crate::floor_diff::recorded(
+                                            self.sup.world(),
+                                            &view,
+                                            &ticket,
+                                        )
+                                        .map_or(
+                                            crate::floor_git::GitTarget::Refused(
+                                                dudes_proto::GitState::WorktreeMismatch,
+                                            ),
+                                            |recorded| {
+                                                crate::floor_git::GitTarget::declared(&recorded)
+                                            },
+                                        ),
+                                    )
+                                }
+                            }
+                            _ => Some(crate::floor_git::GitTarget::Refused(
+                                dudes_proto::GitState::InvalidSelection,
+                            )),
+                        }
+                    } else {
+                        crate::floor_git::GitTarget::selected(self.sup.world(), &request)
+                    };
+                    let _ = reply.send(target);
                 }
                 Job::DiffRecorded { card, reply } => {
                     let recorded = match self.ctx.projections.ticket(card) {
@@ -2343,7 +2376,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if decision.result.applied {
             let previous = std::mem::replace(&mut self.ctx.enrollment, decision.candidate);
             let previous_repositories = self.ctx.current_repositories.clone();
-            if let Err(failure) = self.observe_repository_enrollment() {
+            if let Err(failure) = self
+                .observe_repository_enrollment()
+                .and_then(|()| self.record_missing_project_catalogs())
+            {
                 self.ctx.enrollment = previous;
                 self.ctx.reloads = previous_reload;
                 self.ctx.current_repositories = previous_repositories;
@@ -4155,10 +4191,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         &mut self,
         goal: GoalId,
         folder: &std::path::Path,
-        verdict: Option<(bool, Evidence)>,
+        mut verdict: Option<(bool, Evidence)>,
     ) -> Result<()> {
         if !self.ctx.predicate_run_ended(goal, folder) {
             return Ok(());
+        }
+        if let Some(row) = self.sup.world().goals.get(&goal)
+            && self
+                .sup
+                .world()
+                .agents
+                .get(&row.agent)
+                .is_some_and(|owner| {
+                    matches!(
+                        owner.repositories,
+                        dudes_proto::repository::HireRepositories::Scoped(_)
+                    )
+                })
+            && (!self.ctx.repository_allowed(self.sup.world(), row.agent)
+                || self.sup.world().predicate_directory(goal) != Some(folder))
+        {
+            verdict = None;
         }
         match verdict {
             Some((pass, evidence)) => self.pump(Input::PredicateDone {
@@ -8459,13 +8512,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 cwd,
                 predicate,
             } => {
-                let repositories = sup.world().agents.get(agent).map_or_else(
-                    || vec![cwd.clone()],
-                    |row| row.repositories.check_program_roots(),
-                );
-                self.run_predicate(*goal, cwd, predicate, &repositories, queue);
+                self.execute_predicate(*goal, *agent, cwd, predicate, sup, queue);
             }
-            Effect::CaptureBaseline { .. } | Effect::CaptureStamp { .. } => {
+            Effect::CaptureBaseline { .. }
+            | Effect::CaptureStamp { .. }
+            | Effect::CaptureRepositoryBaseline { .. }
+            | Effect::CaptureRepositoryStamp { .. } => {
                 self.execute_ticket_capture(effect, sup, queue);
             }
             Effect::Reply { hook, reply } => self.deliver_hook_reply(*hook, reply),
@@ -9228,6 +9280,70 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         Ok(())
     }
 
+    fn execute_predicate<R: Rng>(
+        &mut self,
+        goal: GoalId,
+        agent: AgentId,
+        cwd: &std::path::Path,
+        predicate: &Predicate,
+        sup: &Supervisor<Shared<C>, R>,
+        queue: &mut VecDeque<Input>,
+    ) {
+        let scoped = sup.world().agents.get(&agent).is_some_and(|row| {
+            matches!(
+                row.repositories,
+                dudes_proto::repository::HireRepositories::Scoped(_)
+            )
+        });
+        if scoped
+            && (!self.repository_allowed(sup.world(), agent)
+                || sup.world().predicate_directory(goal) != Some(cwd))
+        {
+            queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
+            return;
+        }
+        let repositories = sup.world().agents.get(&agent).map_or_else(
+            || vec![cwd.to_path_buf()],
+            |row| row.repositories.check_program_roots(),
+        );
+        let queries = if scoped
+            && matches!(predicate, Predicate::Command { argv, .. } if *argv == dudes_config::check::changed_check())
+        {
+            let row = &sup.world().agents[&agent];
+            let dudes_proto::repository::HireRepositories::Scoped(hire) = &row.repositories else {
+                unreachable!()
+            };
+            let Ok(round) = sup.world().active_repository_round(agent) else {
+                queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
+                return;
+            };
+            let Ok(grant) =
+                dudes_proto::repository::RepositoryTurnGrant::select(row.mcp.hire_lsn, hire, round)
+            else {
+                queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
+                return;
+            };
+            Some(
+                grant
+                    .repositories
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.value.execution.directory.clone())
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        self.run_predicate(
+            goal,
+            cwd,
+            predicate,
+            &repositories,
+            queries.as_deref(),
+            queue,
+        );
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one predicate attempt owns resolution, the child thread and its terminal accounting"
@@ -9238,6 +9354,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         cwd: &std::path::Path,
         predicate: &Predicate,
         repositories: &[std::path::PathBuf],
+        queries: Option<&[std::path::PathBuf]>,
         queue: &mut VecDeque<Input>,
     ) {
         if let Predicate::BoardState { card, .. } = predicate {
@@ -9270,6 +9387,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             return;
         };
         let Some(resolved) = shared_folder::canonical_folder(cwd) else {
+            if queries.is_some() {
+                tracing::warn!(?goal, "declared change check directory is unavailable");
+                queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
+                return;
+            }
             let failure = predicate::spec_for(
                 argv,
                 cwd,
@@ -9303,6 +9425,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         // beside it in the evidence, never in place of `argv[0]`.
         let operator_argv = argv.clone();
         let repositories = repositories.to_vec();
+        let queries = queries.map(<[_]>::to_vec);
 
         *self.predicate_runs.entry(goal).or_default() += 1;
         *self
@@ -9323,6 +9446,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         folder: cwd.clone(),
                         verdict: None,
                     };
+                    if let Some(queries) = queries {
+                        match predicate::files_changed(&*runner, &argv, &queries, &env, path.as_deref(), &repositories, timeout) {
+                            Ok(verdict) => end.verdict = verdict,
+                            Err(error) => tracing::warn!(%error, ?goal, "declared change check could not complete"),
+                        }
+                        return;
+                    }
                     let (program, spec) = match predicate::spec_for_repositories(
                         &argv,
                         &cwd,
@@ -9614,7 +9744,7 @@ mod floor_shutdown_tests {
         let (jobs, queue) = std::sync::mpsc::channel();
         let (reply, answer) = std::sync::mpsc::channel();
         jobs.send(Job::GitTarget {
-            agent: AgentId::from_parts(1, 2),
+            request: crate::floor_git::GitRequest::singleton(AgentId::from_parts(1, 2)),
             reply,
         })
         .expect("queued Git read");

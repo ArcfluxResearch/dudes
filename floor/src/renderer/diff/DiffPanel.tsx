@@ -125,7 +125,7 @@ function SourceLines({ label, text, absent, changes }: {
 }
 
 function Compare({ content, entry }: { readonly content: DiffContent; readonly entry: DiffEntry }) {
-  const file = content.files.find((row) => row.entry_id === entry.entry_id);
+  const file = content.files.find((row) => row.entry_id === entry.entry_id && row.repo_id === entry.repo_id);
   const omission = content.omitted.find((row) => row.entry_id === entry.entry_id);
   const changes = useMemo(() => file === undefined ? null : changedLines(file.old, file.current), [file]);
   return <div className="diff-compare col-span-full flex min-w-0 flex-col gap-2">
@@ -168,19 +168,23 @@ export function DiffReview({ review, loading, onOpen, onPage, ownCopy = false }:
     {page.omitted > 0 || page.truncated ? <p className={cn('diff-omission', CALLOUT, 'border-line-strong bg-surface-2')}>{page.omitted_lower_bound ? 'At least ' : ''}{page.omitted} changed {page.omitted === 1 ? 'file was' : 'files were'} left out of this list.{page.truncated ? ' The list reached its limit.' : ''}</p> : null}
     {page.untracked > 0 ? <p className={NOTE}>{page.untracked_lower_bound ? 'At least ' : ''}{page.untracked} new {page.untracked === 1 ? 'file is' : 'files are'} not listed because the list is full or its name cannot be shown.</p>
       : page.untracked_lower_bound ? <p className={NOTE}>The list of new files was cut short, so some may be missing.</p> : null}
-    {entries.length === 0 ? <p className="m-0">No file differs from where this attempt began.</p> : <ul className="diff-selection m-0 flex list-none flex-col overflow-hidden rounded-lg border border-line p-0">
-      {entries.map((entry, index) => {
+    {page.binding.repositories.map((repo, group) => <section key={repo.repo_id ?? 'legacy'} className="flex min-w-0 flex-col gap-2">
+      {repo.repo_id === null ? null : <h5 className="m-0 text-body font-semibold">{repo.repo_id}</h5>}
+      {repo.unavailable !== null ? <p className={NOTE}>{REFUSALS[repo.unavailable]} This repository’s coverage is unknown.</p>
+        : entries.every((entry) => entry.repo_id !== repo.repo_id) ? <p className="m-0">No changed files are listed for this repository.</p> : <ul className="diff-selection m-0 flex list-none flex-col overflow-hidden rounded-lg border border-line p-0">
+      {entries.filter((entry) => entry.repo_id === repo.repo_id).map((entry, index) => {
         const isOpen = entry.entry_id !== null && opened === entry.entry_id;
         return <li key={index} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-line px-3 py-2 last:border-b-0 max-[801px]:grid-cols-[minmax(0,1fr)]">
-          <div className="diff-row-name flex min-w-0 items-baseline gap-3"><span className="diff-kind w-24 shrink-0 text-caption font-medium text-muted">{KINDS[entry.kind]}</span>{' '}<span className="diff-path font-mono text-small wrap-anywhere" id={`${id}-${index}`}>{entry.path}</span></div>
+          <div className="diff-row-name flex min-w-0 items-baseline gap-3"><span className="diff-kind w-24 shrink-0 text-caption font-medium text-muted">{KINDS[entry.kind]}</span>{' '}<span className="diff-path font-mono text-small wrap-anywhere" id={`${id}-${group}-${index}`}>{entry.path}</span></div>
           {entry.availability.state === 'unavailable' || entry.entry_id === null
             ? <p className={cn(NOTE, 'col-span-full')}>{entry.availability.state === 'unavailable' ? (entry.kind === 'nested_repository' ? NESTED_OMISSION : OMISSIONS[entry.availability.reason]) : ''}</p>
-            : <Button variant={isOpen ? 'secondary' : 'ghost'} size="sm" className="max-[801px]:justify-self-start" aria-describedby={`${id}-${index}`} aria-pressed={isOpen} disabled={loading}
+            : <Button variant={isOpen ? 'secondary' : 'ghost'} size="sm" className="max-[801px]:justify-self-start" aria-describedby={`${id}-${group}-${index}`} aria-pressed={isOpen} disabled={loading}
               onClick={() => { onOpen(entry); }}>{isOpen ? 'Close file' : 'Open side by side'}</Button>}
           {isOpen && content !== null ? <Compare content={content} entry={entry} /> : null}
         </li>;
       })}
     </ul>}
+    </section>)}
     {page.next_cursor === null ? null : <div className="diff-actions flex flex-wrap items-center gap-2">
       <Button size="sm" disabled={loading} onClick={onPage}>Show more files</Button>
     </div>}
@@ -199,7 +203,7 @@ function validContent(review: DiffReviewState, opened: string, content: DiffCont
   const ids = [...content.files.map((file) => file.entry_id), ...content.omitted.map((row) => row.entry_id)];
   return ids.length === 1 && ids[0] === opened
     && content.files.every((file) => review.entries.some((entry) => entry.entry_id === file.entry_id
-      && entry.path === file.path && entry.old_path === file.old_path && entry.kind === file.kind));
+      && entry.repo_id === file.repo_id && entry.path === file.path && entry.old_path === file.old_path && entry.kind === file.kind));
 }
 
 const OWN_COPY = 'This reads the agent’s own copy of the project. Edits made in your project folder do not appear here.';
@@ -250,7 +254,8 @@ export function DiffPanel({ card, expectedSeq, transport, ownCopy = false }: {
     }
     const entries = [...(previous?.entries ?? []), ...reply.entries];
     const ids = entries.flatMap((entry) => entry.entry_id === null ? [] : [entry.entry_id]);
-    if (entries.length > 256 || new Set(ids).size !== ids.length) { setState({ owner, phase: 'refused', reason: 'unknown' }); return; }
+    if (entries.length > 256 || new Set(ids).size !== ids.length
+      || new Set(entries.map((entry) => `${entry.repo_id ?? ''}:${entry.path}`)).size !== entries.length) { setState({ owner, phase: 'refused', reason: 'unknown' }); return; }
     setState({ owner, phase: 'ready', review: { page: reply, entries, opened: previous?.opened ?? null, content: previous?.content ?? null } });
   }
 
@@ -264,7 +269,7 @@ export function DiffPanel({ card, expectedSeq, transport, ownCopy = false }: {
       { ...state.review, opened: null, content: null }, entry.entry_id);
   }
 
-  const refresh = () => { void read({ mode: 'manifest', card, expected_seq: expectedSeq }, null); };
+  const refresh = () => { void read({ mode: 'manifest', card, expected_seq: expectedSeq, repositories: { scope: 'declared' } }, null); };
 
   return <section className="diff-panel min-w-0" aria-label="Changes">
     <h4>Changes</h4>
