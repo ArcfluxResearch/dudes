@@ -24,13 +24,11 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ### Changes
 
-- The journal and daemon gain more groundwork for tickets that span several repositories: repository trust pins, named completion-check repositories, per-repository instructions, hires across repository copies and scoped launch preparation. No command or Floor screen offers multi-repository work yet, and a journal without these records replays unchanged. (#269, #270, #272, #273, #297, #300, #301, #302, #303, #304, #306, #307, #313)
+- The journal and daemon gain more groundwork for tickets that span several repositories: repository trust pins, named completion-check repositories, per-repository instructions, hires across repository copies and scoped launch preparation. No command or Floor screen offers multi-repository work yet, and a journal without these records replays unchanged. (#269, #270, #272, #273, #297, #298, #299, #300, #301, #302, #303, #304, #306, #307, #313)
 
 ### Fixes
 
 - After you Halt or Stop an agent's running turn, hiring another agent into the same folder without its own copy is no longer refused until the daemon restarts. The daemon now records that the stopped turn's processes are gone. (#314)
-- Previewing or refusing an edited project configuration no longer pauses agents in other projects. Dudes also stops writing a Pause that looks like yours when a project is briefly unavailable, and it retries the work when the project returns. (#298)
-- When a project's repository disappears just before a turn starts, the turn no longer stays stuck. It fails visibly with a hold, and Resume lets work continue once the repository is back. (#299)
 - Cleaning up a half-made copy after a failure or a restart now removes only the folder Dudes created. If something else has replaced that folder, or Dudes cannot tell, it leaves the folder alone and leaves the branch for you. (#296)
 - A ticket handed to another agent while a question is open now shows every open question, each headed by the agent that asked it, instead of only the newest. (#286)
 
