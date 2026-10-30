@@ -84,7 +84,7 @@ use std::time::Duration;
 use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{
-    AdoptionKey, HostBoot, KillOutcome, Liveness, MAX_OWNED_TARGET_QUERY_ROWS,
+    AdoptionKey, ContainmentUnproven, HostBoot, KillOutcome, Liveness, MAX_OWNED_TARGET_QUERY_ROWS,
     NativeBoundaryAcknowledgement, NativeBoundaryReceipt, NativeGroupPresence, OwnedTargetEvidence,
     OwnedTargetState, OwnedTargets, OwnedTargetsStatus, ProbeAnswer, ProcessHost, SpawnResult,
     liveness,
@@ -322,6 +322,9 @@ pub struct RealHost {
     boot: BootIdentity,
     pid_namespace: Option<String>,
     children: BTreeMap<u32, Owned>,
+    /// How many rows were released with a boundary that does not prove complete coverage. Holds no
+    /// handle: it only keeps shutdown reporting the limitation after the rows are gone.
+    released_incomplete: usize,
     current_native_targets: Mutex<BTreeMap<u32, CurrentNativeTarget>>,
     /// The process relation this host maintains for its children, shared with the local door.
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -639,6 +642,7 @@ impl RealHost {
             boot,
             pid_namespace,
             children: BTreeMap::new(),
+            released_incomplete: 0,
             current_native_targets: Mutex::new(BTreeMap::new()),
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             peers,
@@ -1585,10 +1589,168 @@ mod spawn_failure_tests {
         assert!(acknowledged.targets.is_empty());
         assert_eq!(
             host.owned(),
-            1,
-            "acknowledgement keeps shutdown capabilities"
+            0,
+            "an acknowledged, reaped row is released, so shutdown has nothing left to examine"
         );
-        expect_unresolved_shutdown(&mut host, "acknowledgement did not prove full containment");
+        expect_unproven_after_release(&mut host, "acknowledgement did not prove full containment");
+    }
+
+    fn expect_unproven_after_release(host: &mut RealHost, label: &str) {
+        assert_eq!(host.owned(), 0, "{label}: the row is released");
+        for _ in 0..2 {
+            let error = host
+                .shutdown()
+                .expect_err("a released incomplete boundary must not read as contained");
+            assert!(
+                dudes_supervisor::host::ContainmentUnproven::is(&error),
+                "{label} returned {error}, not unproven containment"
+            );
+        }
+    }
+
+    #[test]
+    fn an_acknowledged_finished_child_releases_its_row() {
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let key = completed_query_target(&mut host);
+        let receipt = observed_absence(&host, &key)
+            .native_absence_receipt
+            .expect("an observed absence carries its receipt");
+        assert_eq!(host.owned(), 1, "an unacknowledged row is held");
+        let row = std::sync::Arc::downgrade(&host.children[&key.pid].reap_confirmed);
+        assert!(row.upgrade().is_some(), "the row is held before release");
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &receipt),
+            NativeBoundaryAcknowledgement::Acknowledged
+        );
+        assert_eq!(host.owned(), 0, "an acknowledged, reaped row is released");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while row.upgrade().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "the released row's state is still referenced, so its grip and lifeline are too"
+            );
+            sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &receipt),
+            NativeBoundaryAcknowledgement::RefusedUnobserved,
+            "a second acknowledgement finds nothing to release"
+        );
+        expect_unproven_after_release(&mut host, "a released finished child");
+        assert!(matches!(
+            host.kill(&key),
+            dudes_supervisor::host::KillOutcome::Refused {
+                liveness: Liveness::Gone
+            }
+        ));
+    }
+
+    struct CountFailures(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl crate::ChildStreams for CountFailures {
+        fn watch(
+            &self,
+            _key: Option<&dudes_supervisor::host::AdoptionKey>,
+        ) -> Box<dyn crate::ChildStream> {
+            panic!("no stream in the protocol row fixture");
+        }
+        fn protocol_failed(&self, _key: &dudes_supervisor::host::AdoptionKey) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn acknowledged_protocol_row(
+        end_stream: bool,
+    ) -> (RealHost, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let streams: std::sync::Arc<dyn crate::ChildStreams> =
+            std::sync::Arc::new(CountFailures(std::sync::Arc::clone(&failures)));
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let key = completed_query_target(&mut host);
+        let writer = crate::ProtocolWriter::prepare(key.clone(), &streams, Instant::now());
+        host.children.get_mut(&key.pid).unwrap().protocol = Some(writer.clone());
+        if end_stream {
+            writer.finished();
+        }
+        let receipt = observed_absence(&host, &key)
+            .native_absence_receipt
+            .expect("an observed absence carries its receipt");
+        let before = failures.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &receipt),
+            NativeBoundaryAcknowledgement::Acknowledged
+        );
+        assert_eq!(
+            failures.load(std::sync::atomic::Ordering::SeqCst),
+            before,
+            "acknowledgement must not fail the protocol"
+        );
+        (host, failures)
+    }
+
+    #[test]
+    fn an_acknowledged_row_with_a_live_protocol_stream_is_kept() {
+        let (host, failures) = acknowledged_protocol_row(false);
+        assert_eq!(host.owned(), 1, "a live stream keeps its row");
+        assert_eq!(failures.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_acknowledged_row_with_an_ended_protocol_stream_is_released() {
+        let (host, _failures) = acknowledged_protocol_row(true);
+        assert_eq!(host.owned(), 0, "an ended stream lets its row go");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_acknowledged_killed_child_releases_its_row() {
+        let dir = tempfile::tempdir().expect("killed row tempdir");
+        let mark = dir.path().join("killed.pid");
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let key = match host.spawn(
+            &spec_with_mark("park", None, Some(&mark)),
+            &ManagedInstall::default(),
+        ) {
+            SpawnResult::Spawned(key) => key,
+            other => panic!("the killed target did not spawn: {other:?}"),
+        };
+        assert_eq!(await_number(&mark), key.pid);
+        assert!(matches!(
+            host.kill(&key),
+            dudes_supervisor::host::KillOutcome::Signalled
+        ));
+        assert_eq!(host.owned(), 1, "a killed row waits for its boundary check");
+        let receipt = observed_absence(&host, &key)
+            .native_absence_receipt
+            .expect("an observed absence carries its receipt");
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &receipt),
+            NativeBoundaryAcknowledgement::Acknowledged
+        );
+        assert_eq!(host.owned(), 0, "an acknowledged, reaped row is released");
+        expect_unproven_after_release(&mut host, "a released killed child");
+        assert!(matches!(
+            host.kill(&key),
+            dudes_supervisor::host::KillOutcome::Refused {
+                liveness: Liveness::Gone
+            }
+        ));
+    }
+
+    #[test]
+    fn a_released_complete_boundary_leaves_shutdown_clean() {
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let key = completed_query_target(&mut host);
+        host.children.get_mut(&key.pid).unwrap().boundary = crate::kill::Boundary::Complete;
+        let receipt = observed_absence(&host, &key)
+            .native_absence_receipt
+            .expect("an observed absence carries its receipt");
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &receipt),
+            NativeBoundaryAcknowledgement::Acknowledged
+        );
+        assert_eq!(host.owned(), 0);
+        host.shutdown()
+            .expect("a complete boundary proves containment, so release adds nothing");
     }
 
     #[test]
@@ -3019,7 +3181,11 @@ impl ProcessHost for RealHost {
             .children
             .get(&key.pid)
             .map(|owned| (owned.key.as_ref(), &owned.native_receipt));
-        acknowledge_current_native_target(current, key, receipt, owned)
+        let outcome = acknowledge_current_native_target(current, key, receipt, owned);
+        if outcome == NativeBoundaryAcknowledgement::Acknowledged {
+            self.release_settled_row(key.pid);
+        }
+        outcome
     }
 
     /// The read taken once at construction, reported rather than repeated.
@@ -3057,7 +3223,11 @@ impl ProcessHost for RealHost {
                 protocol.fail();
             }
         }
-        kill::shutdown(&mut self.children, self.boot.as_host_boot(), self.grace)
+        let result = kill::shutdown(&mut self.children, self.boot.as_host_boot(), self.grace);
+        match result {
+            Ok(()) if self.released_incomplete > 0 => Err(io::Error::other(ContainmentUnproven)),
+            other => other,
+        }
     }
 
     /// The same owner-only projection [`RealHost::write_install`] gives a managed install.
@@ -3188,6 +3358,38 @@ fn same_recorded_keys(left: Option<&AdoptionKey>, right: Option<&AdoptionKey>) -
 }
 
 impl RealHost {
+    /// Drop a row whose boundary was just acknowledged, so a long-running daemon does not hold a
+    /// process handle, descriptor and keeper lifeline for every finished turn. The row goes only
+    /// when a fresh query still finds its leader reaped and its whole group empty, which is what
+    /// the acknowledgement rested on; anything else stays for shutdown. A later kill or liveness
+    /// query for the key then takes the adopted path and re-validates. A row whose protocol stream
+    /// is still live stays: dropping it would fail the protocol and rewrite a finished turn as a
+    /// transport failure.
+    fn release_settled_row(&mut self, pid: u32) {
+        let settled = self.children.get(&pid).is_some_and(|owned| {
+            owned.exit.reaped()
+                && owned
+                    .protocol
+                    .as_ref()
+                    .is_none_or(ProtocolWriter::is_terminal)
+                && owned_target_state(
+                    owned.boundary,
+                    None,
+                    owned.reap_confirmed.load(Ordering::Acquire),
+                    &native_boundary_state(&owned.grip, owned.pid),
+                ) == OwnedTargetState::NativeBoundaryAbsent
+        });
+        if settled {
+            if let Some(owned) = self.children.remove(&pid)
+                && !owned.boundary.is_complete()
+            {
+                self.released_incomplete += 1;
+            }
+            #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+            self.peers.release(pid);
+        }
+    }
+
     fn index_native_target(&mut self, pid: u32) {
         let owned = self
             .children

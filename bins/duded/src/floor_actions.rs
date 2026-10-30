@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use dudes_journal::Reader;
 use dudes_proto::record::{BrowserOnboardingHire, Hex32, RecordedWorkspace};
-use dudes_proto::repository::{RepoId, RepositorySet};
+use dudes_proto::repository::{RepoId, RepositoryEntry, RepositorySet, ScopedRepositories};
+use dudes_proto::rpc::agent::ProjectHireTarget;
 use dudes_proto::rpc::floor::{CheckView, ChecksView, WorkspaceChecks};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, ENROLLED_CHECK_ID};
 use dudes_proto::{AgentBudget, CompletionCheckRef, GoalBudget, Predicate, Record, TicketCheck};
@@ -299,6 +300,7 @@ pub enum CatalogError {
 
 /// The engines a browser hire may choose, in `Provider` order.
 pub(crate) const BROWSER_ENGINES: [Provider; 3] = [Provider::Claude, Provider::Codex, Provider::Pi];
+pub(crate) const GROUP_COPY_FAILED: &str = "Dudes could not prepare every repository copy, so nobody was hired. Check the project's repository folders, then try again.";
 
 /// The sibling as amended: an unset ceiling is `null`, never absent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -322,6 +324,63 @@ struct WorkspaceView {
     trusted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reload_mark: Option<MarkView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository_group: Option<RepositoryGroupOffer>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct RepositoryGroupOffer {
+    pub(crate) project: OnboardProject,
+    pub(crate) repositories: Vec<RepositoryLabel>,
+    pub(crate) providers: Vec<RepositoryProviderOffer>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct RepositoryLabel {
+    pub(crate) repo_id: RepoId,
+    pub(crate) label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct RepositoryProviderOffer {
+    pub(crate) provider: Provider,
+    pub(crate) enabled: bool,
+    pub(crate) model: Option<&'static str>,
+    pub(crate) refusal: Option<&'static str>,
+}
+
+impl OnboardingView {
+    pub(crate) fn add_repository_groups<'a>(
+        &mut self,
+        groups: impl IntoIterator<Item = (&'a Profile, RepositoryGroupOffer)>,
+    ) {
+        for (profile, group) in groups {
+            let engines = group
+                .providers
+                .iter()
+                .filter(|offer| offer.enabled)
+                .map(|offer| offer.provider)
+                .collect::<Vec<_>>();
+            if engines.is_empty() {
+                continue;
+            }
+            let mut row = Enrollment::view(None, [(profile, engines, true)])
+                .workspaces
+                .remove(0);
+            row.repository_group = Some(group);
+            self.workspaces.push(row);
+        }
+        self.workspaces
+            .sort_by(|left, right| left.workspace_id.cmp(&right.workspace_id));
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.workspaces.is_empty()
+    }
+
+    pub(crate) fn fits(&self) -> bool {
+        serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() <= 16_384)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -433,6 +492,7 @@ impl Enrollment {
                     goal_tokens: tokens(profile.goal_budget.tokens),
                     hop_cap: profile.hop_cap,
                     trusted,
+                    repository_group: None,
                     reload_mark: profile.mark.map(|mark| MarkView {
                         kind: mark.kind,
                         at: rfc3339_seconds(mark.at),
@@ -465,6 +525,34 @@ impl Enrollment {
 pub(crate) struct Attempt {
     pub(crate) agent: AgentId,
     pub(crate) metadata: BrowserOnboardingHire,
+    pub(crate) project: Option<OnboardProject>,
+}
+
+impl Attempt {
+    pub(crate) fn outcome(
+        &self,
+        request: &OnboardRequest,
+    ) -> Result<OnboardOutcome, OnboardRefusal> {
+        let matches = match (&request.target, &self.project) {
+            (OnboardTarget::Workspace { .. }, None) => true,
+            (OnboardTarget::Project(expected), Some(recorded)) => expected == recorded,
+            _ => false,
+        };
+        if !matches || self.metadata.request_digest != request.request_digest {
+            return Err(OnboardRefusal::Conflict);
+        }
+        Ok(match &self.project {
+            Some(project) => OnboardOutcome::ProjectComplete {
+                attempt_id: request.attempt_wire.clone(),
+                agent: self.agent,
+                project: project.clone(),
+            },
+            None => OnboardOutcome::Complete {
+                attempt_id: request.attempt_wire.clone(),
+                agent: self.agent,
+            },
+        })
+    }
 }
 
 /// A replayable in-memory index; only journal records may change it.
@@ -488,11 +576,24 @@ impl OnboardingIndex {
     }
 
     pub(crate) fn apply(&mut self, record: &Record) -> Result<()> {
-        if let Record::AgentHired {
-            id,
-            browser_onboarding: Some(metadata),
-            ..
-        } = record
+        let (id, metadata, project) = match record {
+            Record::AgentHired {
+                id,
+                browser_onboarding: Some(metadata),
+                ..
+            } => (*id, metadata, None),
+            Record::AgentHiredWithRepositories(hire) => {
+                let Some(metadata) = &hire.browser_onboarding else {
+                    return Ok(());
+                };
+                (
+                    hire.id,
+                    metadata,
+                    Some(OnboardProject::recorded(&hire.repositories)),
+                )
+            }
+            _ => return Ok(()),
+        };
         {
             if self.attempts.contains_key(&metadata.attempt_id) {
                 bail!("duplicate browser onboarding attempt in journal");
@@ -507,8 +608,9 @@ impl OnboardingIndex {
             self.attempts.insert(
                 metadata.attempt_id,
                 Attempt {
-                    agent: *id,
+                    agent: id,
                     metadata: (**metadata).clone(),
+                    project,
                 },
             );
         }
@@ -559,14 +661,73 @@ pub(crate) fn valid_workspace_id(value: &str) -> bool {
 }
 
 /// Canonical, bounded browser fields with no execution choice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OnboardTarget {
+    Workspace { id: String, revision: u64 },
+    Project(OnboardProject),
+}
+
+/// Exact catalog expectations, never a source of execution paths or trust.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OnboardProject {
+    pub(crate) target: ProjectHireTarget,
+    pub(crate) repositories: RepositorySet<()>,
+}
+
+impl OnboardProject {
+    pub(crate) fn recorded(scope: &ScopedRepositories) -> Self {
+        Self {
+            target: ProjectHireTarget {
+                project_id: scope.project.id.clone(),
+                expected_revision: scope.catalog_lsn,
+            },
+            repositories: RepositorySet::new(
+                scope.repositories.primary_id().clone(),
+                scope
+                    .repositories
+                    .entries()
+                    .iter()
+                    .map(|entry| RepositoryEntry {
+                        repo_id: entry.repo_id.clone(),
+                        value: (),
+                    })
+                    .collect(),
+            )
+            .expect("recorded bounded repository membership"),
+        }
+    }
+}
+
+impl Serialize for OnboardProject {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+        let mut wire = serializer.serialize_struct("OnboardProject", 4)?;
+        wire.serialize_field("project_id", &self.target.project_id)?;
+        wire.serialize_field(
+            "expected_revision",
+            &self.target.expected_revision.0.to_string(),
+        )?;
+        wire.serialize_field("primary_repo", self.repositories.primary_id())?;
+        wire.serialize_field(
+            "repo_ids",
+            &self
+                .repositories
+                .entries()
+                .iter()
+                .map(|entry| &entry.repo_id)
+                .collect::<Vec<_>>(),
+        )?;
+        wire.end()
+    }
+}
+
+/// Frozen canonical request retained for every retry.
 #[derive(Clone)]
 pub struct OnboardRequest {
     pub(crate) attempt_id: Hex32,
     pub(crate) attempt_wire: String,
     pub(crate) request_digest: Hex32,
-    pub(crate) workspace_id: String,
-    /// The revision of the workspace the page was offered; absent on the wire means 0.
-    pub(crate) workspace_revision: u64,
+    pub(crate) target: OnboardTarget,
     pub(crate) character: Option<dudes_types::CastCharacter>,
     pub(crate) accent: Option<dudes_types::AccentColour>,
     /// The engine: Claude when the request names none.
@@ -597,6 +758,15 @@ pub enum OnboardOutcome {
         /// Durable hired agent.
         agent: AgentId,
     },
+    /// The complete recorded repository group was durably assigned.
+    ProjectComplete {
+        /// Canonical attempt identity.
+        attempt_id: String,
+        /// Durable hired agent.
+        agent: AgentId,
+        /// Exact catalog and membership the request selected.
+        project: OnboardProject,
+    },
 }
 
 /// What a browser hire's first job answers: the request's answer, or the copy to make first.
@@ -611,6 +781,11 @@ pub enum OnboardStep {
         params: Box<dudes_proto::rpc::agent::HireParams>,
         /// The operator's grant the copy rests on.
         trust: Box<crate::worktree::hire::TrustTicket>,
+    },
+    /// Prepare all members through the existing atomic repository hire owner.
+    Project {
+        /// Frozen admission before any member lease.
+        plan: Box<crate::worktree::hire::RepositoryHirePlan>,
     },
 }
 
@@ -691,13 +866,16 @@ pub enum OnboardRefusal {
     ModelFixed,
     /// The hire's own copy was refused or could not be made; nothing was hired.
     OwnCopy(CopyRefusal),
+    /// The whole repository group was refused before its final hire append.
+    RepositoryGroup(&'static str),
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OnboardJson {
     attempt_id: String,
-    workspace_id: String,
+    #[serde(default)]
+    workspace_id: Option<String>,
     #[serde(default)]
     workspace_revision: Option<String>,
     #[serde(default)]
@@ -716,6 +894,59 @@ struct OnboardJson {
     own_copy: Option<bool>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    project: Option<OnboardProjectJson>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OnboardProjectJson {
+    project_id: String,
+    expected_revision: String,
+    primary_repo: RepoId,
+    repo_ids: Vec<RepoId>,
+}
+
+impl OnboardJson {
+    fn target(&self, group_form: bool, mixed_group: bool) -> Result<OnboardTarget> {
+        match (self.workspace_id.as_deref(), self.project.as_ref()) {
+            (Some(id), None) if !group_form && valid_workspace_id(id) => {
+                let revision = self
+                    .workspace_revision
+                    .as_deref()
+                    .map_or(Ok(0), canonical_decimal)
+                    .context("invalid browser onboarding workspace revision")?;
+                Ok(OnboardTarget::Workspace {
+                    id: id.to_owned(),
+                    revision,
+                })
+            }
+            (None, Some(project)) if !mixed_group && valid_workspace_id(&project.project_id) => {
+                let expected_revision = Lsn(canonical_decimal(&project.expected_revision)?);
+                if expected_revision == Lsn::ZERO {
+                    bail!("a repository group needs a recorded catalog revision");
+                }
+                Ok(OnboardTarget::Project(OnboardProject {
+                    target: ProjectHireTarget {
+                        project_id: project.project_id.clone(),
+                        expected_revision,
+                    },
+                    repositories: RepositorySet::new(
+                        project.primary_repo.clone(),
+                        project
+                            .repo_ids
+                            .iter()
+                            .map(|repo_id| RepositoryEntry {
+                                repo_id: repo_id.clone(),
+                                value: (),
+                            })
+                            .collect(),
+                    )?,
+                }))
+            }
+            _ => bail!("browser onboarding needs one unambiguous workspace or project target"),
+        }
+    }
 }
 
 /// The request digest's domain version and the fields it frames after the text fields. The domain
@@ -786,17 +1017,22 @@ impl OnboardRequest {
         }
         let raw: OnboardJson =
             serde_json::from_slice(bytes).context("invalid browser onboarding JSON")?;
+        let value: serde_json::Value =
+            serde_json::from_slice(bytes).context("invalid browser onboarding JSON")?;
+        let group_form = value.get("project").is_some();
+        let mixed_group = group_form
+            && [
+                "workspace_id",
+                "workspace_revision",
+                "own_copy",
+                "check_id",
+                "check_revision",
+            ]
+            .iter()
+            .any(|field| value.get(*field).is_some());
         let attempt_id =
             decode_attempt(&raw.attempt_id).context("invalid browser onboarding attempt id")?;
-        if !valid_workspace_id(&raw.workspace_id) {
-            bail!("invalid browser onboarding workspace id");
-        }
-        let workspace_revision = match raw.workspace_revision.as_deref() {
-            None => 0,
-            Some(text) => {
-                canonical_decimal(text).context("invalid browser onboarding workspace revision")?
-            }
-        };
+        let target = raw.target(group_form, mixed_group)?;
         let name = dudes_types::DisplayName::parse(&raw.name)
             .context("invalid browser hire name")?
             .into_string();
@@ -809,8 +1045,6 @@ impl OnboardRequest {
             Some(provider @ (Provider::Codex | Provider::Pi)) => provider,
             Some(_) => bail!("browser onboarding provider is not codex or pi"),
         };
-        let character = raw.character.map_or("", dudes_types::CastCharacter::as_str);
-        let accent = raw.accent.map_or("", dudes_types::AccentColour::as_str);
         let check = match (raw.check_id, raw.check_revision) {
             (None, None) => None,
             (Some(id), Some(revision)) if CompletionCheckDeclaration::valid_id(&id) => {
@@ -818,9 +1052,6 @@ impl OnboardRequest {
             }
             _ => bail!("invalid browser onboarding check"),
         };
-        let revision = check
-            .as_ref()
-            .map(|(id, revision)| (id.as_str(), crate::goal_replacement::hex(*revision)));
         let own_copy = raw.own_copy.unwrap_or(false);
         let model = raw
             .model
@@ -828,46 +1059,81 @@ impl OnboardRequest {
             .map(dudes_types::ModelName::parse)
             .transpose()
             .context("invalid browser hire model")?;
-        let (domain, extra) = request_framing(
-            revision
-                .as_ref()
-                .map(|(id, revision)| (*id, revision.as_str())),
-            raw.provider.is_some(),
-            own_copy,
-            model.as_ref().map(dudes_types::ModelName::as_str),
-            [
-                ("provider", provider.as_str()),
-                ("character", character),
-                ("accent", accent),
-            ],
-        );
-        let domain = format!("dudes.onboard.nogoal.{domain}\0");
-        let request_digest = crate::goal_replacement::digest(
-            domain.as_bytes(),
-            [
-                ("workspace_id", raw.workspace_id.as_str()),
-                ("name", name.as_str()),
-                ("role", role.as_str()),
-            ]
-            .into_iter()
-            .chain(extra)
-            .map(|(field, value)| (field.to_owned(), value.to_owned())),
-        );
-        Ok(Self {
+        let mut request = Self {
             character: raw.character,
             accent: raw.accent,
             provider,
             attempt_id,
             attempt_wire: raw.attempt_id,
-            request_digest,
-            workspace_id: raw.workspace_id,
-            workspace_revision,
+            request_digest: Hex32::new([0; 32]),
+            target,
             name,
             role,
             check,
             own_copy,
             model,
-        })
+        };
+        request.request_digest = request.digest(raw.provider.is_some())?;
+        Ok(request)
+    }
+
+    fn digest(&self, names_engine: bool) -> Result<Hex32> {
+        let character = self
+            .character
+            .map_or("", dudes_types::CastCharacter::as_str);
+        let accent = self.accent.map_or("", dudes_types::AccentColour::as_str);
+        let revision = self
+            .check
+            .as_ref()
+            .map(|(id, revision)| (id.as_str(), crate::goal_replacement::hex(*revision)));
+        let (domain, mut extra) = request_framing(
+            revision
+                .as_ref()
+                .map(|(id, revision)| (*id, revision.as_str())),
+            names_engine,
+            self.own_copy,
+            self.model.as_ref().map(dudes_types::ModelName::as_str),
+            [
+                ("provider", self.provider.as_str()),
+                ("character", character),
+                ("accent", accent),
+            ],
+        );
+        let workspace_id = match &self.target {
+            OnboardTarget::Workspace { id, .. } => id.as_str(),
+            OnboardTarget::Project(project) => project.target.project_id.as_str(),
+        };
+        let group_wire = match &self.target {
+            OnboardTarget::Project(project) => Some(serde_json::to_string(project)?),
+            OnboardTarget::Workspace { .. } => None,
+        };
+        if group_wire.is_some() {
+            extra = vec![
+                ("provider", self.provider.as_str()),
+                ("character", character),
+                ("accent", accent),
+                (
+                    "model",
+                    self.model
+                        .as_ref()
+                        .map_or("", dudes_types::ModelName::as_str),
+                ),
+            ];
+        }
+        let domain = if group_wire.is_some() { "v8" } else { domain };
+        let domain = format!("dudes.onboard.nogoal.{domain}\0");
+        Ok(crate::goal_replacement::digest(
+            domain.as_bytes(),
+            [
+                ("workspace_id", workspace_id),
+                ("name", self.name.as_str()),
+                ("role", self.role.as_str()),
+            ]
+            .into_iter()
+            .chain(extra)
+            .chain(group_wire.as_deref().map(|group| ("project", group)))
+            .map(|(field, value)| (field.to_owned(), value.to_owned())),
+        ))
     }
 }
 
@@ -940,6 +1206,113 @@ fn valid_checks(profile: &Profile) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn project_request() -> serde_json::Value {
+        serde_json::json!({"attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "name": "Kim", "role": "engineer", "model": "claude-sonnet-4-6",
+            "project": {"project_id": "service", "expected_revision": "1099511627776",
+                "primary_repo": "api", "repo_ids": ["web", "api", "docs"]}})
+    }
+
+    fn parse_project(value: &serde_json::Value) -> Result<OnboardRequest> {
+        OnboardRequest::parse(&serde_json::to_vec(value).unwrap())
+    }
+
+    #[test]
+    fn group_request_digest_binds_the_complete_catalog_engine_and_model() {
+        let value = project_request();
+        let request = parse_project(&value).unwrap();
+        let mut spaced = value.clone();
+        spaced["name"] = serde_json::json!(" Kim ");
+        assert_eq!(
+            request.request_digest,
+            parse_project(&spaced).unwrap().request_digest
+        );
+        for (field, replacement) in [
+            ("project_id", serde_json::json!("other")),
+            ("expected_revision", serde_json::json!("1099511627777")),
+            ("primary_repo", serde_json::json!("web")),
+            ("repo_ids", serde_json::json!(["api", "web", "docs"])),
+        ] {
+            let mut changed = value.clone();
+            changed["project"][field] = replacement;
+            assert_ne!(
+                request.request_digest,
+                parse_project(&changed).unwrap().request_digest
+            );
+        }
+        for (field, replacement) in [("provider", "codex"), ("model", "other-model")] {
+            let mut changed = value.clone();
+            changed[field] = serde_json::json!(replacement);
+            assert_ne!(
+                request.request_digest,
+                parse_project(&changed).unwrap().request_digest
+            );
+        }
+    }
+
+    #[test]
+    fn group_requests_refuse_mixed_targets_and_invalid_membership() {
+        for (field, extra) in [
+            ("workspace_id", serde_json::json!("service")),
+            ("workspace_revision", serde_json::json!("0")),
+            ("own_copy", serde_json::json!(false)),
+            ("check_id", serde_json::json!("default")),
+        ] {
+            let mut value = project_request();
+            value[field] = extra;
+            assert!(parse_project(&value).is_err(), "{field}");
+        }
+        for ids in [
+            serde_json::json!([]),
+            serde_json::json!(["api", "api"]),
+            serde_json::json!(["web"]),
+            serde_json::json!(["a", "b", "c", "d", "e", "f", "g", "h", "api"]),
+        ] {
+            let mut value = project_request();
+            value["project"]["repo_ids"] = ids;
+            assert!(parse_project(&value).is_err());
+        }
+    }
+
+    #[test]
+    fn group_request_inspection_does_not_hide_duplicate_json_members() {
+        let body = serde_json::to_string(&project_request()).unwrap();
+        for (field, value) in [
+            ("project_id", "service"),
+            ("model", "claude-sonnet-4-6"),
+            ("name", "Kim"),
+        ] {
+            let member = format!("\"{field}\":\"{value}\"");
+            let duplicate = body.replace(&member, &format!("{member},{member}"));
+            assert_ne!(duplicate, body);
+            assert!(
+                OnboardRequest::parse(duplicate.as_bytes()).is_err(),
+                "{field}"
+            );
+        }
+        let mut mixed = project_request();
+        mixed["workspace_id"] = serde_json::Value::Null;
+        assert!(parse_project(&mixed).is_err());
+    }
+
+    #[test]
+    fn a_singleton_completion_cannot_complete_a_group_even_with_the_same_digest() {
+        let request = parse_project(&project_request()).unwrap();
+        let attempt = Attempt {
+            agent: AgentId::NIL,
+            project: None,
+            metadata: BrowserOnboardingHire {
+                attempt_id: request.attempt_id,
+                request_digest: request.request_digest,
+                profile_id: "service".into(),
+                session_digest: Hex32::new([1; 32]),
+                intended_goal: None,
+                trust_lsn: None,
+            },
+        };
+        assert_eq!(attempt.outcome(&request), Err(OnboardRefusal::Conflict));
+    }
 
     #[test]
     fn canonical_fields_have_one_domain_separated_request_digest() {

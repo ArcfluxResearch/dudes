@@ -172,7 +172,7 @@ test('the one request is the agent and nothing else, with nothing else', async (
   assert.equal(seen.length, 1);
   assert.equal(seen[0].url, '/floor/git');
   assert.equal(seen[0].init.method, 'POST');
-  assert.equal(seen[0].init.body, `{"agent_id":"${ADA}"}`);
+  assert.equal(seen[0].init.body, `{"agent_id":"${ADA}","repositories":{"scope":"hired"}}`);
   assert.deepEqual(seen[0].init.headers, { 'Content-Type': 'application/json' });
   assert.equal(seen[0].init.credentials, 'same-origin');
   assert.equal(seen[0].init.cache, 'no-store');
@@ -287,8 +287,8 @@ test('the tab shows the head, branches, commits and files, and says what it will
   assert.match(html, /Modified, staged/);
   assert.match(html, /never untracked files, authors or where the checkout is/);
   assert.equal((html.match(/class="git-copy"/g) ?? []).length, 2);
-  assert.match(html, /aria-describedby="git-committed-0"/);
-  assert.match(html, /id="git-committed-0"/);
+  const described = html.match(/aria-describedby="([^"]+-committed-0)"/)[1];
+  assert.ok(html.includes(`id="${described}"`));
 });
 
 test('a worktree read is measured from the commit the worktree started from, and says so', async () => {
@@ -296,8 +296,8 @@ test('a worktree read is measured from the commit the worktree started from, and
   await loadGit(ADA, daemon(ok(worktree({ ahead: 1, behind: 0 }))).deps);
   let html = render();
   assert.match(html, /1 commit ahead of and 0 commits behind the commit this worktree started from\./);
-  assert.match(html, /<h4 id="git-commits-title">Commits since this worktree started<\/h4>/);
-  assert.match(html, /<h4 id="git-committed-title">Files committed since this worktree started<\/h4>/);
+  assert.match(html, /<h4 id="[^"]+-commits">Commits since this worktree started<\/h4>/);
+  assert.match(html, /<h4 id="[^"]+-committed">Files committed since this worktree started<\/h4>/);
   assert.doesNotMatch(html, /remote default branch|leaving the default branch/);
   resetGit();
   await loadGit(ADA, daemon(ok(worktree({ ahead: null, behind: null }))).deps);
@@ -307,7 +307,7 @@ test('a worktree read is measured from the commit the worktree started from, and
   resetGit();
   await loadGit(ADA, daemon(ok(view())).deps);
   html = render();
-  assert.match(html, /<h4 id="git-commits-title">Commits not on the remote default branch<\/h4>/);
+  assert.match(html, /<h4 id="[^"]+-commits">Commits not on the remote default branch<\/h4>/);
   assert.doesNotMatch(html, /this worktree started/);
 });
 
@@ -322,7 +322,7 @@ test('a cut section and a dropped entry are said, and a cut path cannot be copie
   assert.match(html, /At least 9/);
   assert.match(html, /No remote default branch is recorded here/);
   assert.match(html, /long\/pa…/);
-  assert.match(html, /<button type="button" aria-describedby="git-committed-0" disabled="" title="The path is shortened[^"]*" class="git-copy">/);
+  assert.match(html, /<button type="button" aria-describedby="[^"]+-committed-0" disabled="" title="The path is shortened[^"]*" class="git-copy">/);
 });
 
 test('no repository string reaches an attribute, a title or an ARIA label', async () => {
@@ -398,4 +398,21 @@ test('a snapshot carries the sibling only as an empty object', () => {
   assert.equal(frame({ git: {} }), true);
   store.noteTransport('close');
   assert.equal(store.getFloorState().git, false, 'a closed stream forgets it');
+});
+
+test('recorded repository groups keep equal paths and unique accessible descriptions', async () => {
+  const aggregate = { ...refused('ok'), binding_id: 'a'.repeat(64),
+    repositories: ['web', 'api'].map((repo_id) => ({ repo_id, view: view() })) };
+  assert.deepEqual(decodeGitView(body(aggregate)), aggregate);
+  assert.equal(decodeGitView(body({ ...aggregate, repositories: [aggregate.repositories[0], aggregate.repositories[0]] })), null);
+  const wrong = await postGit(ADA, daemon(ok(aggregate)).deps.fetch, { scope: 'repository', repo_id: 'api' });
+  assert.equal(wrong.kind, 'unknown');
+  await loadGit(ADA, daemon(ok(aggregate)).deps);
+  const html = render();
+  assert.match(html, /<h4>web<\/h4>/);
+  assert.match(html, /<h4>api<\/h4>/);
+  assert.equal((html.match(/src\/main.rs/g) ?? []).length, 2);
+  const descriptions = [...html.matchAll(/aria-describedby="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(new Set(descriptions).size, descriptions.length);
+  for (const id of descriptions) assert.ok(html.includes(`id="${id}"`));
 });

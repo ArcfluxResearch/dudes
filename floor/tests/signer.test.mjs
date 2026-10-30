@@ -134,8 +134,8 @@ test('a socket offers the signature, time and request id after the page’s own 
   assert.match(entries[0], /^dudes-sig\.[A-Za-z0-9_-]{86}$/);
   assert.equal(entries[1], `dudes-time.${NOW}`);
   assert.match(entries[2], /^dudes-id\.[A-Za-z0-9_-]{22}$/);
-  assert.equal(await daemon.socket('/floor/stream', ['dudes-floor-v5', ...entries]), true);
-  assert.equal(await daemon.socket('/floor/terminal', ['dudes-floor-v5', ...entries]), false);
+  assert.equal(await daemon.socket('/floor/stream', ['dudes-floor-v6', ...entries]), true);
+  assert.equal(await daemon.socket('/floor/terminal', ['dudes-floor-v6', ...entries]), false);
   assert.equal(await testSigner().signer.socketEntries('/floor/stream'), null, 'a browser with no key offered a signature');
 });
 

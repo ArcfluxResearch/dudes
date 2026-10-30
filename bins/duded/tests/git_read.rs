@@ -2348,3 +2348,217 @@ fn relative_links_are_read() {
         (Some(2), Some(0), GitAgainst::WorktreeStart)
     );
 }
+
+fn owned_hire(lab: &Lab) -> dudes_proto::repository::ScopedRepositories {
+    use dudes_proto::record::{FileIdentity, RecordedWorkspace, TrustedRepository};
+    use dudes_proto::repository::{
+        ExecutionRepository, OwnedRepository, RepoId, RepositoryEntry, RepositoryPolicy,
+        RepositorySet, ScopedRepositories,
+    };
+    use dudes_types::{GitCommit, Lsn};
+    use std::os::unix::fs::MetadataExt as _;
+
+    let identity = |path: &Path| {
+        let metadata = std::fs::metadata(path).unwrap();
+        FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    };
+    let entries = ["a", "b"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let origin = lab.repo(id);
+            let worktree = WorktreeId::from_bytes([u8::try_from(index + 1).unwrap(); 16]);
+            let directory = lab.path().join(worktree.to_string());
+            lab.git(
+                &origin,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "--detach",
+                    directory.to_str().unwrap(),
+                ],
+            );
+            let common = origin.join(".git");
+            let git_dir = common.join("worktrees").join(worktree.to_string());
+            RepositoryEntry {
+                repo_id: RepoId::parse(id).unwrap(),
+                value: OwnedRepository {
+                    origin: TrustedRepository {
+                        directory: origin.clone(),
+                        directory_identity: identity(&origin),
+                        common_dir: common.clone(),
+                        common_identity: identity(&common),
+                    },
+                    execution: ExecutionRepository {
+                        directory: directory.clone(),
+                        directory_identity: identity(&directory),
+                        git_dir: git_dir.clone(),
+                        git_identity: identity(&git_dir),
+                    },
+                    worktree,
+                    base: GitCommit::parse(lab.git(&origin, &["rev-parse", "HEAD"]).trim())
+                        .unwrap(),
+                    trust_lsn: Lsn(1),
+                },
+            }
+        })
+        .collect();
+    ScopedRepositories {
+        project: RecordedWorkspace {
+            id: "project".to_owned(),
+            label: "Project".to_owned(),
+        },
+        catalog_lsn: Lsn(1),
+        policy: RepositoryPolicy::WorkingTreeV1,
+        repositories: RepositorySet::new(RepoId::parse("a").unwrap(), entries).unwrap(),
+    }
+}
+
+fn git_in_other_copy(lab: &Lab, hire: &dudes_proto::repository::ScopedRepositories) -> OsString {
+    let other = &hire.repositories.entries()[1].value.execution.directory;
+    let bin = other.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let git = bin.join("git");
+    std::fs::write(
+        &git,
+        format!(
+            "#!/bin/sh\nprintf 'other-copy-git\\n' >> '{}'\nexec '{}' \"$@\"\n",
+            lab.log_path().display(),
+            resolve_git().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let control = lab.spec(
+        &hire.repositories.primary().execution.directory,
+        &[git.to_str().unwrap(), "--version"],
+    );
+    assert!(matches!(
+        lab.runner.run(&control, Duration::from_secs(2)).unwrap(),
+        PredicateOutcome::Finished { exit: Some(0), .. }
+    ));
+    assert!(lab.ran().contains("other-copy-git"));
+    lab.forget();
+    std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap()
+}
+
+#[test]
+fn git_under_another_hired_copy_is_not_started_for_a_selected_metadata_read() {
+    let lab = Lab::new();
+    let hire = owned_hire(&lab);
+    let path = git_in_other_copy(&lab, &hire);
+    let reader = GitReader::new(
+        lab.runner.clone(),
+        Some(path),
+        lab.path().join("selected-scratch"),
+    );
+    let tree = Tree::recorded(hire.repositories.primary(), &hire).unwrap();
+    let view = reader.read(&tree, NOW);
+    assert_eq!(
+        lab.ran(),
+        "",
+        "a selected read must exclude every hired execution root before the version probe"
+    );
+    assert_eq!(view.state, GitState::GitUnavailable);
+    let legacy = lab.repo("legacy");
+    assert_eq!(reader.read(&checkout(&legacy), NOW).state, GitState::Ok);
+    assert!(lab.ran().contains("other-copy-git"));
+    lab.forget();
+    assert_eq!(reader.read(&tree, NOW).state, GitState::GitUnavailable);
+    assert_eq!(
+        lab.ran(),
+        "",
+        "cached version success must not bypass the hire's denial roots"
+    );
+}
+
+#[test]
+fn git_under_another_hired_copy_is_not_started_for_a_selected_content_read() {
+    use duded::git_read::diff::DiffReader;
+    use dudes_proto::DiffRefusal;
+    use std::sync::atomic::AtomicBool;
+
+    let lab = Lab::new();
+    let hire = owned_hire(&lab);
+    let tree = Tree::recorded(hire.repositories.primary(), &hire).unwrap();
+    let safe = DiffReader::new(
+        lab.runner.clone(),
+        std::env::var_os("PATH"),
+        &lab.path().join("safe"),
+    );
+    let baseline = safe
+        .capture_baseline(&tree, Arc::new(AtomicBool::new(false)))
+        .unwrap();
+    let path = git_in_other_copy(&lab, &hire);
+    let reader = DiffReader::new(
+        lab.runner.clone(),
+        Some(path),
+        &lab.path().join("selected-content"),
+    );
+    let result = reader.capture_review(&tree, &baseline, Arc::new(AtomicBool::new(false)));
+    assert_eq!(
+        lab.ran(),
+        "",
+        "a content read must exclude every hired execution root before the version probe"
+    );
+    assert_eq!(result.err(), Some(DiffRefusal::GitUnavailable));
+}
+
+#[test]
+fn every_hired_execution_identity_is_checked_before_any_git_probe() {
+    use duded::git_read::diff::DiffReader;
+    use dudes_proto::DiffRefusal;
+    use std::sync::atomic::AtomicBool;
+
+    let lab = Lab::new();
+    let hire = owned_hire(&lab);
+    let tree = Tree::recorded(hire.repositories.primary(), &hire).unwrap();
+    let safe = DiffReader::new(
+        lab.runner.clone(),
+        std::env::var_os("PATH"),
+        &lab.path().join("safe"),
+    );
+    let baseline = safe
+        .capture_baseline(&tree, Arc::new(AtomicBool::new(false)))
+        .unwrap();
+    let mut foreign = hire.repositories.primary().clone();
+    foreign.trust_lsn = dudes_types::Lsn(99);
+    assert_eq!(
+        Tree::recorded(&foreign, &hire).err(),
+        Some(GitState::WorktreeMismatch)
+    );
+    let other = &hire.repositories.entries()[1].value.execution.directory;
+    std::fs::rename(other, other.with_extension("held")).unwrap();
+    std::fs::create_dir(other).unwrap();
+    lab.tool("git", &format!("exec '{}' \"$@\"", resolve_git().display()));
+    let path = std::env::join_paths(
+        std::iter::once(lab.path().join("tools"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let metadata = GitReader::new(
+        lab.runner.clone(),
+        Some(path.clone()),
+        lab.path().join("metadata"),
+    );
+    assert_eq!(metadata.read(&tree, NOW).state, GitState::WorktreeMismatch);
+    let content = DiffReader::new(lab.runner.clone(), Some(path), &lab.path().join("content"));
+    assert_eq!(
+        content
+            .capture_review(&tree, &baseline, Arc::new(AtomicBool::new(false)))
+            .err(),
+        Some(DiffRefusal::WorktreeMismatch)
+    );
+    assert_eq!(
+        lab.ran(),
+        "",
+        "an undeclared replacement must be refused before even an external Git version probe"
+    );
+}

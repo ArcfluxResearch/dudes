@@ -800,6 +800,10 @@ pub(super) fn attribution_session(
             browser_onboarding: Some(meta),
             ..
         } => Some(meta.session_digest),
+        Record::AgentHiredWithRepositories(hire) => hire
+            .browser_onboarding
+            .as_ref()
+            .map(|meta| meta.session_digest),
         Record::GoalSet {
             browser_onboarding: Some(meta),
             ..

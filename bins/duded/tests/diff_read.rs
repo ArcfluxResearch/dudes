@@ -270,6 +270,17 @@ fn cancel() -> Arc<AtomicBool> {
 }
 fn binding() -> DiffBinding {
     DiffBinding {
+        hired_lsn: None,
+        start_lsn: None,
+        check_repo: None,
+        repositories: vec![dudes_proto::DiffRepositoryBinding {
+            repo_id: None,
+            baseline_id: "a".repeat(64),
+            target_id: "b".repeat(64),
+            unavailable: None,
+            preexisting_tracked: false,
+            preexisting_untracked: false,
+        }],
         card: CardId::NIL,
         seq: Seq(1),
         round: 1,
@@ -650,20 +661,20 @@ fn candidates(capture: &duded::git_read::diff::ReviewCapture) -> Vec<&str> {
 #[test]
 fn a_change_after_the_256th_tracked_path_is_still_a_candidate() {
     let lab = Lab::new();
-    for n in 0..300 {
+    for n in 0..257 {
         lab.write(&format!("{n:04}.txt"), &format!("small {n}\n"));
     }
     lab.git(&["add", "-A"]);
     lab.git(&["commit", "--quiet", "-m", "many files"]);
     let baseline = lab.baseline();
     assert!(!baseline.preexisting_tracked);
-    lab.write("0299.txt", "changed after the prefix\n");
+    lab.write("0256.txt", "changed after the prefix\n");
     lab.real.commands.store(0, Ordering::Relaxed);
     let capture = lab
         .reader
         .capture_review(&lab.tree(), &baseline, cancel())
         .unwrap();
-    assert_eq!(candidates(&capture), ["0299.txt"]);
+    assert_eq!(candidates(&capture), ["0256.txt"]);
     assert_eq!(
         (
             capture.omitted,

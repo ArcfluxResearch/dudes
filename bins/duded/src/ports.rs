@@ -891,6 +891,17 @@ pub enum Job {
         /// The original HTTP request's response channel.
         reply: Sender<crate::floor_actions::OnboardStep>,
     },
+    /// Final browser admission and atomic assignment of the complete prepared group.
+    OnboardProjectPrepared {
+        /// Original admitting session.
+        session: crate::floor_session::SessionIdentity,
+        /// Exact frozen browser request.
+        request: crate::floor_actions::OnboardRequest,
+        /// Copies made by the shared group preparation owner.
+        prepared: Box<crate::worktree::hire::PreparedRepositoryGroup>,
+        /// Truthful final result.
+        reply: Sender<crate::floor_actions::OnboardStep>,
+    },
     /// One authenticated Floor answer to the open question it names.
     Answer {
         /// Registry-derived admitting session.
@@ -938,7 +949,7 @@ pub enum Job {
     /// What the journal records about one agent's tree, for the Floor's Git read.
     GitTarget {
         /// The agent the Floor asked about.
-        agent: AgentId,
+        request: crate::floor_git::GitRequest,
         /// What to read or answer, or `None` when the journal has nothing to read for this id.
         reply: Sender<Option<crate::floor_git::GitTarget>>,
     },
@@ -1351,7 +1362,45 @@ impl Handle {
             OnboardStep::Copy { params, trust } => {
                 self.onboard_copy(session, request, &params, *trust)
             }
+            OnboardStep::Project { plan } => self.onboard_project(session, request, &plan),
         }
+    }
+
+    fn onboard_project(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        request: crate::floor_actions::OnboardRequest,
+        plan: &crate::worktree::hire::RepositoryHirePlan,
+    ) -> Result<crate::floor_actions::OnboardOutcome, crate::floor_actions::OnboardRefusal> {
+        use crate::floor_actions::{OnboardRefusal, OnboardStep};
+        use crate::worktree::hire::PreparationFailure;
+        let worktrees = self.worktrees().ok_or(OnboardRefusal::RepositoryGroup(
+            crate::floor_actions::GROUP_COPY_FAILED,
+        ))?;
+        let prepared =
+            worktrees
+                .prepare_repository_group(plan)
+                .map_err(|failure| match failure {
+                    PreparationFailure::Refused(_) => {
+                        OnboardRefusal::RepositoryGroup(crate::floor_actions::GROUP_COPY_FAILED)
+                    }
+                    PreparationFailure::Uncertain(_) => OnboardRefusal::Unavailable,
+                })?;
+        self.hold_for_a_test();
+        let step = self.onboard_step(|reply| Job::OnboardProjectPrepared {
+            session,
+            request,
+            prepared: Box::new(prepared.clone()),
+            reply,
+        })?;
+        let answer = match step {
+            OnboardStep::Answer(answer) => answer,
+            _ => Err(OnboardRefusal::Unavailable),
+        };
+        if matches!(&answer, Err(refusal) if *refusal != OnboardRefusal::Unavailable) {
+            worktrees.discard_prepared_group(&prepared);
+        }
+        answer
     }
 
     /// A browser hire into its own copy: make the copy here, off the loop, then ask the loop to
@@ -1683,12 +1732,24 @@ impl Handle {
             .map_err(|_| crate::floor_look::LookRefusal::Unavailable)?
     }
     /// What the journal records about `agent`'s tree, or `None` for an unknown agent.
+    #[cfg(test)]
     pub(crate) fn git_target(
         &self,
         agent: AgentId,
     ) -> Result<Option<crate::floor_git::GitTarget>, Unavailable> {
         let (reply, answers) = mpsc::channel();
-        self.send_floor(Job::GitTarget { agent, reply })?;
+        self.send_floor(Job::GitTarget {
+            request: crate::floor_git::GitRequest::singleton(agent),
+            reply,
+        })?;
+        answers.recv().map_err(|_| Unavailable)
+    }
+    pub(crate) fn git_selected(
+        &self,
+        request: crate::floor_git::GitRequest,
+    ) -> Result<Option<crate::floor_git::GitTarget>, Unavailable> {
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::GitTarget { request, reply })?;
         answers.recv().map_err(|_| Unavailable)
     }
     /// What the journal records about `card`'s review, or `None` once the loop has ended.

@@ -911,8 +911,124 @@ struct PendingObject {
     source: Arc<File>,
 }
 
+struct ContentSources {
+    root: Root,
+    origin: Option<Root>,
+    own: Arc<File>,
+    common: Arc<File>,
+    bindings: Vec<Binding>,
+}
+
+impl ContentSources {
+    fn open(
+        tree: &Tree,
+        expected: Option<RootIdentity>,
+        budget: &Budget,
+    ) -> Result<Self, DiffRefusal> {
+        budget.check()?;
+        let recorded = match tree {
+            Tree::Recorded(recorded) => Some(&recorded.copy),
+            _ => None,
+        };
+        let pinned_root = recorded.map(|copy| RootIdentity {
+            device: copy.execution.directory_identity.device,
+            inode: copy.execution.directory_identity.inode,
+        });
+        if expected.is_some() && pinned_root.is_some() && expected != pinned_root {
+            return Err(DiffRefusal::RootMismatch);
+        }
+        let root = Root::open(tree.path(), pinned_root.or(expected), budget)?;
+        let root_fd = Arc::new(File::from(
+            root.fd().try_clone().map_err(|_| DiffRefusal::Unreadable)?,
+        ));
+        let mut bindings = Vec::new();
+        let leased;
+        let layout_tree = if let Some(copy) = recorded {
+            leased = Tree::Leased(crate::git_read::Lease::from(copy));
+            &leased
+        } else {
+            tree
+        };
+        let (own, common, origin) = match layout_tree {
+            Tree::Checkout(_) => {
+                let git = bound_dir(&root_fd, OsStr::new(".git"), &mut bindings)?;
+                (git.clone(), git, None)
+            }
+            Tree::Leased(lease) => {
+                let origin = Root::open(
+                    &lease.origin,
+                    recorded.map(|copy| RootIdentity {
+                        device: copy.origin.directory_identity.device,
+                        inode: copy.origin.directory_identity.inode,
+                    }),
+                    budget,
+                )
+                .map_err(|_| DiffRefusal::WorktreeMismatch)?;
+                let origin_fd = Arc::new(File::from(
+                    origin
+                        .fd()
+                        .try_clone()
+                        .map_err(|_| DiffRefusal::Unreadable)?,
+                ));
+                let common = bound_dir(&origin_fd, OsStr::new(".git"), &mut bindings)
+                    .map_err(|_| DiffRefusal::WorktreeMismatch)?;
+                let worktrees = bound_dir(&common, OsStr::new("worktrees"), &mut bindings)
+                    .map_err(|_| DiffRefusal::WorktreeMismatch)?;
+                let own = bound_dir(
+                    &worktrees,
+                    OsStr::new(&lease.worktree.to_string()),
+                    &mut bindings,
+                )
+                .map_err(|_| DiffRefusal::WorktreeMismatch)?;
+                verify_link_target_identity(
+                    &root_fd,
+                    ".git",
+                    b"gitdir: ",
+                    &own,
+                    &mut bindings,
+                    budget,
+                )
+                .map_err(|_| DiffRefusal::WorktreeMismatch)?;
+                verify_link_target_identity(&own, "commondir", b"", &common, &mut bindings, budget)
+                    .map_err(|_| DiffRefusal::WorktreeMismatch)?;
+                (own, common, Some(origin))
+            }
+            Tree::Recorded(_) => return Err(DiffRefusal::WorktreeMismatch),
+        };
+        if let Some(copy) = recorded {
+            for (fd, expected) in [
+                (&own, copy.execution.git_identity),
+                (&common, copy.origin.common_identity),
+            ] {
+                let actual = super::files::identity(fd.as_ref())?;
+                if (actual.device, actual.inode) != (expected.device, expected.inode) {
+                    return Err(DiffRefusal::WorktreeMismatch);
+                }
+            }
+            if copy.origin.common_dir != copy.origin.directory.join(".git")
+                || copy.execution.git_dir
+                    != copy
+                        .origin
+                        .common_dir
+                        .join("worktrees")
+                        .join(copy.worktree.to_string())
+            {
+                return Err(DiffRefusal::WorktreeMismatch);
+            }
+        }
+        Ok(Self {
+            root,
+            origin,
+            own,
+            common,
+            bindings,
+        })
+    }
+}
+
 /// Hardlinks share mutable bytes. Verification detects observed races, not every ABA write.
 pub(super) struct ContentShadow {
+    tree: Tree,
     dir: PathBuf,
     root: Root,
     origin: Option<Root>,
@@ -944,54 +1060,13 @@ impl ContentShadow {
         budget: &Budget,
         mut barrier: impl FnMut(Stage, &str),
     ) -> Result<Self, DiffRefusal> {
-        budget.check()?;
-        let path = match tree {
-            Tree::Checkout(path) => path,
-            Tree::Leased(lease) => &lease.path,
-        };
-        let root = Root::open(path, expected, budget)?;
-        let root_fd = Arc::new(File::from(
-            root.fd().try_clone().map_err(|_| DiffRefusal::Unreadable)?,
-        ));
-        let mut bindings = Vec::new();
-        let (own, common, origin) = match tree {
-            Tree::Checkout(_) => {
-                let git = bound_dir(&root_fd, OsStr::new(".git"), &mut bindings)?;
-                (git.clone(), git, None)
-            }
-            Tree::Leased(lease) => {
-                let origin = Root::open(&lease.origin, None, budget)
-                    .map_err(|_| DiffRefusal::WorktreeMismatch)?;
-                let origin_fd = Arc::new(File::from(
-                    origin
-                        .fd()
-                        .try_clone()
-                        .map_err(|_| DiffRefusal::Unreadable)?,
-                ));
-                let common = bound_dir(&origin_fd, OsStr::new(".git"), &mut bindings)
-                    .map_err(|_| DiffRefusal::WorktreeMismatch)?;
-                let worktrees = bound_dir(&common, OsStr::new("worktrees"), &mut bindings)
-                    .map_err(|_| DiffRefusal::WorktreeMismatch)?;
-                let own = bound_dir(
-                    &worktrees,
-                    OsStr::new(&lease.worktree.to_string()),
-                    &mut bindings,
-                )
-                .map_err(|_| DiffRefusal::WorktreeMismatch)?;
-                verify_link_target_identity(
-                    &root_fd,
-                    ".git",
-                    b"gitdir: ",
-                    &own,
-                    &mut bindings,
-                    budget,
-                )
-                .map_err(|_| DiffRefusal::WorktreeMismatch)?;
-                verify_link_target_identity(&own, "commondir", b"", &common, &mut bindings, budget)
-                    .map_err(|_| DiffRefusal::WorktreeMismatch)?;
-                (own, common, Some(origin))
-            }
-        };
+        let ContentSources {
+            root,
+            origin,
+            own,
+            common,
+            mut bindings,
+        } = ContentSources::open(tree, expected, budget)?;
         absent(&own, "reftable")?;
         absent(&common, "reftable")?;
         if let Some(refs) = optional_dir(&common, OsStr::new("refs"), &mut bindings)? {
@@ -1028,6 +1103,7 @@ impl ContentShadow {
             .collect::<Result<Vec<_>, _>>()?;
         let root_stamp = Stamp::file(&layout.root)?;
         let shadow = Self {
+            tree: tree.clone(),
             root_stamp,
             index_digest,
             index_summary,
@@ -1045,6 +1121,9 @@ impl ContentShadow {
 
     pub(super) fn dir(&self) -> &Path {
         &self.dir
+    }
+    pub(super) fn tree(&self) -> &Tree {
+        &self.tree
     }
     pub(super) fn root(&self) -> &Root {
         &self.root
@@ -1102,6 +1181,11 @@ impl ContentShadow {
     pub(super) fn verify(&self, budget: &Budget) -> Result<(), DiffRefusal> {
         budget.check()?;
         self.root.verify()?;
+        if matches!(self.tree, Tree::Recorded(_)) {
+            self.tree
+                .program_roots()
+                .map_err(|_| DiffRefusal::WorktreeMismatch)?;
+        }
         if let Some(origin) = &self.origin {
             origin.verify()?;
         }

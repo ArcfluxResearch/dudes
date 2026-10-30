@@ -138,9 +138,6 @@ impl Root {
     pub(super) fn identity(&self) -> RootIdentity {
         self.identity
     }
-    pub(super) fn path(&self) -> &Path {
-        &self.path
-    }
     pub(super) fn fd(&self) -> &OwnedFd {
         &self.fd
     }

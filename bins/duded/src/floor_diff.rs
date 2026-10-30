@@ -28,8 +28,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use dudes_proto::diff_stamp::{BaselineOutcome, BaselinePayload, StampOutcome, StampPayload};
+use dudes_proto::repository::{
+    HireRepositories, OwnedRepository, RepoId, RepositoryEntry, RepositoryTurnGrant,
+    ScopedRepositories, TicketRepositoryRound,
+};
+use dudes_proto::repository_review::{RepositoryReview, RepositoryStampOutcome};
 use dudes_proto::{
-    CardView, DiffBinding, DiffFreshness, DiffRefusal, DiffResponse, MAX_DIFF_FILES, TicketRow,
+    CardView, DiffBinding, DiffFreshness, DiffRefusal, DiffRepositoryBinding, DiffResponse,
+    MAX_DIFF_FILES, RepositoryReadSelection, TicketRow,
 };
 use dudes_supervisor::World;
 use dudes_types::{AgentId, CardId, GoalId, Lsn, Seq, Timestamp};
@@ -40,8 +46,8 @@ use crate::diff_capture::ReadSlot;
 use crate::floor_git::{Finish, GitTarget, Worker};
 use crate::git_read::Tree;
 use crate::git_read::diff::{
-    BaselineCapture, CandidateManifest, DiffReader, ReviewCapture, RootIdentity, SAMPLER_VERSION,
-    TEXT_POLICY_VERSION,
+    BaselineCapture, CandidateManifest, DiffReader, REPOSITORY_SAMPLER_VERSION, ReviewBatch,
+    ReviewCapture, ReviewSubject, RootIdentity, SAMPLER_VERSION, TEXT_POLICY_VERSION,
 };
 
 /// Most bytes one request body may carry, checked before a byte of it is read.
@@ -70,8 +76,7 @@ pub struct DiffSwitch {}
 /// The one value [`DiffSwitch`] takes.
 pub const DIFF_SWITCH: DiffSwitch = DiffSwitch {};
 
-/// One bounded request. Every member is an opaque id the server minted or a card the journal
-/// already knows.
+/// One bounded request selecting recorded repository ids or server-minted opaque tokens.
 #[derive(Clone, PartialEq, Eq)]
 pub enum DiffRequest {
     /// Start a review of `card`, which must still be at `expected_seq`.
@@ -80,6 +85,8 @@ pub enum DiffRequest {
         card: CardId,
         /// The card sequence the browser last saw.
         expected_seq: Seq,
+        /// Explicit recorded repository scope; omission admits only a singleton.
+        repositories: Option<RepositoryReadSelection>,
     },
     /// The next page of the session's manifest.
     Page {
@@ -109,6 +116,8 @@ enum Wire {
     Manifest {
         card: CardId,
         expected_seq: Seq,
+        #[serde(default)]
+        repositories: Option<RepositoryReadSelection>,
     },
     Page {
         manifest_id: String,
@@ -143,7 +152,20 @@ impl DiffRequest {
             bail!("Floor diff request is not one JSON object");
         }
         let request = match serde_json::from_slice::<Wire>(bytes)? {
-            Wire::Manifest { card, expected_seq } => Self::Manifest { card, expected_seq },
+            Wire::Manifest {
+                card,
+                expected_seq,
+                repositories,
+            } => {
+                if matches!(repositories, Some(RepositoryReadSelection::Hired)) {
+                    bail!("ticket review requires a declared repository selection");
+                }
+                Self::Manifest {
+                    card,
+                    expected_seq,
+                    repositories,
+                }
+            }
             Wire::Page {
                 manifest_id,
                 cursor,
@@ -181,27 +203,44 @@ impl DiffRequest {
     }
 }
 
-/// What the journal records about one ticket's review, and nothing the checkout says.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Recorded {
-    /// The ticket.
-    pub card: CardId,
-    /// The card's current sequence.
-    pub seq: Seq,
-    /// The installed round.
-    pub round: u32,
-    /// The installed goal.
-    pub goal: GoalId,
-    /// Who holds the ticket.
-    pub claimant: AgentId,
-    /// The tree the claimant's recorded hire names.
+/// What the journal records about one expected repository of a ticket round.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct RecordedRepository {
+    /// Stable identity, absent only for a historical singleton.
+    pub repo_id: Option<RepoId>,
+    /// Exact recorded execution copy.
     pub tree: Tree,
-    /// Where the baseline record sits in the journal.
-    pub baseline_lsn: Lsn,
-    /// The round-start observation.
-    pub baseline: BaselinePayload,
-    /// The newest post-check sample, once one is recorded.
+    /// Recorded baseline, absent when the expected member has no baseline yet.
+    pub baseline: Option<BaselinePayload>,
+    /// Newest qualifying post-check sample.
     pub stamp: Option<StampPayload>,
+}
+
+/// One ticket's immutable recorded review authority, independent of current enrollment.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct Recorded {
+    /// Ticket identity.
+    pub card: CardId,
+    /// Current card sequence.
+    pub seq: Seq,
+    /// Installed round.
+    pub round: u32,
+    /// Installed goal.
+    pub goal: GoalId,
+    /// Recorded claimant.
+    pub claimant: AgentId,
+    /// Exact start, hire, declaration and command-check binding.
+    pub start: Option<TicketRepositoryRound>,
+    /// Exact scoped hire, absent for a historical singleton.
+    pub hired_lsn: Option<Lsn>,
+    /// Frozen command-check target.
+    pub check_repo: Option<RepoId>,
+    /// Baseline record position, absent when a scoped batch has not been captured.
+    pub baseline_lsn: Option<Lsn>,
+    /// Complete recorded evidence, retained in fingerprinting even when a member cannot be shown.
+    pub evidence: Vec<u8>,
+    /// Every expected member, in the recorded declaration order.
+    pub repositories: Vec<RecordedRepository>,
 }
 
 /// The review `card` holds in `world`, or the finite reason it holds none. A rework, a
@@ -222,11 +261,16 @@ pub fn recorded(
     if world.ticket_goal(goal) != Some((view.id, ticket.round)) {
         return Err(DiffRefusal::StaleTicket);
     }
+    let start = world
+        .ticket_repository_round(goal)
+        .ok_or(DiffRefusal::StaleTicket)?;
+    if let Some(review) = world.repository_review(goal) {
+        return scoped_recorded(world, view, ticket, goal, start, review);
+    }
     let review = world
         .ticket_review(goal)
         .ok_or(DiffRefusal::BaselineUnavailable)?;
     let binding = &review.baseline.binding;
-    // Retirement releases a Done ticket's claim, so the round's record names the agent that did it.
     let claimant = match view.claimed_by {
         Some(agent) => agent,
         None if retired(world, binding.claimant) => binding.claimant,
@@ -237,17 +281,174 @@ pub fn recorded(
     {
         return Err(DiffRefusal::StaleTicket);
     }
-    let tree = readable_tree(world, claimant)?;
     Ok(Recorded {
         card: view.id,
         seq: view.seq,
         round: ticket.round,
         goal,
         claimant,
+        start: Some(start.clone()),
+        hired_lsn: None,
+        check_repo: None,
+        baseline_lsn: Some(review.baseline_lsn),
+        evidence: serde_json::to_vec(review).map_err(|_| DiffRefusal::Unreadable)?,
+        repositories: vec![RecordedRepository {
+            repo_id: None,
+            tree: readable_tree(world, claimant)?,
+            baseline: Some(review.baseline),
+            stamp: review.stamp.map(|(_, stamp)| stamp),
+        }],
+    })
+}
+
+fn scoped_recorded(
+    world: &World,
+    view: &CardView,
+    ticket: &TicketRow,
+    goal: GoalId,
+    start: &TicketRepositoryRound,
+    review: &RepositoryReview,
+) -> Result<Recorded, DiffRefusal> {
+    let claimant = review.binding.ticket.claimant;
+    if view.claimed_by != Some(claimant) && !(view.claimed_by.is_none() && retired(world, claimant))
+    {
+        return Err(DiffRefusal::StaleTicket);
+    }
+    let row = world
+        .agents
+        .get(&claimant)
+        .ok_or(DiffRefusal::StaleTicket)?;
+    if row.retired {
+        return Err(DiffRefusal::WorktreeMismatch);
+    }
+    let HireRepositories::Scoped(hire) = &row.repositories else {
+        return Err(DiffRefusal::StaleTicket);
+    };
+    let grant = RepositoryTurnGrant::select(row.mcp.hire_lsn, hire, Some(start))
+        .map_err(|_| DiffRefusal::StaleTicket)?;
+    if review.binding.start_lsn != start.start_lsn
+        || review.binding.hired_lsn != row.mcp.hire_lsn
+        || review.binding.ticket.card != view.id
+        || review.binding.ticket.goal != goal
+        || review.binding.ticket.round != ticket.round
+        || !review.expected.iter().eq(grant
+            .repositories
+            .entries()
+            .iter()
+            .map(|entry| &entry.repo_id))
+    {
+        return Err(DiffRefusal::StaleTicket);
+    }
+    let authority = start.authority.as_ref().ok_or(DiffRefusal::StaleTicket)?;
+    let check_copy = grant
+        .repositories
+        .get(&authority.check_repo)
+        .ok_or(DiffRefusal::StaleTicket)?;
+    if check_copy.execution != authority.check_root {
+        return Err(DiffRefusal::StaleTicket);
+    }
+    let full_hire = hire.recorded();
+    let repositories = grant
+        .repositories
+        .entries()
+        .iter()
+        .map(|entry| recorded_member(world, entry, review, &full_hire))
+        .collect::<Result<Vec<_>, DiffRefusal>>()?;
+    Ok(Recorded {
+        card: view.id,
+        seq: view.seq,
+        round: ticket.round,
+        goal,
+        claimant,
+        start: Some(start.clone()),
+        hired_lsn: Some(row.mcp.hire_lsn),
+        check_repo: Some(authority.check_repo.clone()),
+        baseline_lsn: review.baseline.as_ref().map(|(lsn, _)| *lsn),
+        evidence: serde_json::to_vec(review).map_err(|_| DiffRefusal::Unreadable)?,
+        repositories,
+    })
+}
+
+fn recorded_member(
+    world: &World,
+    entry: &RepositoryEntry<OwnedRepository>,
+    review: &RepositoryReview,
+    full_hire: &ScopedRepositories,
+) -> Result<RecordedRepository, DiffRefusal> {
+    let copy = &entry.value;
+    let tree = match world.worktrees.get(&copy.worktree) {
+        Some(lease)
+            if lease.removed.is_none()
+                && lease.path == copy.execution.directory
+                && lease.origin == copy.origin.directory
+                && lease.base == copy.base =>
+        {
+            Tree::recorded(copy, full_hire).map_err(|_| DiffRefusal::WorktreeMismatch)?
+        }
+        _ => return Err(DiffRefusal::WorktreeMismatch),
+    };
+    let baseline = review
+        .baseline
+        .as_ref()
+        .and_then(|(_, batch)| {
+            batch
+                .members
+                .iter()
+                .find(|member| member.repo_id == entry.repo_id)
+        })
+        .map(|member| BaselinePayload {
+            v: 1,
+            binding: review.binding.ticket,
+            interval: member.interval,
+            versions: member.versions,
+            outcome: member.outcome,
+        });
+    let stamp = review.stamp.as_ref().and_then(|(_, batch)| {
+        batch
+            .members
+            .iter()
+            .find(|member| member.repo_id == entry.repo_id)
+            .map(|member| {
+                let outcome = match member.outcome {
+                    RepositoryStampOutcome::Sampled {
+                        root,
+                        complete,
+                        digest,
+                        omitted,
+                        omitted_lower_bound,
+                        untracked,
+                        untracked_lower_bound,
+                    } if root == copy.execution.directory_identity => StampOutcome::Sampled {
+                        complete,
+                        digest,
+                        omitted,
+                        omitted_lower_bound,
+                        untracked,
+                        untracked_lower_bound,
+                    },
+                    RepositoryStampOutcome::Unavailable { reason } => {
+                        StampOutcome::Unavailable { reason }
+                    }
+                    RepositoryStampOutcome::Sampled { .. } => StampOutcome::Unavailable {
+                        reason: DiffRefusal::RootMismatch,
+                    },
+                };
+                StampPayload {
+                    v: 1,
+                    binding: batch.binding.ticket,
+                    baseline_lsn: batch.baseline_lsn,
+                    check_lsn: batch.check_lsn,
+                    interval: member.interval,
+                    versions: member.versions,
+                    outcome,
+                }
+            })
+    });
+    Ok(RecordedRepository {
+        repo_id: Some(entry.repo_id.clone()),
         tree,
-        baseline_lsn: review.baseline_lsn,
-        baseline: review.baseline,
-        stamp: review.stamp.map(|(_, stamp)| stamp),
+        baseline,
+        stamp,
     })
 }
 
@@ -258,6 +459,9 @@ fn readable_tree(world: &World, claimant: AgentId) -> Result<Tree, DiffRefusal> 
     match GitTarget::of(world, claimant) {
         Some(GitTarget::Read(tree)) => Ok(tree),
         Some(GitTarget::Released | GitTarget::Removed) => Err(DiffRefusal::WorktreeMismatch),
+        Some(GitTarget::Refused(_) | GitTarget::Repositories { .. }) => {
+            Err(DiffRefusal::StaleTicket)
+        }
         None if retired(world, claimant) => Err(DiffRefusal::WorktreeMismatch),
         None => Err(DiffRefusal::StaleTicket),
     }
@@ -268,12 +472,11 @@ fn retired(world: &World, agent: AgentId) -> bool {
 }
 
 /// A recorded review turned into the values a read needs, and the binding every reply carries.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 struct Subject {
     binding: DiffBinding,
-    tree: Tree,
-    baseline: BaselineCapture,
-    stamp: Option<StampPayload>,
+    repositories: Vec<ReviewSubject>,
+    selection: Option<RepositoryReadSelection>,
 }
 
 /// One manifest the session holds, with the subject it was made for.
@@ -437,63 +640,142 @@ impl DiffReads {
         crate::git_read::diff::hex(&hash.finalize())
     }
 
-    fn bind(&self, recorded: &Recorded) -> Result<Subject, DiffRefusal> {
-        let BaselineOutcome::Captured {
-            device,
-            inode,
-            head,
-            preexisting_tracked,
-            preexisting_untracked,
-        } = recorded.baseline.outcome
-        else {
-            // The round records its baseline once and Refresh never captures it again, so only a
-            // reason that stays true for good is passed on. Any other reads as no baseline.
-            return Err(match recorded.baseline.outcome {
-                BaselineOutcome::Unavailable {
-                    reason:
-                        reason @ (DiffRefusal::UnsupportedStorage | DiffRefusal::UnsupportedPlatform),
-                } => reason,
-                _ => DiffRefusal::BaselineUnavailable,
-            });
+    fn bind(
+        &self,
+        recorded: &Recorded,
+        selection: Option<&RepositoryReadSelection>,
+    ) -> Result<Subject, DiffRefusal> {
+        let selected = match selection {
+            None if recorded.repositories.len() == 1 => {
+                recorded.repositories.iter().collect::<Vec<_>>()
+            }
+            Some(RepositoryReadSelection::Declared) => recorded.repositories.iter().collect(),
+            Some(RepositoryReadSelection::Repository { repo_id }) => recorded
+                .repositories
+                .iter()
+                .filter(|member| member.repo_id.as_ref() == Some(repo_id))
+                .collect(),
+            _ => return Err(DiffRefusal::InvalidRequest),
         };
-        let baseline_bytes =
-            serde_json::to_vec(&recorded.baseline).map_err(|_| DiffRefusal::Unreadable)?;
-        let tree_text = format!("{:?}", recorded.tree);
+        if selected.is_empty() || selected.len() > 8 {
+            return Err(DiffRefusal::InvalidRequest);
+        }
+        let authority = serde_json::to_vec(&(
+            recorded.start.as_ref(),
+            recorded.hired_lsn,
+            &recorded.evidence,
+        ))
+        .map_err(|_| DiffRefusal::Unreadable)?;
+        let mut bindings = Vec::new();
+        let mut repositories = Vec::new();
+        for member in selected {
+            let (binding, repository) =
+                self.bind_repository(member, recorded.baseline_lsn, &authority)?;
+            bindings.push(binding);
+            repositories.push(repository);
+        }
+        let member_bytes = serde_json::to_vec(&bindings).map_err(|_| DiffRefusal::Unreadable)?;
         let binding = DiffBinding {
             card: recorded.card,
             seq: recorded.seq,
             round: recorded.round,
             goal: recorded.goal,
             claimant: recorded.claimant,
-            check_lsn: recorded.stamp.as_ref().map(|stamp| stamp.check_lsn),
-            baseline_id: self.fingerprint(
-                b"baseline",
-                &[&recorded.baseline_lsn.0.to_le_bytes(), &baseline_bytes],
-            ),
-            target_id: self.fingerprint(
-                b"target",
-                &[
-                    tree_text.as_bytes(),
-                    &device.to_le_bytes(),
-                    &inode.to_le_bytes(),
-                ],
-            ),
-            sampler_version: SAMPLER_VERSION,
+            hired_lsn: recorded.hired_lsn,
+            start_lsn: recorded.start.as_ref().map(|start| start.start_lsn),
+            check_repo: recorded.check_repo.clone(),
+            check_lsn: repositories
+                .first()
+                .and_then(|member| member.stamp.as_ref().map(|stamp| stamp.check_lsn))
+                .filter(|lsn| {
+                    repositories.iter().all(|member| {
+                        member
+                            .stamp
+                            .as_ref()
+                            .is_some_and(|stamp| stamp.check_lsn == *lsn)
+                    })
+                }),
+            baseline_id: self.fingerprint(b"baseline-set", &[&authority, &member_bytes]),
+            target_id: self.fingerprint(b"target-set", &[&authority, &member_bytes]),
+            sampler_version: if recorded.hired_lsn.is_some() {
+                REPOSITORY_SAMPLER_VERSION
+            } else {
+                SAMPLER_VERSION
+            },
             policy_version: TEXT_POLICY_VERSION,
-            preexisting_tracked,
-            preexisting_untracked,
+            preexisting_tracked: bindings.iter().any(|member| member.preexisting_tracked),
+            preexisting_untracked: bindings.iter().any(|member| member.preexisting_untracked),
+            repositories: bindings,
         };
         Ok(Subject {
             binding,
-            tree: recorded.tree.clone(),
-            baseline: BaselineCapture {
+            repositories,
+            selection: selection.cloned(),
+        })
+    }
+
+    fn bind_repository(
+        &self,
+        member: &RecordedRepository,
+        baseline_lsn: Option<Lsn>,
+        authority: &[u8],
+    ) -> Result<(DiffRepositoryBinding, ReviewSubject), DiffRefusal> {
+        let baseline = member.baseline.and_then(|payload| match payload.outcome {
+            BaselineOutcome::Captured {
+                device,
+                inode,
+                head,
+                preexisting_tracked,
+                preexisting_untracked,
+            } => Some(BaselineCapture {
                 root: RootIdentity { device, inode },
                 head,
                 preexisting_tracked,
                 preexisting_untracked,
-            },
-            stamp: recorded.stamp,
-        })
+            }),
+            _ => None,
+        });
+        let unavailable = if baseline.is_some() {
+            None
+        } else {
+            Some(match member.baseline.map(|payload| payload.outcome) {
+                Some(BaselineOutcome::Unavailable {
+                    reason:
+                        reason @ (DiffRefusal::UnsupportedStorage | DiffRefusal::UnsupportedPlatform),
+                }) => reason,
+                Some(BaselineOutcome::Unavailable { reason }) if member.repo_id.is_some() => reason,
+                _ => DiffRefusal::BaselineUnavailable,
+            })
+        };
+        if member.repo_id.is_none() && baseline.is_none() {
+            return Err(unavailable.unwrap_or(DiffRefusal::BaselineUnavailable));
+        }
+        let baseline_bytes = serde_json::to_vec(&(baseline_lsn, &member.repo_id, &member.baseline))
+            .map_err(|_| DiffRefusal::Unreadable)?;
+        let tree_bytes = serde_json::to_vec(&member.tree).map_err(|_| DiffRefusal::Unreadable)?;
+        let binding = DiffRepositoryBinding {
+            repo_id: member.repo_id.clone(),
+            baseline_id: self.fingerprint(b"repository-baseline", &[authority, &baseline_bytes]),
+            target_id: self.fingerprint(
+                b"repository-target",
+                &[authority, &tree_bytes, &baseline_bytes],
+            ),
+            unavailable,
+            preexisting_tracked: baseline
+                .as_ref()
+                .is_some_and(|base| base.preexisting_tracked),
+            preexisting_untracked: baseline
+                .as_ref()
+                .is_some_and(|base| base.preexisting_untracked),
+        };
+        let repository = ReviewSubject {
+            repo_id: member.repo_id.clone(),
+            tree: member.tree.clone(),
+            baseline,
+            stamp: member.stamp,
+        };
+
+        Ok((binding, repository))
     }
 
     /// Admit one request of `session`, or the reason it is refused. An admitted request has
@@ -550,8 +832,9 @@ impl DiffReads {
         &self,
         lookup: &impl Fn(CardId) -> Option<Result<Recorded, DiffRefusal>>,
         card: CardId,
+        selection: Option<&RepositoryReadSelection>,
     ) -> Option<Result<Subject, DiffRefusal>> {
-        lookup(card).map(|found| found.and_then(|recorded| self.bind(&recorded)))
+        lookup(card).map(|found| found.and_then(|recorded| self.bind(&recorded, selection)))
     }
 
     fn drop_manifest(&self, session: [u8; 32]) {
@@ -586,7 +869,12 @@ impl DiffReads {
             (_, Admitted::Held(stored)) => stored.subject.binding.card,
             (_, Admitted::New) => return refused(DiffRefusal::InvalidRequest),
         };
-        let subject = match self.resolve(&lookup, card) {
+        let selection = match (request, &admitted) {
+            (DiffRequest::Manifest { repositories, .. }, _) => repositories.as_ref(),
+            (_, Admitted::Held(stored)) => stored.subject.selection.as_ref(),
+            _ => None,
+        };
+        let subject = match self.resolve(&lookup, card, selection) {
             None => return Reply::Unavailable,
             Some(Err(reason)) => {
                 self.drop_manifest(session);
@@ -611,7 +899,7 @@ impl DiffReads {
         if !live() {
             return Reply::Revoked;
         }
-        match self.resolve(&lookup, card) {
+        match self.resolve(&lookup, card, selection) {
             None => return Reply::Unavailable,
             Some(Ok(again)) if again == subject => {}
             Some(_) => {
@@ -711,7 +999,7 @@ impl DiffReads {
 /// Whether the checkout still matches the newest recorded stamp. Only a complete stamp taken by
 /// the sampler now running can be matched, and only a complete current sample can disagree with
 /// it; anything else is unknown.
-fn freshness(stamp: Option<&StampPayload>, current: &ReviewCapture) -> DiffFreshness {
+fn freshness(stamp: Option<&StampPayload>, current: &ReviewCapture, sampler: u32) -> DiffFreshness {
     if !current.complete {
         return DiffFreshness::Unknown;
     }
@@ -728,7 +1016,7 @@ fn freshness(stamp: Option<&StampPayload>, current: &ReviewCapture) -> DiffFresh
     else {
         return DiffFreshness::Unknown;
     };
-    if versions.sampler != SAMPLER_VERSION || versions.policy != TEXT_POLICY_VERSION {
+    if versions.sampler != sampler || versions.policy != TEXT_POLICY_VERSION {
         return DiffFreshness::Unknown;
     }
     if recorded.as_str() == current.digest {
@@ -749,9 +1037,41 @@ fn run(
     let _slot = slot.floor()?;
     match work {
         Work::Manifest(subject) => {
-            let capture = reader.capture_review(&subject.tree, &subject.baseline, cancelled)?;
-            let fresh = freshness(subject.stamp.as_ref(), &capture);
-            let manifest = capture.into_manifest(subject.binding, now, fresh)?;
+            let input = ReviewBatch::for_manifest(
+                &subject.repositories,
+                &subject.binding,
+                subject.selection.as_ref(),
+            )?;
+            let capture = reader.capture_review_batch(input, cancelled);
+            if subject.binding.hired_lsn.is_none()
+                && let Some((_, Err(reason))) = capture.members.first()
+            {
+                return Err(*reason);
+            }
+            let mut fresh = DiffFreshness::MatchesReviewSample;
+            for (repo_id, outcome) in &capture.members {
+                let member = subject
+                    .repositories
+                    .iter()
+                    .find(|member| member.repo_id == *repo_id)
+                    .ok_or(DiffRefusal::Unreadable)?;
+                let value = outcome.as_ref().map_or(DiffFreshness::Unknown, |capture| {
+                    freshness(
+                        member.stamp.as_ref(),
+                        capture,
+                        subject.binding.sampler_version,
+                    )
+                });
+                fresh = match (fresh, value) {
+                    (DiffFreshness::Unknown, _) | (_, DiffFreshness::Unknown) => {
+                        DiffFreshness::Unknown
+                    }
+                    (DiffFreshness::ChangedAfterCheck, _)
+                    | (_, DiffFreshness::ChangedAfterCheck) => DiffFreshness::ChangedAfterCheck,
+                    _ => DiffFreshness::MatchesReviewSample,
+                };
+            }
+            let manifest = capture.into_manifest(now, fresh)?;
             let bytes = manifest.page(None)?.bytes().to_vec();
             Ok(Built {
                 bytes,
@@ -759,9 +1079,8 @@ fn run(
             })
         }
         Work::Content(stored, entries) => {
-            let encoded = reader.read_content(
-                &stored.subject.tree,
-                &stored.subject.baseline,
+            let encoded = reader.read_content_batch(
+                &stored.subject.repositories,
                 &stored.manifest,
                 &entries,
                 cancelled,
@@ -862,7 +1181,8 @@ mod tests {
             ..view.clone()
         };
         let read = |records: &[Record], view: &CardView| {
-            recorded(&world(records), view, &ticket).map(|recorded| recorded.tree)
+            recorded(&world(records), view, &ticket)
+                .map(|recorded| recorded.repositories[0].tree.clone())
         };
 
         assert_eq!(

@@ -118,6 +118,7 @@ fn fixture() -> (Harness, AgentId, GoalId, RepositoryTurnGrant) {
             max_turns: None,
             max_budget: None,
             model: None,
+            browser_onboarding: None,
             repositories: ScopedRepositories {
                 project: RecordedWorkspace {
                     id: "service".into(),

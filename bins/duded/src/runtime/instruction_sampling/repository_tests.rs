@@ -620,7 +620,7 @@ fn unknown_copy(replace: bool) {
         .unwrap()
         .unwrap();
     assert!(review.coverage_unknown);
-    for record in [
+    for (index, record) in [
         Record::TicketInstructionReviewed {
             card,
             by: Actor::Peer { pid: 7, uid: None },
@@ -638,9 +638,15 @@ fn unknown_copy(replace: bool) {
             expected_seq: seq,
             reason: None,
         },
-    ] {
-        drop(daemon);
-        daemon = setup.boot(false);
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index > 0 {
+            // A refused append leaves the journal unresolved until a restart replays it.
+            drop(daemon);
+            daemon = setup.boot(false);
+        }
         let next = daemon.ctx.writer.next_lsn().unwrap();
         let error = daemon
             .ctx

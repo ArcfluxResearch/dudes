@@ -106,3 +106,16 @@ test('a missing check cannot carry either claimed sample comparison', () => {
     assert.equal(decode(diffContent({ freshness, binding: diffBinding({ check_lsn: null }) })), null);
   }
 });
+
+test('repository-qualified entries retain equal paths and reject foreign content membership', () => {
+  const repositories = ['web', 'api'].map((repo_id) => ({ repo_id, baseline_id: 'b'.repeat(64), target_id: 'c'.repeat(64),
+    unavailable: null, preexisting_tracked: false, preexisting_untracked: false }));
+  const binding = diffBinding({ hired_lsn: '1', start_lsn: '2', check_repo: 'web', repositories, sampler_version: 3 });
+  const entries = ['web', 'api'].map((repo_id, index) => diffEntry({ repo_id, entry_id: String(index).repeat(32), path: 'src/lib.rs' }));
+  const page = diffPage({ binding, entries });
+  assert.deepEqual(decode(page), page);
+  assert.equal(decode(diffPage({ binding, entries: [entries[0], { ...entries[0], entry_id: 'f'.repeat(32) }] })), null);
+  assert.equal(decode(diffContent({ binding, files: [diffFile({ repo_id: 'docs' })] })), null);
+  assert.equal(decode(diffPage({ binding: { ...binding, repositories: [repositories[0], repositories[0]] } })), null);
+  assert.equal(decode(diffPage({ binding: { ...binding, hired_lsn: null }, entries })), null);
+});

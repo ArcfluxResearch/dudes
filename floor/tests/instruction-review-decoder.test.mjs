@@ -41,3 +41,26 @@ test('a gap must say where it came from and whether it holds the ticket', () => 
     assert.equal(decodeInstructionReview({ ...base, gaps: [{ ...base.gaps[0], ...patch }] }), null);
   }
 });
+
+test('repository instruction detail retains the hired member and its independent unknown coverage', () => {
+  const value = { ...review('metadata_limit'), coverage_unknown: true, repository_gaps: [
+    { ...review('read_failed').gaps[0], repo_id: 'docs' },
+  ], changed_paths: [{ repo_id: 'docs', path: { encoding: 'utf8', value: '/docs/AGENTS.md' },
+    display: '/docs/AGENTS.md', display_truncated: false, context: { kind: 'owned_worktree', lease: '00000000000000000000000001' } }] };
+  const decoded = decodeInstructionReview(value);
+  assert.notEqual(decoded, null);
+  assert.equal(decoded.coverage_unknown, true);
+  assert.equal(decoded.changed_paths[0].repo_id, 'docs');
+  assert.equal(decoded.repository_gaps[0].repo_id, 'docs');
+  assert.equal(decodeInstructionReview({ ...value, repository_gaps: [{ ...value.repository_gaps[0], repo_id: '../docs' }] }), null);
+});
+
+test('clipped interval rows do not erase repository identity from retained instruction paths', () => {
+  const value = { ...review('metadata_limit'), coverage_unknown: false, repository_gaps: [],
+    changed_paths: [{ repo_id: 'docs', path: { encoding: 'utf8', value: '/docs/AGENTS.md' },
+      display: 'AGENTS.md', display_truncated: false, context: { kind: 'owned_worktree', lease: '00000000000000000000000001' } }] };
+  const decoded = decodeInstructionReview(value);
+  assert.notEqual(decoded, null);
+  assert.equal(decoded.changed_paths[0].repo_id, 'docs');
+  assert.deepEqual(decoded.watermark, value.watermark);
+});

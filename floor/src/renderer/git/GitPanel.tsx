@@ -9,7 +9,7 @@
 
 import { Button, cn } from '../../ui/index.ts';
 import { RelativeTime } from '../RelativeTime.tsx';
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 
 import { browserControlDeps } from '../control/control.ts';
 import type { ControlDeps } from '../control/control.ts';
@@ -98,9 +98,10 @@ function Head({ head }: { readonly head: GitHead }) {
 }
 
 function Branches({ view }: { readonly view: GitView }) {
+  const sectionId = useId();
   const { items, truncated, dropped } = view.branches;
-  return <section aria-labelledby="git-branches-title" className={SECTION}>
-    <h4 id="git-branches-title" className={HEADING}>Local branches</h4>
+  return <section aria-labelledby={`${sectionId}-branches`} className={SECTION}>
+    <h4 id={`${sectionId}-branches`} className={HEADING}>Local branches</h4>
     {items.length === 0 ? <p className={NONE}>None.</p> : <ul className={LIST}>
       {items.map((branch, index) => <li key={index} className={ROW}>
         <span>{branch.name}</span>{branch.current ? <span className={NOTE}>(current)</span> : null}
@@ -112,9 +113,10 @@ function Branches({ view }: { readonly view: GitView }) {
 }
 
 function Commits({ view, against }: { readonly view: GitView; readonly against: Comparison }) {
+  const sectionId = useId();
   const { items, truncated, dropped } = view.commits;
-  return <section aria-labelledby="git-commits-title" className={SECTION}>
-    <h4 id="git-commits-title" className={HEADING}>{against.commits}</h4>
+  return <section aria-labelledby={`${sectionId}-commits`} className={SECTION}>
+    <h4 id={`${sectionId}-commits`} className={HEADING}>{against.commits}</h4>
     {items.length === 0 ? <p className={NONE}>None.</p> : <ol className={LIST}>
       {items.map((commit, index) => <li key={index} className={ROW}>
         <span className="min-w-0 flex-1">{commit.subject}</span>
@@ -131,25 +133,26 @@ function Files({ view, against, onCopy }: {
   readonly against: Comparison;
   readonly onCopy: (path: string) => void;
 }) {
+  const sectionId = useId();
   const committed = view.committed;
   const changes = view.changes;
   return <>
-    <section aria-labelledby="git-committed-title" className={SECTION}>
-      <h4 id="git-committed-title" className={HEADING}>{against.files}</h4>
+    <section aria-labelledby={`${sectionId}-committed`} className={SECTION}>
+      <h4 id={`${sectionId}-committed`} className={HEADING}>{against.files}</h4>
       {committed.items.length === 0 ? <p className={NONE}>None.</p> : <ul className={LIST}>
         {committed.items.map((file, index) => <li key={index} className={ROW}>
           <span className={KIND}>{KIND_LABEL[file.kind]}</span>
-          <Path id={`git-committed-${index}`} path={file.path} cut={file.cut} onCopy={onCopy} />
+          <Path id={`${sectionId}-committed-${index}`} path={file.path} cut={file.cut} onCopy={onCopy} />
         </li>)}
       </ul>}
       <Cut shown={committed.items.length} truncated={committed.truncated} dropped={committed.dropped} />
     </section>
-    <section aria-labelledby="git-changes-title" className={SECTION}>
-      <h4 id="git-changes-title" className={HEADING}>Uncommitted changes to tracked files</h4>
+    <section aria-labelledby={`${sectionId}-changes`} className={SECTION}>
+      <h4 id={`${sectionId}-changes`} className={HEADING}>Uncommitted changes to tracked files</h4>
       {changes.items.length === 0 ? <p className={NONE}>None.</p> : <ul className={LIST}>
         {changes.items.map((file, index) => <li key={index} className={ROW}>
           <span className={KIND}>{KIND_LABEL[file.kind]}{file.staged ? ', staged' : ''}</span>
-          <Path id={`git-change-${index}`} path={file.path} cut={file.cut} onCopy={onCopy} />
+          <Path id={`${sectionId}-change-${index}`} path={file.path} cut={file.cut} onCopy={onCopy} />
         </li>)}
       </ul>}
       <Cut shown={changes.items.length} truncated={changes.truncated} dropped={changes.dropped} />
@@ -192,18 +195,22 @@ export function GitPanel({ row, active, deps = browserControlDeps }: {
         onClick={() => { if (!loading) { setCopied(null); void loadGit(row.id, deps); } }}>Refresh</Button>
     </div>
     <p className={NOTE}>
-      A read of this agent&rsquo;s checkout, taken when you open this tab or press Refresh. It names tracked
+      A read of this agent&rsquo;s recorded repositories, taken when you open this tab or press Refresh. It names tracked
       files and local branches, never untracked files, authors or where the checkout is. You read it. Dudes never acts on it.
     </p>
     <p className="git-status m-0 min-h-5 text-small text-muted empty:hidden" role="status">
       {loading ? 'Reading the checkout…' : problem ?? (view === null ? '' : <>Read <RelativeTime at={view.read_at} />.</>)}
       {copied === null ? null : <span> {copied}</span>}
     </p>
-    {view === null || view.head === null ? null : <>
-      <Head head={view.head} />
-      <Branches view={view} />
-      <Commits view={view} against={AGAINST[view.head.against]} />
-      <Files view={view} against={AGAINST[view.head.against]} onCopy={copy} />
+    {(view?.repositories ?? (view === null ? [] : [{ repo_id: null, view }])).map((repo) => <section key={repo.repo_id ?? 'legacy'} className="flex min-w-0 flex-col gap-3">
+      {repo.repo_id === null ? null : <h4 className={HEADING}>{repo.repo_id}</h4>}
+      {refusalText(repo.view, null) === null ? null : <p className={NOTE}>{refusalText(repo.view, null)}</p>}
+      {repo.view.head === null ? null : <>
+      <Head head={repo.view.head} />
+      <Branches view={repo.view} />
+      <Commits view={repo.view} against={AGAINST[repo.view.head.against]} />
+      <Files view={repo.view} against={AGAINST[repo.view.head.against]} onCopy={copy} />
     </>}
+    </section>)}
   </section>;
 }
