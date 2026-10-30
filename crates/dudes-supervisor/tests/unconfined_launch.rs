@@ -5,24 +5,14 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use dudes_proto::record::{FileIdentity, Hex32, RecordedWorkspace, TrustPin, TrustedRepository};
-use dudes_proto::repository::{
-    CatalogRepository, ExecutionRepository, OwnedRepository, RepoId, RepositoryEntry,
-    RepositoryHire, RepositoryPolicy, RepositorySet, ScopedRepositories,
-};
-use dudes_proto::{AgentBudget, BrowserNoteAttribution, Entry, Record};
+use dudes_proto::record::Hex32;
+use dudes_proto::repository::RepositoryPolicy;
+use dudes_proto::{BrowserNoteAttribution, Record};
 use dudes_supervisor::testing::{Harness, Seen};
-use dudes_supervisor::{Command, Input, RepositoryAdmission, SpendView};
-use dudes_types::{AgentId, GitCommit, Lsn, Provider, Timestamp, WorktreeId};
+use dudes_supervisor::{Command, Input, SpendView};
+use dudes_types::{AgentId, Lsn, WorktreeId};
 
 const LABELS: [&str; 3] = ["service", "web", "docs"];
-
-fn append(harness: &mut Harness, record: Record) -> Lsn {
-    harness.append_replayed(Entry {
-        at: Timestamp::UNIX_EPOCH,
-        record,
-    })
-}
 
 fn root() -> PathBuf {
     std::env::temp_dir().join("unconfined-launch")

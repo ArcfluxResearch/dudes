@@ -242,6 +242,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one request validates the frozen grant and composes every typed part"
+    )]
     fn scoped_request<R: Rng>(
         &self,
         attempt: Attempt,

@@ -1443,6 +1443,10 @@ impl Harness {
     /// hire of one agent into all of them with the first label as primary, then observe the
     /// agent's repositories as admitted. Copies live under `<dir>/copies/<label>`. Returns the
     /// agent and the hire's position.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one replayed catalog, trust, lease and hire prefix"
+    )]
     pub fn hire_with_repository_copies(
         &mut self,
         policy: dudes_proto::repository::RepositoryPolicy,
@@ -1512,7 +1516,8 @@ impl Harness {
             .collect();
         let mut owned = Vec::new();
         for (index, (repo_id, origin)) in ids.iter().zip(&origins).enumerate() {
-            let worktree = WorktreeId::from_bytes([index as u8 + 1; 16]);
+            let worktree =
+                WorktreeId::from_bytes([u8::try_from(index).expect("few copies") + 1; 16]);
             let path = dir.join("copies").join(repo_id.as_str());
             self.append_record(Record::WorktreeLeased {
                 worktree,

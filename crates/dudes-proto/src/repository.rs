@@ -983,7 +983,8 @@ mod tests {
             .map(|(index, (id, path))| {
                 let mut owned = value.clone();
                 owned.execution.directory = std::path::PathBuf::from(path);
-                owned.worktree = WorktreeId::from_bytes([index as u8 + 1; 16]);
+                owned.worktree =
+                    WorktreeId::from_bytes([u8::try_from(index).expect("few copies") + 1; 16]);
                 RepositoryEntry {
                     repo_id: RepoId::parse(id).unwrap(),
                     value: HiredRepository::new(

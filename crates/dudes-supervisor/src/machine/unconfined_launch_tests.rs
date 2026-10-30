@@ -1,8 +1,8 @@
 use super::*;
 use crate::testing::Harness;
 use dudes_proto::repository::{
-    HireRepositories, RepoId, RepositoryEntry, RepositoryPolicy, RepositorySet,
-    RepositoryTurnGrant, TicketRepositoryRound,
+    HireRepositories, RepoId, RepositoryPolicy, RepositorySet, RepositoryTurnGrant,
+    TicketRepositoryRound,
 };
 
 const LABELS: [&str; 3] = ["service", "web", "docs"];
