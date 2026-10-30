@@ -178,8 +178,23 @@ fn finish_fits(
     comparisons: &[RepositoryInstructionComparison],
     reserve_gaps: bool,
 ) -> bool {
-    let InstructionObservationOwner::Managed { turn, .. } = sample.owner else {
-        return false;
+    let end = match sample.owner {
+        InstructionObservationOwner::Managed { turn, .. } => InstructionEndBoundary::ManagedTurn {
+            turn,
+            end_lsn: Lsn(u64::MAX),
+        },
+        InstructionObservationOwner::AttachedProcess { attachment_lsn, .. } => {
+            InstructionEndBoundary::AttachedProcess {
+                attachment_lsn,
+                end_lsn: Lsn(u64::MAX),
+            }
+        }
+        InstructionObservationOwner::AttachedTurn { turn, .. } => {
+            InstructionEndBoundary::AttachedTurn {
+                turn,
+                end_lsn: Lsn(u64::MAX),
+            }
+        }
     };
     let finish = RepositoryInstructionFinish {
         v: sample.v,
@@ -203,10 +218,7 @@ fn finish_fits(
                     repo_id: member.repo_id.clone(),
                     ending_root: member.ending_root,
                     settlement: InstructionSettlement::Compared {
-                        end: InstructionEndBoundary::ManagedTurn {
-                            turn,
-                            end_lsn: Lsn(u64::MAX),
-                        },
+                        end,
                         sampled_at: Timestamp::from_unix_millis(i64::MIN),
                         recovery: false,
                         comparison,

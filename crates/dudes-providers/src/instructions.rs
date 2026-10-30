@@ -746,6 +746,64 @@ pub(crate) fn claude_manifest(
     declaration
 }
 
+/// What a hired copy that is only added to the working copy can change for the session: the names
+/// and bodies under its `.claude` skills, commands and agents folders, and its memory files and
+/// rules. Claude does not load the memory files and rules from an added directory unless the
+/// operator turns that switch on, but an `env` entry in the primary copy's settings can turn it on
+/// inside the session, and an agent working in that repository alone loads them, so they are
+/// sampled whatever the switch says. Settings and the MCP file do not load from an added
+/// directory, so they are not candidates here.
+pub(crate) fn claude_added_copy_manifest(
+    ctx: &AgentCtx<'_>,
+    mode: DeclarationMode,
+) -> InstructionDeclaration {
+    let mut declaration = InstructionDeclaration::new(mode, ctx);
+    if let Some(path) = declaration.path(ctx.cwd) {
+        let root = InstructionRoot::ExecutionDirectory(path);
+        for directory in [".claude/skills", ".claude/commands", ".claude/agents"] {
+            declaration.input(
+                root.clone(),
+                DiscoveryRule::MarkdownRules {
+                    directory: directory.into(),
+                    scope: RuleDirectoryScope::Root,
+                },
+                Activation::Active,
+                EvidenceRevision::ClaudeCurrentDocumentation,
+                ImportRule::None,
+            );
+        }
+        let imports = ImportRule::ClaudeMemory {
+            max_hops: MAX_CLAUDE_IMPORT_DEPTH,
+        };
+        for candidates in [
+            names(&["CLAUDE.md", ".claude/CLAUDE.md"]),
+            names(&["CLAUDE.local.md"]),
+        ] {
+            declaration.input(
+                root.clone(),
+                DiscoveryRule::FixedCandidates {
+                    names: candidates,
+                    selection: CandidateSelection::All,
+                },
+                Activation::Active,
+                EvidenceRevision::ClaudeCurrentDocumentation,
+                imports,
+            );
+        }
+        declaration.input(
+            root,
+            DiscoveryRule::MarkdownRules {
+                directory: ".claude/rules".into(),
+                scope: RuleDirectoryScope::Root,
+            },
+            Activation::Active,
+            EvidenceRevision::ClaudeCurrentDocumentation,
+            imports,
+        );
+    }
+    declaration
+}
+
 #[derive(Clone, Copy)]
 enum ExplicitSelector {
     File(ExplicitFilePurpose),
@@ -1188,6 +1246,71 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn an_added_claude_copy_declares_its_skill_trees_memory_files_and_rules() {
+        let adapter = ClaudeAdapter::default();
+        let supplied = [EnvVar::new("CLAUDE_CONFIG_DIR", "profiles/claude")];
+        for (mode, declared) in [
+            (
+                Mode::Managed,
+                DeclarationMode::ClaudeManaged(IsolationMode::Default),
+            ),
+            (Mode::Attached, DeclarationMode::ClaudeAttached),
+        ] {
+            let added = adapter.added_copy_manifest(
+                &ctx(&supplied, true),
+                mode,
+                &ModelSelection::provider_default(),
+            );
+            assert_eq!(added.mode, declared);
+            assert_eq!(added.gaps, []);
+            let declared_inputs: Vec<_> = added
+                .inputs
+                .iter()
+                .map(|input| {
+                    assert_eq!(
+                        input.root,
+                        InstructionRoot::ExecutionDirectory("project/selected-worktree".into())
+                    );
+                    assert_eq!(input.activation, Activation::Active);
+                    (input.rule.clone(), input.imports)
+                })
+                .collect();
+            let memory = ImportRule::ClaudeMemory {
+                max_hops: MAX_CLAUDE_IMPORT_DEPTH,
+            };
+            let tree = |directory: &str, imports| {
+                (
+                    DiscoveryRule::MarkdownRules {
+                        directory: directory.into(),
+                        scope: RuleDirectoryScope::Root,
+                    },
+                    imports,
+                )
+            };
+            let files = |declared: &[&str]| {
+                (
+                    DiscoveryRule::FixedCandidates {
+                        names: names(declared),
+                        selection: CandidateSelection::All,
+                    },
+                    memory,
+                )
+            };
+            assert_eq!(
+                declared_inputs,
+                [
+                    tree(".claude/skills", ImportRule::None),
+                    tree(".claude/commands", ImportRule::None),
+                    tree(".claude/agents", ImportRule::None),
+                    files(&["CLAUDE.md", ".claude/CLAUDE.md"]),
+                    files(&["CLAUDE.local.md"]),
+                    tree(".claude/rules", memory),
+                ]
+            );
+        }
     }
 
     #[test]

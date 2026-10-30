@@ -347,6 +347,22 @@ pub fn validate_start(
     Ok(())
 }
 
+/// An attached session runs outside the provider sandbox, so only a hire whose policy claims no
+/// write boundary has per-copy records for one.
+fn attached_owner_allowed(
+    owner: InstructionObservationOwner,
+    hire: &crate::repository::ScopedHireRepositories,
+) -> Result<(), InstructionValidationError> {
+    match (owner, hire.policy.confinement()) {
+        (
+            InstructionObservationOwner::AttachedProcess { .. }
+            | InstructionObservationOwner::AttachedTurn { .. },
+            crate::repository::Confinement::Confined,
+        ) => Err(InstructionValidationError::InvalidBoundary),
+        _ => Ok(()),
+    }
+}
+
 /// Validate the frozen hire and ticket association independently of goal billing.
 pub fn validate_binding(
     lsn: Lsn,
@@ -355,18 +371,21 @@ pub fn validate_binding(
     ticket: Option<InstructionTicketAssociation>,
     facts: RepositoryInstructionFacts<'_>,
 ) -> Result<(), InstructionValidationError> {
-    let Some((hired_lsn, HireRepositories::Scoped(_))) = facts.hire else {
+    let Some((hired_lsn, HireRepositories::Scoped(hire))) = facts.hire else {
         return Err(InstructionValidationError::InvalidBoundary);
     };
-    let InstructionObservationOwner::Managed { agent, issue, .. } = owner else {
-        return Err(InstructionValidationError::InvalidBoundary);
+    attached_owner_allowed(owner, hire)?;
+    let (agent, issue) = match owner {
+        InstructionObservationOwner::Managed { agent, issue, .. } => (agent, Some(issue)),
+        InstructionObservationOwner::AttachedProcess { agent, .. }
+        | InstructionObservationOwner::AttachedTurn { agent, .. } => (agent, None),
     };
     if agent != facts.agent || binding.hired_lsn != hired_lsn || hired_lsn >= lsn {
         return Err(InstructionValidationError::InvalidBoundary);
     }
     let round = match issue {
-        InstructionIssueAssociation::Prospective => facts.round,
-        InstructionIssueAssociation::Issued { issue_lsn } => {
+        None | Some(InstructionIssueAssociation::Prospective) => facts.round,
+        Some(InstructionIssueAssociation::Issued { issue_lsn }) => {
             let Some((actual, grant)) = facts.issue else {
                 return Err(InstructionValidationError::InvalidBoundary);
             };
@@ -406,6 +425,24 @@ pub fn observation_owner(record: &Record) -> Option<InstructionObservationOwner>
     }
 }
 
+/// Whether the record's ticket binding comes from the agent's active round now, rather than from
+/// the grant of an issued turn: a start before its issue, and any record of an attached session.
+#[must_use]
+pub fn reads_active_round(record: &Record) -> bool {
+    let (owner, starts) = match record {
+        Record::InstructionObservationBatchStarted(batch) => (batch.owner, true),
+        Record::InstructionObservationBatchFinished(batch) => (batch.owner, false),
+        _ => return false,
+    };
+    match owner {
+        InstructionObservationOwner::Managed { issue, .. } => {
+            starts && issue == InstructionIssueAssociation::Prospective
+        }
+        InstructionObservationOwner::AttachedProcess { .. }
+        | InstructionObservationOwner::AttachedTurn { .. } => true,
+    }
+}
+
 /// Validate hired membership at a new start or an explicitly missing historical boundary.
 pub fn validate_observation(
     lsn: Lsn,
@@ -419,6 +456,7 @@ pub fn validate_observation(
                 if hired_lsn != batch.binding.hired_lsn {
                     return Err(InstructionValidationError::InvalidBoundary);
                 }
+                attached_owner_allowed(batch.owner, hire)?;
                 for member in &batch.members {
                     let expected = hire
                         .repositories

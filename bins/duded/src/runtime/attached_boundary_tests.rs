@@ -205,7 +205,8 @@ fn open_attached_interval(
             &VecDeque::new(),
             &mut daemon.closing,
         )
-        .unwrap();
+        .unwrap()
+        .expect("a single-repository session always has a start");
     assert!(
         matches!(owner, dudes_proto::InstructionObservationOwner::AttachedProcess {
     agent: actual_agent, attachment_lsn,

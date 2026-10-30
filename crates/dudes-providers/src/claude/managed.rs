@@ -64,6 +64,10 @@ pub const SESSION_ACQUISITION: SessionAcquisition = SessionAcquisition::Pinned {
 /// that guards the *declared* route into it — [`check`](ClaudeConfig::check) refusing
 /// `isolation = "bare"` without an API-key path — never consulted.
 ///
+/// `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is no nesting marker. Set to `1`, it makes Claude
+/// load the memory files of every directory added with `--add-dir`, so a hired copy that a launch
+/// only adds could put instructions into the agent's context that no one reviewed.
+///
 /// Membership is by name and never by value. The vendor documents "set to `1`", but whether `0`
 /// or empty is falsey or merely present-and-truthy was **not** measured, so a value predicate
 /// would be keyed on something unknown and would forward the present-but-zero case.
@@ -76,6 +80,7 @@ pub const NESTING_VARS: &[&str] = &[
     "CLAUDE_EFFORT",
     "CLAUDE_CODE_EXECPATH",
     "CLAUDE_CODE_SIMPLE",
+    "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
 ];
 
 /// Nesting variables matched by prefix (`CLAUDE_CODE_MESSAGING_*`).
@@ -584,6 +589,21 @@ impl Adapter for ClaudeAdapter {
             &self.config.extra_args,
             Ok(settings),
         )
+    }
+
+    fn added_copy_manifest(
+        &self,
+        ctx: &AgentCtx<'_>,
+        mode: dudes_types::Mode,
+        _selection: &ModelSelection,
+    ) -> crate::instructions::InstructionDeclaration {
+        use crate::instructions::{DeclarationMode, claude_added_copy_manifest};
+
+        let mode = match mode {
+            dudes_types::Mode::Managed => DeclarationMode::ClaudeManaged(self.config.isolation),
+            dudes_types::Mode::Attached => DeclarationMode::ClaudeAttached,
+        };
+        claude_added_copy_manifest(ctx, mode)
     }
 
     /// The configured selector, copied rather than interpreted: an unset `model` is the provider's
@@ -1708,6 +1728,30 @@ mod tests {
                  would also pass if the scrub dropped everything"
             );
         }
+    }
+
+    /// With this variable set, Claude loads the memory files of every added directory, which
+    /// would put unreviewed instructions from a hired copy into the agent's context. The scrub
+    /// names it as a literal so deleting it from the constant turns this test red.
+    #[test]
+    fn added_directory_memory_files_never_load_into_a_child() {
+        let daemon = [
+            ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
+            ("PATH", "/usr/bin"),
+        ]
+        .map(|(k, v)| EnvVar::new(k, v));
+        let env = ClaudeAdapter::default()
+            .managed(&ctx(&daemon), "t", &first(), &none())
+            .expect("a non-empty task without NUL is a launch")
+            .env;
+        let names: Vec<&OsStr> = env.iter().map(EnvVar::name).collect();
+        assert!(
+            !names.contains(&OsStr::new("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD")),
+            "the memory-file switch reached a child: {names:?}"
+        );
+        assert!(names.contains(&OsStr::new("PATH")));
+        let attached = scrub_env(&daemon);
+        assert_eq!(attached, vec![EnvVar::new("PATH", "/usr/bin")]);
     }
 
     /// `DUDES_SOCK` and `DUDES_TOKEN` are set by the supervisor on every child it

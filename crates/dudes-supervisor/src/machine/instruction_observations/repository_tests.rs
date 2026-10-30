@@ -28,11 +28,15 @@ fn append(harness: &mut Harness, record: Record) -> Lsn {
     })
 }
 
+fn fixture() -> (Harness, AgentId, GoalId, RepositoryTurnGrant) {
+    fixture_for(RepositoryPolicy::WorkingTreeV1)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one replayed catalog, hire and ticket prefix supplies the lifecycle controls"
 )]
-fn fixture() -> (Harness, AgentId, GoalId, RepositoryTurnGrant) {
+fn fixture_for(policy: RepositoryPolicy) -> (Harness, AgentId, GoalId, RepositoryTurnGrant) {
     let mut harness = Harness::new();
     let repo_id = RepoId::parse("primary").unwrap();
     let origin = TrustedRepository {
@@ -108,7 +112,7 @@ fn fixture() -> (Harness, AgentId, GoalId, RepositoryTurnGrant) {
     let agent = AgentId::from_parts(1, 1);
     let hired = append(
         &mut harness,
-        Record::AgentHiredWithRepositories(Box::new(RepositoryHire {
+        Box::new(RepositoryHire {
             id: agent,
             name: "Kim".into(),
             character: None,
@@ -132,7 +136,7 @@ fn fixture() -> (Harness, AgentId, GoalId, RepositoryTurnGrant) {
                     label: "Service".into(),
                 },
                 catalog_lsn: catalog,
-                policy: RepositoryPolicy::WorkingTreeV1,
+                policy,
                 repositories: RepositorySet::new(
                     repo_id.clone(),
                     vec![RepositoryEntry {
@@ -148,7 +152,8 @@ fn fixture() -> (Harness, AgentId, GoalId, RepositoryTurnGrant) {
                 )
                 .unwrap(),
             },
-        })),
+        })
+        .into_record(),
     );
     let declaration = TicketDeclaration {
         project: "service".into(),
@@ -602,7 +607,16 @@ fn an_unavailable_ending_sample_retains_durable_unknown_coverage() {
 
 #[test]
 fn an_unavailable_issued_start_keeps_missing_coverage_without_a_discovery_plan() {
-    let (mut harness, agent, goal, grant) = fixture();
+    unavailable_issued_start_keeps_missing_coverage(RepositoryPolicy::WorkingTreeV1);
+}
+
+#[test]
+fn an_unavailable_issued_start_of_an_unconfined_hire_settles_with_the_per_copy_record() {
+    unavailable_issued_start_keeps_missing_coverage(RepositoryPolicy::OperatorTrustV1);
+}
+
+fn unavailable_issued_start_keeps_missing_coverage(policy: RepositoryPolicy) {
+    let (mut harness, agent, goal, grant) = fixture_for(policy);
     let (request, _) = pending(&mut harness, agent, &grant);
     let mut record = match &harness.supervisor.instructions.awaiting[&request] {
         Awaiting::Start(Starting {

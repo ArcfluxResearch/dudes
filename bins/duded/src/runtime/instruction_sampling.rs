@@ -11,7 +11,7 @@ use dudes_proto::instruction::{
     NativeInstructionPath,
 };
 use dudes_proto::instruction_state::InstructionSnapshotEvidence;
-use dudes_proto::repository::{HireRepositories, RepositoryTurnGrant};
+use dudes_proto::repository::{Confinement, HireRepositories, RepositoryTurnGrant};
 use dudes_proto::repository_instruction::{
     INSTRUCTION_BATCH_VERSION, RepositoryInstructionBinding, RepositoryInstructionSnapshot,
     RepositoryInstructionStart,
@@ -41,6 +41,8 @@ pub(super) struct LegacySampleJob {
     pub(super) sources: Vec<InstructionSource>,
     pub(super) membership_unknown: bool,
     candidate_context_unknown: bool,
+    /// The owner's launch only adds this folder to its working copy.
+    added_copy: bool,
     pub(super) uncertain_folders: Vec<PathBuf>,
     pub(super) selection: ModelSelection,
     pub(super) baseline: Option<Box<InstructionSnapshot>>,
@@ -586,6 +588,11 @@ impl LegacySampleJob {
 
 type BoundarySample = (InstructionSnapshot, Option<InstructionTicketAssociation>);
 
+enum BoundaryReply {
+    Legacy(Box<BoundarySample>),
+    Repositories(Box<RepositoryInstructionStart>),
+}
+
 pub(crate) struct InstructionSampler {
     requests: mpsc::Sender<QueuedSample>,
     now: Arc<dyn Fn() -> Timestamp + Send + Sync>,
@@ -736,7 +743,7 @@ struct QueuedSample {
     job: SampleJob,
     correlation: Arc<()>,
     progress: SampleProgress,
-    reply: Option<mpsc::SyncSender<BoundarySample>>,
+    reply: Option<mpsc::SyncSender<BoundaryReply>>,
 }
 
 struct Work {
@@ -792,12 +799,22 @@ impl InstructionSampler {
                     let endpoint = await_endpoint(&completed, &correlation, deadline, sent)
                         .unwrap_or_else(|| progress.deadline(manager_now()));
                     if let Some(reply) = reply {
-                        if let (
-                            SampleCompletion::Legacy { ticket, .. },
-                            SampleEndpoint::Legacy(snapshot),
-                        ) = (completion, endpoint)
-                        {
-                            let _ = reply.try_send((snapshot, ticket));
+                        match (completion, endpoint) {
+                            (
+                                SampleCompletion::Legacy { ticket, .. },
+                                SampleEndpoint::Legacy(snapshot),
+                            ) => {
+                                let _ = reply
+                                    .try_send(BoundaryReply::Legacy(Box::new((snapshot, ticket))));
+                            }
+                            (
+                                SampleCompletion::Repositories { .. },
+                                SampleEndpoint::Repositories(sample),
+                            ) => {
+                                let _ =
+                                    reply.try_send(BoundaryReply::Repositories(Box::new(sample)));
+                            }
+                            _ => {}
                         }
                     } else {
                         handle.input(completion.input(endpoint));
@@ -862,15 +879,34 @@ impl InstructionSampler {
         };
         let progress = queued.progress.clone();
         if self.requests.send(queued).is_ok()
-            && let Ok(result) =
+            && let Ok(BoundaryReply::Legacy(result)) =
                 endpoint.recv_timeout(deadline.saturating_duration_since(Instant::now()))
         {
-            return result;
+            return *result;
         }
         let SampleEndpoint::Legacy(snapshot) = progress.deadline((self.now)()) else {
             unreachable!("legacy boundary")
         };
         (snapshot, ticket)
+    }
+
+    /// The same wait as [`Self::boundary`], for every hired copy at once.
+    fn boundary_repositories(&self, job: RepositorySampleJob) -> RepositoryInstructionStart {
+        let (reply, endpoint) = mpsc::sync_channel(1);
+        let mut queued = self.queued(SampleJob::Repositories(job));
+        queued.reply = Some(reply);
+        let deadline = queued.job.deadline();
+        let progress = queued.progress.clone();
+        if self.requests.send(queued).is_ok()
+            && let Ok(BoundaryReply::Repositories(sample)) =
+                endpoint.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            return *sample;
+        }
+        let SampleEndpoint::Repositories(sample) = progress.deadline((self.now)()) else {
+            unreachable!("repository boundary")
+        };
+        sample
     }
 }
 
@@ -1099,7 +1135,11 @@ fn assemble(job: &LegacySampleJob, sampled_at: Timestamp) -> InstructionSnapshot
         daemon_composition: digest(b"dudes.native-instruction-composition.v1"),
     };
     for source in members.iter().take(MAX_INSTRUCTION_PARTICIPANTS) {
-        let declaration = source.declaration(&candidate, &job.selection);
+        let declaration = if job.added_copy && source.agent == job.agent {
+            source.added_copy_declaration(&candidate, &job.selection)
+        } else {
+            source.declaration(&candidate, &job.selection)
+        };
         let context = if let Some(lease) = source.lease {
             ProjectInstructionContext::OwnedWorktree(lease)
         } else if members.len() == 1 && !incomplete {
@@ -1374,6 +1414,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
             sources,
             membership_unknown: census.membership_unknown,
             candidate_context_unknown: census.candidate_context_unknown,
+            added_copy: false,
             uncertain_folders: census.uncertain_folders.into_iter().collect(),
             selection: selection.clone(),
             baseline: baseline.cloned().map(Box::new),
@@ -1514,6 +1555,8 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
                     sources: sources.clone(),
                     membership_unknown: census.membership_unknown,
                     candidate_context_unknown: false,
+                    added_copy: grant.policy.confinement() == Confinement::Unconfined
+                        && member.repo_id != *grant.repositories.primary_id(),
                     uncertain_folders: census.uncertain_folders.iter().cloned().collect(),
                     selection: selection.clone(),
                     baseline: baseline
@@ -1553,6 +1596,26 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
     ) -> anyhow::Result<BoundarySample> {
         let job = self.instruction_job(sup, owner, goal, selection, baseline, Some(actual_cwd))?;
         Ok(self.instruction_sampler.boundary(job))
+    }
+
+    /// One synchronous sample of every hired copy, for an attached session's boundaries.
+    pub(super) fn sample_repository_boundary<R: super::Rng>(
+        &self,
+        sup: &super::Supervisor<super::Shared<C>, R>,
+        owner: InstructionObservationOwner,
+        grant: &RepositoryTurnGrant,
+        selection: &ModelSelection,
+        baseline: Option<&RepositoryInstructionStart>,
+    ) -> anyhow::Result<RepositoryInstructionStart> {
+        let job = self.repository_instruction_job(
+            sup,
+            InstructionRequest(0),
+            owner,
+            grant,
+            selection,
+            baseline,
+        )?;
+        Ok(self.instruction_sampler.boundary_repositories(job))
     }
 
     pub(super) fn sample_instructions<R: super::Rng>(
@@ -1733,6 +1796,7 @@ mod tests {
             sources: Vec::new(),
             membership_unknown: false,
             candidate_context_unknown: false,
+            added_copy: false,
             uncertain_folders: Vec::new(),
             selection: ModelSelection::provider_default(),
             baseline: None,

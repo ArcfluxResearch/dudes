@@ -34,9 +34,7 @@ impl World {
                 RepositoryInstructionFacts {
                     agent,
                     hire,
-                    round: if matches!(&entry.record, dudes_proto::Record::InstructionObservationBatchStarted(batch)
-                        if matches!(batch.owner, InstructionObservationOwner::Managed { issue: dudes_proto::InstructionIssueAssociation::Prospective, .. }))
-                    {
+                    round: if repository_instruction::reads_active_round(&entry.record) {
                         self.active_repository_round(agent)
                             .map_err(|_| InstructionStateError::Boundary)?
                     } else {

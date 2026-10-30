@@ -17,9 +17,11 @@ use crate::worktree::hire::{RepositoryHirePlan, WorktreeHires};
 pub(super) use common::repository_runner::Runner;
 
 mod browser_groups;
+mod unconfined_instructions;
 mod unconfined_options;
 mod unconfined_recovery;
-mod unconfined_sites;
+pub(in crate::runtime) mod unconfined_sites;
+mod unconfined_stop_recovery;
 
 pub(super) struct Setup {
     pub(super) fixture: common::Fixture,
@@ -29,6 +31,8 @@ pub(super) struct Setup {
     git: Git,
     pub(super) host: common::SharedHost,
     pty_opened: Arc<std::sync::Mutex<Vec<dudes_providers::launch::LaunchSpec>>>,
+    /// A PTY host that opens, keys and closes its sessions like the real one, when a test needs it.
+    native_ptys: Option<common::SharedPtyHost>,
 }
 
 impl Setup {
@@ -63,6 +67,10 @@ impl Setup {
                     "user.email=test@example.com",
                     "-c",
                     "commit.gpgsign=false",
+                    "-c",
+                    "gc.auto=0",
+                    "-c",
+                    "maintenance.auto=false",
                     "commit",
                     "--quiet",
                     "-m",
@@ -105,6 +113,7 @@ impl Setup {
             git,
             host: common::SharedHost::new(),
             pty_opened: Arc::default(),
+            native_ptys: None,
         }
     }
 
@@ -149,7 +158,12 @@ impl Setup {
                 dudes_providers::pi::config::PiConfig::default(),
             )),
         ]);
-        seams.pty_host = Box::new(unconfined_sites::RecordingPtyHost(self.pty_opened.clone()));
+        if let Some(ptys) = &self.native_ptys {
+            seams.pty_host = Box::new(ptys.clone());
+            seams.resolver = common::native_resolver(ptys);
+        } else {
+            seams.pty_host = Box::new(unconfined_sites::RecordingPtyHost(self.pty_opened.clone()));
+        }
         let mut daemon = crate::boot_with_options(&self.settings, seams, options).unwrap();
         daemon.ctx.current_repositories.test_hire_capability = capability;
         daemon.ctx.current_repositories.test_hire_policy =

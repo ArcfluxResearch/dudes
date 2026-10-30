@@ -79,7 +79,7 @@ fn session() -> crate::floor_session::SessionIdentity {
     .0
 }
 
-fn send_chat(running: &common::Running, agent: AgentId) {
+pub(in crate::runtime) fn send_chat(running: &common::Running, agent: AgentId) {
     let body = json!({
         "request_id": "A".repeat(43),
         "agent": agent.to_string(),
@@ -92,7 +92,7 @@ fn send_chat(running: &common::Running, agent: AgentId) {
     ));
 }
 
-fn world_of(setup: &Setup) -> dudes_supervisor::World {
+pub(super) fn world_of(setup: &Setup) -> dudes_supervisor::World {
     let mut world = dudes_supervisor::World::default();
     for (lsn, entry) in setup.fixture.entries() {
         world.apply(lsn, &entry);
@@ -192,29 +192,204 @@ fn replacing_a_goal_of_an_unconfined_agent_is_refused_with_a_reason_and_appends_
     running.stop(ExitCause::Ended);
 }
 
+/// A scoped agent's inherited context needs the host to list every child it owns.
+pub(super) fn attachable_setup() -> Setup {
+    let mut setup = Setup::new();
+    setup.host = common::SharedHost::with_native_evidence(setup.fixture.journal_dir());
+    setup
+}
+
+fn batch_owners(
+    records: &[Record],
+) -> Vec<(&'static str, dudes_proto::InstructionObservationOwner)> {
+    records
+        .iter()
+        .filter_map(|record| match record {
+            Record::InstructionObservationBatchStarted(batch) => Some(("started", batch.owner)),
+            Record::InstructionObservationBatchFinished(batch) => Some(("finished", batch.owner)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_no_single_folder_records(records: &[Record]) {
+    assert!(
+        !records.iter().any(|record| matches!(
+            record,
+            Record::InstructionObservationStarted { .. }
+                | Record::InstructionObservationFinished { .. }
+        )),
+        "a multi-repository hire never records the single-folder shape"
+    );
+}
+
+fn assert_replays(setup: &Setup) {
+    let reader = dudes_journal::Reader::new(&setup.fixture.journal_dir());
+    let mut cold = dudes_journal::Projections::in_memory().unwrap();
+    assert!(dudes_journal::replay(&reader, &mut cold).unwrap().applied > 0);
+    let mut warm = dudes_journal::Projections::open(
+        &setup.settings.state_dir.join(crate::boot::PROJECTION_FILE),
+    )
+    .unwrap();
+    assert_eq!(
+        dudes_journal::replay(&reader, &mut warm).unwrap().applied,
+        0
+    );
+}
+
 #[test]
-fn attaching_an_unconfined_agent_is_refused_with_a_reason_and_appends_nothing() {
-    let setup = Setup::new();
+fn attaching_an_unconfined_agent_opens_its_primary_copy_and_records_every_copy() {
+    let setup = attachable_setup();
     let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
     let agent = hires.hire(params).unwrap().agent;
     running.stop(ExitCause::Ended);
     learn_a_session(&setup, agent);
     let mut daemon = setup.boot_unconfined();
-    let before = setup.fixture.records();
     let error = daemon
         .attach(agent, dudes_proto::Actor::System, None, 80, 24)
-        .expect_err("a multi-repository attach waits for its instruction record");
+        .expect_err("this fixture's PTY host refuses to open");
+    assert!(error.message.contains("could not be opened"), "{error:?}");
+
+    let opened = setup.pty_opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1, "the session opens exactly once");
+    let copies = setup.copies_of(agent);
+    assert_eq!(opened[0].cwd, copies[0]);
+    let added: Vec<_> = opened[0]
+        .argv
+        .windows(2)
+        .filter(|pair| pair[0] == "--add-dir")
+        .map(|pair| std::path::PathBuf::from(&pair[1]))
+        .collect();
+    assert_eq!(added, copies[1..]);
+    assert_eq!(opened[0].argv[1..3], ["--resume", SESSION]);
+
+    let records = setup.fixture.records();
+    assert_no_single_folder_records(&records);
+    let owners = batch_owners(&records);
     assert_eq!(
-        error.message,
-        crate::runtime::ATTACH_MULTI_REPOSITORY_REFUSAL
+        owners.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+        ["started", "finished"]
     );
-    assert_eq!(setup.fixture.records(), before);
-    assert!(setup.pty_opened.lock().unwrap().is_empty());
+    assert!(owners.iter().all(|(_, owner)| matches!(
+        owner,
+        dudes_proto::InstructionObservationOwner::AttachedProcess { agent: found, .. } if *found == agent
+    )));
+    let Some(Record::InstructionObservationBatchStarted(start)) = records
+        .iter()
+        .find(|record| matches!(record, Record::InstructionObservationBatchStarted(_)))
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        start
+            .members
+            .iter()
+            .map(|member| member.repo_id.as_str())
+            .collect::<Vec<_>>(),
+        ["web", "api", "docs"]
+    );
+    drop(daemon);
+    assert_replays(&setup);
 }
 
-const SESSION: &str = "550e8400-e29b-41d4-a716-446655440000";
+#[test]
+fn closing_an_unconfined_attached_session_compares_every_copy_with_its_start() {
+    let mut setup = attachable_setup();
+    setup.native_ptys = Some(common::SharedPtyHost::with_native_evidence(
+        setup.fixture.journal_dir(),
+    ));
+    let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
+    let agent = hires.hire(params).unwrap().agent;
+    running.stop(ExitCause::Ended);
+    learn_a_session(&setup, agent);
+    let mut daemon = setup.boot_unconfined();
+    let copies = setup.copies_of(agent);
+    let skill = copies[1].join(".claude/skills/review/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(&skill, "review v1").unwrap();
+    let answered = daemon
+        .attach(agent, dudes_proto::Actor::System, None, 80, 24)
+        .expect("the session opens");
+    let crate::ports::Answered::Attached(pty) = answered else {
+        panic!("attach answered {answered:?}");
+    };
+    std::fs::write(&skill, "review v2, edited in the attached session").unwrap();
+    let stop = dudes_providers::claude::translate(
+        agent,
+        dudes_types::Timestamp::UNIX_EPOCH,
+        &json!({"hook_event_name": "Stop", "last_assistant_message": "done"}),
+    )
+    .unwrap();
+    daemon
+        .pump(dudes_supervisor::Input::Hook {
+            hook: dudes_supervisor::HookId(91),
+            event: stop,
+        })
+        .expect("a stop in the session is recorded");
+    daemon
+        .pty_close(agent, pty, dudes_proto::Actor::System, None, "test close")
+        .expect("the session closes");
 
-fn learn_a_session(setup: &Setup, agent: AgentId) {
+    let records = setup.fixture.records();
+    assert_no_single_folder_records(&records);
+    let stopped = records.iter().find_map(|record| match record {
+        Record::InstructionObservationBatchFinished(batch)
+            if matches!(
+                batch.owner,
+                dudes_proto::InstructionObservationOwner::AttachedTurn { .. }
+            ) =>
+        {
+            Some(batch)
+        }
+        _ => None,
+    });
+    assert_eq!(
+        stopped.map(|batch| batch.members.len()),
+        Some(3),
+        "a stop with no recorded start settles every copy"
+    );
+    let finished = records
+        .iter()
+        .find_map(|record| match record {
+            Record::InstructionObservationBatchFinished(batch)
+                if matches!(
+                    batch.owner,
+                    dudes_proto::InstructionObservationOwner::AttachedProcess { .. }
+                ) =>
+            {
+                Some(batch)
+            }
+            _ => None,
+        })
+        .expect("the session's end is recorded for every copy");
+    assert_eq!(
+        finished
+            .members
+            .iter()
+            .map(|m| m.repo_id.as_str())
+            .collect::<Vec<_>>(),
+        ["web", "api", "docs"]
+    );
+    let changed: Vec<_> = finished
+        .members
+        .iter()
+        .flat_map(|member| match &member.settlement {
+            dudes_proto::InstructionSettlement::Compared { comparison, .. } => comparison
+                .changes
+                .iter()
+                .filter_map(|change| change.path.to_path().ok())
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(changed, [skill]);
+    drop(daemon);
+    assert_replays(&setup);
+}
+
+pub(super) const SESSION: &str = "550e8400-e29b-41d4-a716-446655440000";
+
+pub(super) fn learn_a_session(setup: &Setup, agent: AgentId) {
     let (mut writer, _) =
         dudes_journal::open(&setup.fixture.journal_dir(), setup.settings.journal).unwrap();
     writer

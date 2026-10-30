@@ -416,6 +416,36 @@ impl TurnRow {
     }
 }
 
+/// The owner, ticket and missing turn boundary of a finish that settles an attached Stop, whether
+/// it is a single-folder or a per-copy record.
+fn missing_turn_finish(
+    record: &Record,
+) -> Option<(
+    &InstructionObservationOwner,
+    &Option<InstructionTicketAssociation>,
+    &TurnId,
+    &Lsn,
+)> {
+    let (owner, ticket, baseline) = match record {
+        Record::InstructionObservationFinished {
+            owner,
+            ticket,
+            baseline,
+            ..
+        } => (owner, ticket, baseline),
+        Record::InstructionObservationBatchFinished(batch) => {
+            (&batch.owner, &batch.ticket, &batch.baseline)
+        }
+        _ => return None,
+    };
+    match baseline {
+        InstructionBaselineRef::MissingTurnBoundary { turn, end_lsn } => {
+            Some((owner, ticket, turn, end_lsn))
+        }
+        _ => None,
+    }
+}
+
 /// Outcomes reached after the daemon read a managed child's stream through its end. The two
 /// no-stream outcomes deliberately stay out: `Vanished` was observed by the reaper, and `Killed`
 /// tests only that the daemon could stop the child.
@@ -727,12 +757,7 @@ impl World {
         {
             return Err("native boundary settlement does not match the first indexed spawn");
         }
-        if let Record::InstructionObservationFinished {
-            owner,
-            ticket,
-            baseline: InstructionBaselineRef::MissingTurnBoundary { turn, end_lsn },
-            ..
-        } = &entry.record
+        if let Some((owner, ticket, turn, end_lsn)) = missing_turn_finish(&entry.record)
             && let Some(captured) = self.unmatched_attached_turn_ends.get(end_lsn)
             && matches!(
                 captured.owner,
@@ -2083,12 +2108,7 @@ impl World {
     }
 
     fn retire_attached_turn_end(&mut self, lsn: Lsn, entry: &Entry) {
-        let Record::InstructionObservationFinished {
-            owner,
-            baseline: InstructionBaselineRef::MissingTurnBoundary { turn, end_lsn },
-            ..
-        } = &entry.record
-        else {
+        let Some((owner, _, turn, end_lsn)) = missing_turn_finish(&entry.record) else {
             return;
         };
         let matched = self.unmatched_attached_turn_ends.get(end_lsn).is_some_and(|captured| {
