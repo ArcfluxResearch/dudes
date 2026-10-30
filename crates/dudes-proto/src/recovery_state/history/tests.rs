@@ -357,3 +357,37 @@ fn scoped_witnesses_keep_physical_kind_and_refuse_a_different_semantic_family() 
         assert_eq!(mismatched.validate(), Err(RecoveryHistoryError::Identity));
     }
 }
+
+#[test]
+fn an_unconfined_hire_witness_folds_like_a_confined_one_under_its_own_kind() {
+    let Record::AgentHiredWithRepositories(mut hire) =
+        samples::record(RecordKind::AgentHiredWithRepositories)
+    else {
+        unreachable!()
+    };
+    let confined = witness(
+        Lsn(40),
+        &Record::AgentHiredWithRepositories(hire.clone()),
+        hash,
+    )
+    .unwrap()
+    .unwrap();
+    hire.repositories.policy = crate::repository::RepositoryPolicy::OperatorTrustV1;
+    let unconfined = witness(
+        Lsn(40),
+        &Record::AgentHiredWithUnconfinedRepositories(hire),
+        hash,
+    )
+    .unwrap()
+    .unwrap();
+    unconfined.validate().unwrap();
+    assert_eq!(
+        unconfined.reference.kind,
+        RecordKind::AgentHiredWithUnconfinedRepositories
+    );
+    assert_eq!(unconfined.evidence, confined.evidence);
+    assert_eq!(unconfined.reference.owner, confined.reference.owner);
+    let mut wrong = unconfined;
+    wrong.reference.kind = RecordKind::AgentHiredWithRepositories;
+    assert_eq!(wrong.validate(), Err(RecoveryHistoryError::Identity));
+}

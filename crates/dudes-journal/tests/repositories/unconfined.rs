@@ -78,3 +78,72 @@ fn a_hire_record_kind_must_match_its_recorded_policy() {
         assert_eq!(store.export().unwrap(), before);
     }
 }
+
+fn mismatched() -> [Entry; 2] {
+    let (_, hire) = authority();
+    let mut unconfined_policy = hire.clone();
+    unconfined_policy.repositories.policy = RepositoryPolicy::OperatorTrustV1;
+    [
+        entry(Record::AgentHiredWithRepositories(Box::new(
+            unconfined_policy,
+        ))),
+        entry(Record::AgentHiredWithUnconfinedRepositories(Box::new(hire))),
+    ]
+}
+
+#[test]
+fn the_writer_refuses_a_hire_whose_kind_and_policy_disagree() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut writer, _) = open(
+        dir.path(),
+        JournalOptions {
+            fsync: Fsync::None,
+            checkpoint_every: 0,
+            ..JournalOptions::default()
+        },
+    )
+    .unwrap();
+    for wrong in mismatched() {
+        assert!(matches!(
+            writer.append(&wrong),
+            Err(Error::Repository {
+                reason: RepositoryStateError::Policy,
+                ..
+            })
+        ));
+    }
+}
+
+fn write_frame(dir: &std::path::Path, header_kind: u16, entry: &Entry) {
+    let mut bytes = Vec::new();
+    dudes_journal::frame::encode(header_kind, &serde_json::to_vec(entry).unwrap(), &mut bytes)
+        .unwrap();
+    std::fs::write(dudes_journal::segment::segment_path(dir, 1), bytes).unwrap();
+}
+
+#[test]
+fn the_reader_refuses_a_hire_whose_kind_and_policy_disagree_and_a_wrong_header_kind() {
+    for wrong in mismatched() {
+        let dir = tempfile::tempdir().unwrap();
+        write_frame(dir.path(), wrong.record.kind().tag(), &wrong);
+        assert!(matches!(
+            Reader::open(dir.path()),
+            Err(Error::Repository {
+                reason: RepositoryStateError::Policy,
+                ..
+            })
+        ));
+    }
+    let (_, hire) = authority();
+    let mut unconfined = hire;
+    unconfined.repositories.policy = RepositoryPolicy::OperatorTrustV1;
+    let right = entry(Record::AgentHiredWithUnconfinedRepositories(Box::new(
+        unconfined,
+    )));
+    let dir = tempfile::tempdir().unwrap();
+    write_frame(dir.path(), RecordKind::Pause.tag(), &right);
+    assert!(matches!(
+        Reader::open(dir.path()),
+        Err(Error::RepositoryFrame { .. })
+    ));
+}
