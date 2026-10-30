@@ -260,7 +260,7 @@ def fixture_input(root, provider, binary, endpoint):
     hired = {"project": {"id": "synthetic", "label": "Synthetic"}, "catalog_lsn": 20, "policy": "working_tree_v1", "repositories": {"primary": "a", "entries": entries}}
     grant = {"hired_lsn": 30, "project": "synthetic", "catalog_lsn": 20, "policy": "working_tree_v1", "repositories": {"primary": "b", "entries": [entries[1], entries[0]]}, "ticket": None}
     values = [("PATH", env["PATH"]), ("LANG", "en_US.UTF-8"), ("ANTHROPIC_API_KEY", DUMMY_CREDENTIAL), ("ANTHROPIC_BASE_URL", endpoint.removesuffix("/v1")), ("OPENAI_API_KEY", DUMMY_CREDENTIAL), ("CODEX_API_KEY", DUMMY_CREDENTIAL)]
-    for index, value in enumerate([*private.values(), str(paths["home"] / ".config"), str(paths["home"] / ".cache"), str(paths["home"] / ".state"), "/bin/bash", "1", "0", "dumb"]):
+    for index, value in enumerate([*private.values(), str(paths["home"] / ".config"), str(paths["home"] / ".cache"), str(paths["home"] / ".state"), "/bin/bash", "1", "0", "dumb", str(paths["agent"]), "file-mail"]):
         values.append(("SYNTHETIC_VALUE_" + str(index), value))
     return {"provider": provider, "config": {"command": str(binary), **({"permission_mode": "default"} if provider == "claude" else {"streaming": True})}, "private": private, "hired": hired, "grant": grant, "origin_git_dirs": git, "mode": "managed", "platform": "macos_arm64" if platform.system() == "Darwin" else "linux_x86_64", "legacy_cwd": str(paths["copies"] / "a"), "agent_dir": str(paths["agent"]), "session_kind": "first" if provider == "claude" else "assigned", "session_id": str(uuid.uuid4()), "model": "claude-sonnet-4-6" if provider == "claude" else "gpt-5.5", "task": "Complete the benign declared-root compatibility task.", "env": values}
 
@@ -285,7 +285,7 @@ def native_command(argv, unavailable):
 
 
 def inspect_selection(provider, binary, argv, env, policy, value, model):
-    common = {"HOME", "PATH", "LANG", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP"}
+    common = {"HOME", "PATH", "LANG", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "DUDES_MAILBOX", "DUDES_COMMAND_TRANSPORT"}
     extra = {"CODEX_HOME", "CODEX_API_KEY", "OPENAI_API_KEY"} if provider == "codex" else {
         "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
         "CLAUDE_CODE_TMPDIR", "CLAUDE_CODE_SHELL", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
@@ -294,6 +294,8 @@ def inspect_selection(provider, binary, argv, env, policy, value, model):
     }
     if set(env) != common | extra:
         raise ValueError("materialized environment is outside the closed synthetic allowlist")
+    if env["DUDES_MAILBOX"] != value["agent_dir"] or env["DUDES_COMMAND_TRANSPORT"] != "file-mail":
+        raise ValueError("the materialized mail transport differs from its owned fixture")
     names = {name for name in env if name.endswith("_API_KEY")}
     required = {"CODEX_API_KEY", "OPENAI_API_KEY"} if provider == "codex" else {"ANTHROPIC_API_KEY"}
     if names != required or any(env[name] != DUMMY_CREDENTIAL for name in names):

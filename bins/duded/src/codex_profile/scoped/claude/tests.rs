@@ -181,6 +181,76 @@ fn claude_preparation_refuses_widened_installs_or_private_environment() {
 }
 
 #[test]
+fn claude_preparation_accepts_only_the_exact_owned_file_mail_environment() {
+    let f = fixture(false);
+    validate_environment(&f.launch).unwrap();
+    let prepared = ScopedProfile::Claude(f.profile.private_roots())
+        .prepare_scoped(f.launch.clone(), Fixture::attempt())
+        .unwrap();
+    assert_eq!(prepared.launch.spec.env, f.launch.spec.env);
+}
+
+#[test]
+fn claude_file_mail_environment_refuses_before_binary_probe_or_install() {
+    let f = fixture(false);
+    std::fs::remove_file(&f.launch.spec.argv[0]).unwrap();
+    for (name, wrong) in [
+        ("DUDES_MAILBOX", f.root.join("other-agent").into_os_string()),
+        ("DUDES_COMMAND_TRANSPORT", "socket".into()),
+    ] {
+        for change in 0..3 {
+            let mut launch = f.launch.clone();
+            let original = launch
+                .spec
+                .env
+                .iter()
+                .find(|var| var.name() == name)
+                .unwrap()
+                .clone();
+            launch.spec.env.retain(|var| var.name() != name);
+            let message = match change {
+                0 => {
+                    launch.spec.env.push(EnvVar::new(name, &wrong));
+                    "scoped Claude private environment changed"
+                }
+                1 => {
+                    launch.spec.env.extend([original.clone(), original]);
+                    "scoped Claude environment is ambiguous"
+                }
+                _ => "scoped Claude private environment is incomplete",
+            };
+            let error = ScopedProfile::Claude(f.profile.private_roots())
+                .prepare_scoped(launch, Fixture::attempt())
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(error.to_string(), message, "{name}, change {change}");
+        }
+    }
+    for name in ["DUDES_TOKEN", "DUDES_SOCK", "DUDES_RUNTIME_DIR", "UNOWNED"] {
+        let mut launch = f.launch.clone();
+        launch.spec.env.push(EnvVar::new(name, "ambient"));
+        let error = ScopedProfile::Claude(f.profile.private_roots())
+            .prepare_scoped(launch, Fixture::attempt())
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "scoped Claude environment contains an unowned setting"
+        );
+    }
+    for path in [
+        &f.launch.inventory.private.home,
+        &f.launch.inventory.private.profile,
+        &f.launch.inventory.private.work,
+        &f.launch.inventory.private.temp,
+    ] {
+        assert!(!path.exists(), "{} was installed", path.display());
+    }
+}
+
+#[test]
 fn claude_platform_and_linux_socket_paths_are_bounded_without_relocation() {
     assert!(qualification(ScopedPlatform::Unsupported, Path::new("/tmp/a")).is_err());
     assert!(linux_temp(Path::new(&format!("/{}", "x".repeat(71)))).is_ok());
