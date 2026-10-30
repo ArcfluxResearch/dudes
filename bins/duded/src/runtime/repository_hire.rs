@@ -19,44 +19,59 @@ fn refused(message: impl Into<String>) -> RpcError {
     crate::worktree::unavailable(message)
 }
 
-/// The one policy the daemon records for a project hire.
-pub(super) const HIRE_POLICY: RepositoryPolicy = RepositoryPolicy::WorkingTreeV1;
+/// The one policy the daemon records for a project hire. The confined policy is reachable only
+/// through a test hook.
+pub(super) const HIRE_POLICY: RepositoryPolicy = RepositoryPolicy::OperatorTrustV1;
 
-fn require_scoped_options(params: &HireParams, confinement: Confinement) -> anyhow::Result<()> {
-    match confinement {
-        Confinement::Confined => {}
-        Confinement::Unconfined => anyhow::bail!("unconfined repository hires are not enabled yet"),
+/// The one engine and platform decision for a multi-repository hire. The hire path and the Floor
+/// offer both ask it, so the two cannot disagree. An unconfined hire needs what a single-repo hire
+/// into its own copy needs: Claude, on a platform that makes copies.
+pub(super) fn group_engine_refusal(
+    provider: Provider,
+    confinement: Confinement,
+) -> Option<&'static str> {
+    if provider != Provider::Claude {
+        return Some(match confinement {
+            Confinement::Confined => {
+                "Multi-repository projects are not available for this engine yet."
+            }
+            Confinement::Unconfined => "Multi-repository projects work with Claude only for now.",
+        });
     }
-    anyhow::ensure!(
-        params.provider == Provider::Claude,
-        "restricted repository execution has no verified provider capability for {}",
-        params.provider
-    );
-    anyhow::ensure!(
-        super::scoped_launch::native_platform()
-            != dudes_providers::scoped::ScopedPlatform::Unsupported,
-        "restricted repository execution has no verified provider capability on this platform"
-    );
-    anyhow::ensure!(
-        params.isolation.is_none(),
-        "restricted repository hires do not accept an isolation override"
-    );
-    anyhow::ensure!(
-        params.model.as_ref().map(dudes_types::ModelName::as_str) == Some("claude-sonnet-4-6"),
-        "restricted repository hires require the explicit claude-sonnet-4-6 model"
-    );
-    Ok(())
+    (super::scoped_launch::native_platform()
+        == dudes_providers::scoped::ScopedPlatform::Unsupported)
+        .then_some("Multi-repository hiring is not available on this platform.")
 }
 
-fn require_hire_options(
-    current: &crate::runtime::repository_admission::CurrentRepositories,
+/// What a multi-repository hire needs before any lease. The unconfined policy takes the model and
+/// the other options exactly as a single-repo hire into its own copy does, through
+/// `hire_option_guards`; only the confined policy pins them.
+pub(super) fn require_group_options(
+    admission: &CurrentHireAdmission<'_>,
     params: &HireParams,
 ) -> anyhow::Result<()> {
-    #[cfg(test)]
-    if current.test_hire_policy.is_some() {
-        return require_scoped_options(params, Confinement::Confined);
+    let confinement = admission.current.hire_policy().confinement();
+    if matches!(confinement, Confinement::Unconfined) {
+        admission.require_repository_capability(confinement)?;
     }
-    require_scoped_options(params, current.hire_policy().confinement())
+    if let Some(refusal) = group_engine_refusal(params.provider, confinement) {
+        anyhow::bail!("{refusal}");
+    }
+    match confinement {
+        Confinement::Confined => {
+            anyhow::ensure!(
+                params.isolation.is_none(),
+                "restricted repository hires do not accept an isolation override"
+            );
+            anyhow::ensure!(
+                params.model.as_ref().map(dudes_types::ModelName::as_str)
+                    == Some("claude-sonnet-4-6"),
+                "restricted repository hires require the explicit claude-sonnet-4-6 model"
+            );
+        }
+        Confinement::Unconfined => {}
+    }
+    Ok(())
 }
 
 /// Refuse an unconfined hire whose task could not name every copy, before any lease exists. A
@@ -147,7 +162,7 @@ impl CurrentHireAdmission<'_> {
         world: &World,
         plan: &RepositoryHirePlan,
     ) -> anyhow::Result<()> {
-        require_hire_options(self.current, &plan.params)?;
+        require_group_options(self, &plan.params)?;
         let target = plan
             .params
             .project
@@ -252,27 +267,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .current_repository_hire_facts(self.sup.world(), &target)
             .is_ok();
         let available = self.offered_engines(profile);
+        let confinement = self.ctx.current_repositories.hire_policy().confinement();
+        let gate_open = admission.require_repository_capability(confinement).is_ok();
         let providers = crate::floor_actions::BROWSER_ENGINES
             .into_iter()
             .map(|provider| {
-                let refusal = if admission
-                    .require_repository_capability(
-                        self.ctx.current_repositories.hire_policy().confinement(),
-                    )
-                    .is_err()
-                {
+                let refusal = if !gate_open {
                     Some("Multi-repository hiring is not enabled yet.")
-                } else if provider != Provider::Claude {
-                    Some("Multi-repository projects are not available for this engine yet.")
-                } else if super::scoped_launch::native_platform()
-                    == dudes_providers::scoped::ScopedPlatform::Unsupported
-                {
-                    Some("Multi-repository hiring is not available on this platform.")
+                } else if let Some(refusal) = group_engine_refusal(provider, confinement) {
+                    Some(refusal)
                 } else if !trusted {
                     Some("Trust every repository in this project before hiring.")
                 } else if !self.onboarding_profile_resources_eligible(profile)
                     || !available.contains(&provider)
-                    || self.model_fixed_by_config(provider)
+                {
+                    Some(match confinement {
+                        Confinement::Confined => {
+                            "This engine's configuration cannot admit the required model and limits."
+                        }
+                        Confinement::Unconfined => "This engine is not available for this project.",
+                    })
+                } else if matches!(confinement, Confinement::Confined)
+                    && self.model_fixed_by_config(provider)
                 {
                     Some("This engine's configuration cannot admit the required model and limits.")
                 } else {
@@ -281,7 +297,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 RepositoryProviderOffer {
                     provider,
                     enabled: refusal.is_none(),
-                    model: (provider == Provider::Claude).then_some("claude-sonnet-4-6"),
+                    model: match confinement {
+                        Confinement::Confined => {
+                            (provider == Provider::Claude).then_some("claude-sonnet-4-6")
+                        }
+                        Confinement::Unconfined => None,
+                    },
                     refusal,
                 }
             })
@@ -365,7 +386,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if let Some(refusal) = provider.refusal {
             return Err(OnboardRefusal::RepositoryGroup(refusal));
         }
-        if provider.model != request.model.as_ref().map(dudes_types::ModelName::as_str) {
+        if let Some(pinned) = provider.model
+            && request.model.as_ref().map(dudes_types::ModelName::as_str) != Some(pinned)
+        {
             return Err(OnboardRefusal::RepositoryGroup(
                 "This project requires claude-sonnet-4-6 for multi-repository work. Nobody was hired.",
             ));
@@ -467,12 +490,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "a project hire requires trusted own copies of every repository, without from",
             ));
         }
-        require_hire_options(&self.ctx.current_repositories, &params)
-            .map_err(|error| refused(error.to_string()))?;
-        if !params.mcp_servers.is_empty() {
-            return Err(refused(
-                "restricted repository hires cannot enable MCP servers",
-            ));
+        let admission =
+            CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories);
+        require_group_options(&admission, &params).map_err(|error| refused(error.to_string()))?;
+        match self.ctx.current_repositories.hire_policy().confinement() {
+            Confinement::Confined => {
+                if !params.mcp_servers.is_empty() {
+                    return Err(refused(
+                        "restricted repository hires cannot enable MCP servers",
+                    ));
+                }
+            }
+            Confinement::Unconfined => {}
         }
         self.hire_option_guards(&params)?;
         let (project, repositories) =
@@ -610,6 +639,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             max_turns: params.max_turns,
             max_budget: params.max_budget,
             model: params.model.clone(),
+            isolation: params.isolation,
+            mcp_servers: {
+                let mut names = params.mcp_servers.clone();
+                names.sort();
+                names.dedup();
+                names
+            },
             browser_onboarding: None,
             repositories: ScopedRepositories {
                 project: plan.project.clone(),
@@ -665,22 +701,11 @@ mod confinement_tests {
     use dudes_proto::record::samples;
     use dudes_proto::{Record, RecordKind};
 
-    fn params() -> HireParams {
-        let mut params = super::super::work_test_support::hire_params(std::path::Path::new(""));
-        params.model = Some(dudes_types::ModelName::parse("claude-sonnet-4-6").unwrap());
-        params
-    }
-
     #[test]
-    fn hire_options_take_the_unconfined_arm_only_for_an_unconfined_policy() {
-        let params = params();
-        if let Err(error) = require_scoped_options(&params, Confinement::Confined) {
-            assert!(!error.to_string().contains("unconfined"), "{error}");
-        }
-        let error = require_scoped_options(&params, Confinement::Unconfined).unwrap_err();
+    fn production_project_hires_are_unconfined() {
         assert_eq!(
-            error.to_string(),
-            "unconfined repository hires are not enabled yet"
+            CurrentRepositories::default().hire_policy().confinement(),
+            Confinement::Unconfined
         );
     }
 

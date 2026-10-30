@@ -14,6 +14,13 @@ import { getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
 const AGENT = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const ATTEMPT = 'A'.repeat(43);
 const PROJECT = { project_id: 'service', expected_revision: '1099511627776', primary_repo: 'api', repo_ids: ['web', 'api', 'docs'] };
+const unpinned = () => {
+  const value = offer();
+  const [claude, ...refused] = value.workspaces[0].repository_group.providers;
+  value.workspaces[0].repository_group.providers = [{ ...claude, model: null },
+    ...refused.map((entry) => ({ ...entry, refusal: 'Multi-repository projects work with Claude only for now.' }))];
+  return value;
+};
 const offer = () => ({ floor_usd_per_day_micros: null, workspaces: [{
   workspace_id: 'service', label: 'Service', engines: ['claude'], trusted: true,
   goal_usd_micros: null, agent_usd_per_day_micros: null, agent_tokens_per_day: null, goal_tokens: null, hop_cap: 3,
@@ -106,4 +113,30 @@ test('the project step names every mandatory copy and preserves the single proje
     assert.match(engine, /claude-sonnet-4-6/);
     assert.doesNotMatch(engine, /change any file|name="own_copy"/);
   } finally { await server.close(); }
+});
+
+test('an offer that does not pin a model lets the operator choose it and sends that choice', async () => {
+  const root = resolve(import.meta.dirname, '..');
+  const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
+  const open = { ...floor(), onboarding: decodeOnboardingCatalog(unpinned()) };
+  try {
+    const { HireWizardView } = await server.ssrLoadModule('/src/renderer/onboarding/HireWizard.tsx');
+    const view = await server.ssrLoadModule('/src/renderer/onboarding/hire.ts');
+    view.resetHire(); view.editDraft({ name: 'Kim', workspaceId: 'service', engine: 'claude', ownCopy: false, model: 'claude-opus-4-1' });
+    view.showSection('workspace', open);
+    const project = renderToStaticMarkup(createElement(HireWizardView, { hire: view.getHireState(), floor: open, onClose() {} }));
+    assert.match(project, /Claude only for now/);
+    view.showSection('engine', open);
+    const engine = renderToStaticMarkup(createElement(HireWizardView, { hire: view.getHireState(), floor: open, onClose() {} }));
+    assert.match(engine, /Which model\?/);
+    assert.match(engine, /change any file/);
+    assert.doesNotMatch(engine, /Writes are limited|for multi-repository work/);
+  } finally { await server.close(); }
+  choose(); hire.editDraft({ model: 'claude-opus-4-1' });
+  const sent = [];
+  const deps = { signedIn: () => true, random: (bytes) => bytes.fill(0), epoch: () => 1, refresh() {},
+    fetch: async (_url, request) => { sent.push(request.body);
+      return { status: 202, text: async () => JSON.stringify({ attempt_id: ATTEMPT, state: 'pending' }) }; } };
+  await hire.submitHire(open, deps);
+  assert.equal(JSON.parse(sent[0]).model, 'claude-opus-4-1');
 });

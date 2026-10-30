@@ -4642,6 +4642,17 @@
               "$ref": "#/$defs/AgentId",
               "description": "New agent identity."
             },
+            "isolation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/IsolationMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The managed-turn isolation the operator chose. Absence means the engine's configured\nselection. Only an unconfined hire may record one."
+            },
             "max_budget": {
               "anyOf": [
                 {
@@ -4661,6 +4672,13 @@
                 "integer",
                 "null"
               ]
+            },
+            "mcp_servers": {
+              "description": "The declared MCP names the operator chose, sorted and without repeats. Absence means\nnone. Only an unconfined hire may record any.",
+              "items": {
+                "$ref": "#/$defs/McpServerName"
+              },
+              "type": "array"
             },
             "model": {
               "anyOf": [
@@ -4759,6 +4777,17 @@
               "$ref": "#/$defs/AgentId",
               "description": "New agent identity."
             },
+            "isolation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/IsolationMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The managed-turn isolation the operator chose. Absence means the engine's configured\nselection. Only an unconfined hire may record one."
+            },
             "max_budget": {
               "anyOf": [
                 {
@@ -4778,6 +4807,13 @@
                 "integer",
                 "null"
               ]
+            },
+            "mcp_servers": {
+              "description": "The declared MCP names the operator chose, sorted and without repeats. Absence means\nnone. Only an unconfined hire may record any.",
+              "items": {
+                "$ref": "#/$defs/McpServerName"
+              },
+              "type": "array"
             },
             "model": {
               "anyOf": [

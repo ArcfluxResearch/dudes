@@ -389,6 +389,14 @@ pub struct RepositoryHire {
     pub max_budget: Option<dudes_types::Usd>,
     /// Recorded model selection.
     pub model: Option<dudes_types::ModelName>,
+    /// The managed-turn isolation the operator chose. Absence means the engine's configured
+    /// selection. Only an unconfined hire may record one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<dudes_types::IsolationMode>,
+    /// The declared MCP names the operator chose, sorted and without repeats. Absence means
+    /// none. Only an unconfined hire may record any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<dudes_types::McpServerName>,
     /// Browser retry and session association for this complete atomic hire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_onboarding: Option<Box<crate::record::BrowserOnboardingHire>>,
@@ -1264,6 +1272,57 @@ mod tests {
                     .collect(),
             )
             .unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_confined_hire_serializes_without_the_option_fields_and_round_trips_to_the_same_bytes() {
+        let record = crate::record::samples::record(crate::RecordKind::AgentHiredWithRepositories);
+        let bytes = serde_json::to_vec(&record).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(
+            !text.contains("mcp_servers") && !text.contains("isolation"),
+            "{text}"
+        );
+        let back: crate::Record = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back, record);
+        assert_eq!(serde_json::to_vec(&back).unwrap(), bytes);
+    }
+
+    #[test]
+    fn an_unconfined_hire_carries_its_options_and_a_confined_one_may_not() {
+        let mut hire = sample_hire(RepositoryPolicy::OperatorTrustV1);
+        hire.isolation = Some(dudes_types::IsolationMode::Bare);
+        hire.mcp_servers = vec![
+            dudes_types::McpServerName::parse("a").unwrap(),
+            dudes_types::McpServerName::parse("b").unwrap(),
+        ];
+        let record = crate::Record::AgentHiredWithUnconfinedRepositories(Box::new(hire.clone()));
+        crate::repository_state::history::validate_shape(&record).unwrap();
+        let bytes = serde_json::to_vec(&record).unwrap();
+        let back: crate::Record = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back, record);
+        let fields = back.hire().unwrap().fields;
+        assert_eq!(fields.isolation, Some(dudes_types::IsolationMode::Bare));
+        assert_eq!(fields.mcp_servers, hire.mcp_servers.as_slice());
+        assert!(fields.trusted);
+
+        let mut unsorted = hire.clone();
+        unsorted.mcp_servers.reverse();
+        let record = crate::Record::AgentHiredWithUnconfinedRepositories(Box::new(unsorted));
+        assert!(crate::repository_state::history::validate_shape(&record).is_err());
+
+        let mut confined = hire;
+        confined.repositories.policy = RepositoryPolicy::WorkingTreeV1;
+        for (isolation, servers) in [
+            (Some(dudes_types::IsolationMode::Bare), Vec::new()),
+            (None, confined.mcp_servers.clone()),
+        ] {
+            let mut bad = confined.clone();
+            bad.isolation = isolation;
+            bad.mcp_servers = servers;
+            let record = crate::Record::AgentHiredWithRepositories(Box::new(bad));
+            assert!(crate::repository_state::history::validate_shape(&record).is_err());
         }
     }
 

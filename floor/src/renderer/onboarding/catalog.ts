@@ -77,6 +77,11 @@ export interface RepositoryGroupOffer {
   }[];
 }
 
+/** Whether the group offer fixes the model for `engine`; when it does not, the operator chooses as for any hire. */
+export function groupPinsModel(group: RepositoryGroupOffer, engine: HireEngine): boolean {
+  return group.providers.find((offer) => offer.provider === engine)?.model != null;
+}
+
 /** The whole offer: the floor-wide ceiling and every eligible workspace. */
 export interface OnboardingCatalog {
   readonly floorUsdPerDayMicros: string | null;

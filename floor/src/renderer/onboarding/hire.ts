@@ -35,7 +35,7 @@ import { currentFloorSession } from '../../session.ts';
 import { AGENT_ID, getFloorState } from '../floor/store.ts';
 import type { FloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
-import { HIRE_ENGINES, isHireEngine, decodeProjectHireTarget } from './catalog.ts';
+import { HIRE_ENGINES, isHireEngine, decodeProjectHireTarget, groupPinsModel } from './catalog.ts';
 import type { EnrolledWorkspace, HireEngine, OnboardingCatalog, ProjectHireTarget } from './catalog.ts';
 import { floorFetch } from '../../transport.ts';
 
@@ -334,7 +334,9 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
       ?? 'Choose an engine this project offers.' });
   }
   const model = trimAsciiSpace(draft.model ?? '');
-  if (workspace?.repositoryGroup === undefined && model !== '' && !MODEL_SHAPE.test(model)) {
+  const engine = workspace === null ? null : chosenEngine(draft, workspace, offer.daemon);
+  const pinned = workspace?.repositoryGroup !== undefined && engine !== null && groupPinsModel(workspace.repositoryGroup, engine);
+  if (!pinned && model !== '' && !MODEL_SHAPE.test(model)) {
     problems.push({ field: 'model', section: 'engine', message: BAD_MODEL });
   }
   return problems;
