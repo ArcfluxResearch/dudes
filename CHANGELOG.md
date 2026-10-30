@@ -22,7 +22,7 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ### Changes
 
-- More groundwork for tickets that span several repositories: frozen scoped ticket authority, stricter recovery checks for a hire that spans repositories, the hire dialog's repository group, and per-repository changes in the Git tab and the ticket Changes view. Nothing offers multi-repository work yet, and a journal without these records replays unchanged. (#312, #315, #316, #317)
+- More groundwork for tickets that span several repositories: frozen scoped ticket authority, stricter recovery checks for a hire that spans repositories, the hire dialog's repository group, per-repository changes in the Git tab and the ticket Changes view, and capturing changes and running checks in each hired copy. Nothing offers multi-repository work yet, and a journal without these records replays unchanged. (#312, #315, #316, #317, #325)
 
 ### Fixes
 
