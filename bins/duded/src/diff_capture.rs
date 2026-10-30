@@ -159,6 +159,21 @@ impl DiffCapture {
         }
     }
 
+    /// Whether the checkout holds a commit that changes a path since `baseline`, read under the
+    /// capture slot like every other observation of a checkout.
+    ///
+    /// # Errors
+    /// The reader's refusal, so the caller reads an unanswered query as unknown.
+    pub fn committed_since(
+        &self,
+        tree: &Tree,
+        baseline: &BaselineCapture,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<bool, DiffRefusal> {
+        let _one_at_a_time = self.slot.capture();
+        self.reader.committed_since(tree, baseline, cancelled)
+    }
+
     /// Sample every declared member under the review reader's shared count and byte allowance.
     #[must_use]
     pub fn stamp_batch(

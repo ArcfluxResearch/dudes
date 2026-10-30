@@ -269,33 +269,82 @@ fn repository_subjects(
         .entries()
         .iter()
         .map(|entry| {
-            let baseline = baseline
-                .and_then(|batch| {
-                    batch
-                        .members
-                        .iter()
-                        .find(|member| member.repo_id == entry.repo_id)
-                })
-                .and_then(|member| match member.outcome {
-                    BaselineOutcome::Captured {
-                        device,
-                        inode,
-                        head,
-                        preexisting_tracked,
-                        preexisting_untracked,
-                    } => Some(BaselineCapture {
-                        root: RootIdentity { device, inode },
-                        head,
-                        preexisting_tracked,
-                        preexisting_untracked,
-                    }),
-                    _ => None,
-                });
+            let baseline = baseline.and_then(|batch| captured_baseline(batch, &entry.repo_id));
             Some(ReviewSubject {
                 repo_id: Some(entry.repo_id.clone()),
                 tree: Tree::recorded(&entry.value, &full_hire).ok()?,
                 baseline,
                 stamp: None,
+            })
+        })
+        .collect()
+}
+
+/// The round-start sample a baseline batch recorded for `repo_id`, when it captured one.
+fn captured_baseline(
+    batch: &RepositoryBaselineBatch,
+    repo_id: &dudes_proto::repository::RepoId,
+) -> Option<BaselineCapture> {
+    let member = batch
+        .members
+        .iter()
+        .find(|member| &member.repo_id == repo_id)?;
+    match member.outcome {
+        BaselineOutcome::Captured {
+            device,
+            inode,
+            head,
+            preexisting_tracked,
+            preexisting_untracked,
+        } => Some(BaselineCapture {
+            root: RootIdentity { device, inode },
+            head,
+            preexisting_tracked,
+            preexisting_untracked,
+        }),
+        _ => None,
+    }
+}
+
+/// What it takes to ask whether one copy of an unconfined hire holds committed work.
+pub(super) struct CommitProbe {
+    tree: Tree,
+    baseline: BaselineCapture,
+}
+
+impl CommitProbe {
+    pub(super) fn committed_since(
+        &self,
+        service: &DiffCapture,
+        cancelled: Arc<AtomicBool>,
+    ) -> Option<bool> {
+        service
+            .committed_since(&self.tree, &self.baseline, cancelled)
+            .ok()
+    }
+}
+
+/// One probe per granted copy, in grant order, for the files-changed evidence of an unconfined
+/// hire. A copy without a recorded baseline has none, so its commits read as unknown.
+pub(super) fn commit_probes(
+    world: &dudes_supervisor::World,
+    goal: GoalId,
+    hire: &dudes_proto::repository::ScopedHireRepositories,
+    grant: &dudes_proto::repository::RepositoryTurnGrant,
+) -> Vec<Option<CommitProbe>> {
+    let full_hire = hire.recorded();
+    let baseline = world
+        .repository_review(goal)
+        .and_then(|review| review.baseline.as_ref())
+        .map(|(_, batch)| batch);
+    grant
+        .repositories
+        .entries()
+        .iter()
+        .map(|entry| {
+            Some(CommitProbe {
+                baseline: captured_baseline(baseline?, &entry.repo_id)?,
+                tree: Tree::recorded(&entry.value, &full_hire).ok()?,
             })
         })
         .collect()

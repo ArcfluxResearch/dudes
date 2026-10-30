@@ -999,6 +999,13 @@ fn recovery_stop_for_append<'stop>(
     Some((stop, stage, target, point))
 }
 
+/// The declared directories a files-changed check asks about, and for an unconfined hire the probes
+/// that ask each copy about committed work.
+type ChangeQueries = (
+    Vec<PathBuf>,
+    Option<Vec<Option<ticket_capture::CommitProbe>>>,
+);
+
 #[cfg(test)]
 type RecoveryRecordHook = Box<dyn FnMut(&Record) + Send>;
 #[cfg(test)]
@@ -9355,25 +9362,22 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
                 return;
             };
-            Some(
+            let probes = (hire.policy.confinement()
+                == dudes_proto::repository::Confinement::Unconfined)
+                .then(|| ticket_capture::commit_probes(sup.world(), goal, hire, &grant));
+            Some((
                 grant
                     .repositories
                     .entries()
                     .iter()
                     .map(|entry| entry.value.execution.directory.clone())
                     .collect::<Vec<_>>(),
-            )
+                probes,
+            ))
         } else {
             None
         };
-        self.run_predicate(
-            goal,
-            cwd,
-            predicate,
-            &repositories,
-            queries.as_deref(),
-            queue,
-        );
+        self.run_predicate(goal, cwd, predicate, &repositories, queries, queue);
     }
 
     #[expect(
@@ -9386,7 +9390,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         cwd: &std::path::Path,
         predicate: &Predicate,
         repositories: &[std::path::PathBuf],
-        queries: Option<&[std::path::PathBuf]>,
+        queries: Option<ChangeQueries>,
         queue: &mut VecDeque<Input>,
     ) {
         if let Predicate::BoardState { card, .. } = predicate {
@@ -9457,7 +9461,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         // beside it in the evidence, never in place of `argv[0]`.
         let operator_argv = argv.clone();
         let repositories = repositories.to_vec();
-        let queries = queries.map(<[_]>::to_vec);
+        let service = Arc::clone(&self.ticket_capture);
+        let cancelled = self.handle.stopping_flag();
 
         *self.predicate_runs.entry(goal).or_default() += 1;
         *self
@@ -9478,8 +9483,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         folder: cwd.clone(),
                         verdict: None,
                     };
-                    if let Some(queries) = queries {
-                        match predicate::files_changed(&*runner, &argv, &queries, &env, path.as_deref(), &repositories, timeout) {
+                    if let Some((queries, probes)) = queries {
+                        let committed = probes.map(|probes| {
+                            move |index: usize| {
+                                probes
+                                    .get(index)?
+                                    .as_ref()?
+                                    .committed_since(&service, Arc::clone(&cancelled))
+                            }
+                        });
+                        match predicate::files_changed_or_committed(&*runner, &argv, &queries, &env, path.as_deref(), &repositories, timeout, committed.as_ref().map(|query| query as predicate::CommittedSince<'_>)) {
                             Ok(verdict) => end.verdict = verdict,
                             Err(error) => tracing::warn!(%error, ?goal, "declared change check could not complete"),
                         }
