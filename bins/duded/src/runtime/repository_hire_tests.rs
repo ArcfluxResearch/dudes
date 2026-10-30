@@ -18,6 +18,7 @@ pub(super) use common::repository_runner::Runner;
 
 mod browser_groups;
 mod unconfined_options;
+mod unconfined_recovery;
 
 pub(super) struct Setup {
     pub(super) fixture: common::Fixture,
