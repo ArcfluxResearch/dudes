@@ -3,7 +3,7 @@ use crate::input::Input;
 use crate::testing::{Harness, Seen};
 use dudes_proto::record::{FileIdentity, Hex32, RecordedWorkspace, TrustPin, TrustedRepository};
 use dudes_proto::repository::{
-    CatalogRepository, ExecutionRepository, HireRepositories, OwnedRepository, RepoId,
+    CatalogRepository, Confinement, ExecutionRepository, HireRepositories, OwnedRepository, RepoId,
     RepositoryEntry, RepositoryHire, RepositoryPolicy, RepositorySet, RepositoryTicketCreated,
     RepositoryTicketStarted, RepositoryTurnIssued, ScopedRepositories, TicketDeclaration,
     TicketStartRepositories,
@@ -18,6 +18,8 @@ use dudes_types::{CardId, CardStatus, GitCommit, Seq, Timestamp};
 
 #[path = "repository_tests/attach.rs"]
 mod attach;
+#[path = "repository_tests/hire_policy.rs"]
+mod hire_policy;
 #[path = "repository_tests/restart.rs"]
 mod restart;
 
@@ -504,6 +506,194 @@ fn an_unavailable_prospective_sample_cancels_only_its_pending_start() {
     );
 }
 
+fn unfinished_turn_end(agent: AgentId, turn: TurnId) -> Record {
+    Record::TurnEnded {
+        agent,
+        turn,
+        mode: Mode::Managed,
+        provenance: Provenance::Observed,
+        exit: ExitStatus::UNKNOWN,
+        usage: None,
+        model_usage: BTreeMap::new(),
+        last_message: None,
+        session: None,
+        outcome: None,
+        final_reply: None,
+        elapsed_ms: None,
+        session_usage: None,
+        step_digest: None,
+        context: None,
+    }
+}
+
+fn standing_gap(kind: InstructionGapKind, agent: AgentId) -> InstructionCoverageGap {
+    InstructionCoverageGap {
+        reason: kind,
+        context: InstructionPathContext::Unresolved,
+        agent: Some(agent),
+        path: None,
+        origin: dudes_proto::InstructionGapOrigin::Declared,
+    }
+}
+
+/// A round whose every copy compared cleanly, carrying only the engine's standing limits.
+fn standing_gaps_round(
+    policy: RepositoryPolicy,
+    extra: Option<fn(AgentId) -> InstructionCoverageGap>,
+) -> (Harness, GoalId, TurnId) {
+    let (mut harness, agent, goal, grant) = fixture_for(policy);
+    let (request, mut sample) = pending(&mut harness, agent, &grant);
+    harness.supervisor.instructions.awaiting.remove(&request);
+    harness
+        .supervisor
+        .instructions
+        .pending_agents
+        .remove(&agent);
+    let execution = &grant
+        .repositories
+        .entries()
+        .iter()
+        .find(|member| member.repo_id == *grant.repositories.primary_id())
+        .unwrap()
+        .value
+        .execution;
+    let root = execution.directory_identity;
+    sample.members[0].root = Some(root);
+    sample.members[0].snapshot.execution_folder =
+        Some(dudes_proto::NativeInstructionPath::from_path(&execution.directory).unwrap());
+    sample.members[0].snapshot.gaps = vec![standing_gap(
+        InstructionGapKind::ConfigurationUnknown,
+        agent,
+    )];
+    let InstructionObservationOwner::Managed { turn, .. } = sample.owner else {
+        unreachable!()
+    };
+    let baseline_lsn = append(
+        &mut harness,
+        Record::InstructionObservationBatchStarted(sample.clone()),
+    );
+    let payload = Record::TurnIssued {
+        agent,
+        turn,
+        goal,
+        task: "Observe instructions".into(),
+        session: None,
+        mode: Mode::Managed,
+        model_selection: None,
+        lsn_of_decision: Lsn(1),
+        answers: Vec::new(),
+    }
+    .issue_payload()
+    .unwrap()
+    .to_owned();
+    append(
+        &mut harness,
+        Record::TurnIssuedWithRepositories(Box::new(RepositoryTurnIssued {
+            grant: grant.clone(),
+            payload,
+        })),
+    );
+    let end_lsn = append(&mut harness, unfinished_turn_end(agent, turn));
+    append(
+        &mut harness,
+        Record::InstructionObservationBatchFinished(RepositoryInstructionFinish {
+            v: INSTRUCTION_BATCH_VERSION,
+            binding: sample.binding,
+            owner: sample.owner,
+            ticket: sample.ticket,
+            baseline: InstructionBaselineRef::Started { lsn: baseline_lsn },
+            members: vec![RepositoryInstructionSettlement {
+                repo_id: grant.repositories.primary_id().clone(),
+                ending_root: Some(root),
+                settlement: InstructionSettlement::Compared {
+                    end: InstructionEndBoundary::ManagedTurn { turn, end_lsn },
+                    sampled_at: Timestamp::UNIX_EPOCH,
+                    recovery: false,
+                    comparison: InstructionComparison {
+                        changes: Vec::new(),
+                        gaps: [
+                            standing_gap(InstructionGapKind::ConfigurationUnknown, agent),
+                            standing_gap(InstructionGapKind::PluginUnknown, agent),
+                            standing_gap(InstructionGapKind::PolicyUnknown, agent),
+                        ]
+                        .into_iter()
+                        .chain(extra.map(|extra| extra(agent)))
+                        .collect(),
+                        usage: InstructionSampleUsage::default(),
+                    },
+                },
+            }],
+        }),
+    );
+    (harness, goal, turn)
+}
+
+#[test]
+fn standing_engine_limits_hold_a_confined_round_and_pass_an_unconfined_one() {
+    let (harness, goal, turn) = standing_gaps_round(RepositoryPolicy::WorkingTreeV1, None);
+    let state = &harness.supervisor.world().instructions;
+    assert!(!state.repository_turn_covered(turn));
+    assert!(state.pending_for_goal(goal));
+    let (harness, goal, turn) = standing_gaps_round(RepositoryPolicy::OperatorTrustV1, None);
+    let state = &harness.supervisor.world().instructions;
+    assert!(state.repository_turn_covered(turn));
+    assert!(!state.pending_for_goal(goal));
+    let replayed = Harness::from_prefix(harness.journal.clone());
+    let state = &replayed.supervisor.world().instructions;
+    assert!(state.repository_turn_covered(turn));
+    assert!(!state.pending_for_goal(goal));
+}
+
+#[test]
+fn an_unconfined_round_stays_held_by_an_observed_shared_limit() {
+    let (harness, goal, turn) = standing_gaps_round(
+        RepositoryPolicy::OperatorTrustV1,
+        Some(|agent| gap(InstructionGapKind::PathUnresolved, agent)),
+    );
+    let state = &harness.supervisor.world().instructions;
+    assert!(!state.repository_turn_covered(turn));
+    assert!(state.pending_for_goal(goal));
+}
+
+fn owned_copy_gap(agent: AgentId) -> InstructionCoverageGap {
+    InstructionCoverageGap {
+        context: InstructionPathContext::OwnedWorktree {
+            lease: WorktreeId::from_bytes([3; 16]),
+        },
+        ..gap(InstructionGapKind::PathUnresolved, agent)
+    }
+}
+
+fn declared_owned_copy_gap(agent: AgentId) -> InstructionCoverageGap {
+    InstructionCoverageGap {
+        origin: dudes_proto::InstructionGapOrigin::Declared,
+        ..owned_copy_gap(agent)
+    }
+}
+
+#[test]
+fn an_observed_gap_in_a_hired_copy_holds_an_unconfined_round_but_a_declared_one_does_not() {
+    let (harness, goal, turn) =
+        standing_gaps_round(RepositoryPolicy::OperatorTrustV1, Some(owned_copy_gap));
+    let state = &harness.supervisor.world().instructions;
+    assert!(!state.repository_turn_covered(turn));
+    assert!(state.pending_for_goal(goal));
+    let (harness, goal, turn) = standing_gaps_round(
+        RepositoryPolicy::OperatorTrustV1,
+        Some(declared_owned_copy_gap),
+    );
+    let state = &harness.supervisor.world().instructions;
+    assert!(state.repository_turn_covered(turn));
+    assert!(!state.pending_for_goal(goal));
+    let (harness, goal, turn) = standing_gaps_round(
+        RepositoryPolicy::WorkingTreeV1,
+        Some(declared_owned_copy_gap),
+    );
+    let state = &harness.supervisor.world().instructions;
+    assert!(!state.repository_turn_covered(turn));
+    assert!(state.pending_for_goal(goal));
+}
+
 #[test]
 fn an_unavailable_ending_sample_retains_durable_unknown_coverage() {
     let (mut harness, agent, goal, grant) = fixture();
@@ -541,26 +731,7 @@ fn an_unavailable_ending_sample_retains_durable_unknown_coverage() {
         &mut harness,
         Record::TurnIssuedWithRepositories(Box::new(RepositoryTurnIssued { grant, payload })),
     );
-    let end_lsn = append(
-        &mut harness,
-        Record::TurnEnded {
-            agent,
-            turn,
-            mode: Mode::Managed,
-            provenance: Provenance::Observed,
-            exit: ExitStatus::UNKNOWN,
-            usage: None,
-            model_usage: BTreeMap::new(),
-            last_message: None,
-            session: None,
-            outcome: None,
-            final_reply: None,
-            elapsed_ms: None,
-            session_usage: None,
-            step_digest: None,
-            context: None,
-        },
-    );
+    let end_lsn = append(&mut harness, unfinished_turn_end(agent, turn));
     let baseline = InstructionBaselineRef::Started { lsn: baseline_lsn };
     harness.supervisor.request_instruction_sample(
         owner,
@@ -672,7 +843,7 @@ fn unavailable_issued_start_keeps_missing_coverage(policy: RepositoryPolicy) {
         InstructionBaselineRef::MissingIssueBoundary { turn, issue_lsn }
     );
     assert!(attempt.snapshot.is_none());
-    assert!(attempt.coverage_unknown());
+    assert!(attempt.coverage_unknown(Confinement::Confined));
     assert!(attempt.repository_binding().is_some());
     assert!(
         harness

@@ -209,35 +209,88 @@ fn native_boundary_written(
         return false;
     };
     entries.iter().any(|(settled_lsn, settled)| {
-        let Record::InstructionAttemptBoundarySettled { owner, started_lsn, proof:
-            dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
-                receipt: dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn: spawn_lsn },
-            },
-        } = &settled.record else { return false; };
+        let Record::InstructionAttemptBoundarySettled {
+            owner,
+            started_lsn,
+            proof:
+                dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                    receipt:
+                        dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn: spawn_lsn },
+                },
+        } = &settled.record
+        else {
+            return false;
+        };
         let agent = match owner {
             dudes_proto::InstructionObservationOwner::Managed { agent, .. }
-                | dudes_proto::InstructionObservationOwner::AttachedProcess { agent, .. } => *agent,
+            | dudes_proto::InstructionObservationOwner::AttachedProcess { agent, .. } => *agent,
             dudes_proto::InstructionObservationOwner::AttachedTurn { .. } => return false,
         };
-        if agent != birth.agent || *started_lsn > birth.tail || *spawn_lsn <= birth.tail
-            || *settled_lsn <= *spawn_lsn {
+        if agent != birth.agent
+            || *started_lsn > birth.tail
+            || *spawn_lsn <= birth.tail
+            || *settled_lsn <= *spawn_lsn
+        {
             return false;
         }
-        let start_matches = entries.iter().any(|(lsn, entry)| *lsn == *started_lsn
-            && matches!(entry.record, Record::InstructionObservationStarted { owner: seen, .. } if seen == *owner));
-        start_matches && entries.iter().any(|(lsn, entry)| *lsn == *spawn_lsn && match (&entry.record, owner, pty) {
-            (Record::TurnSpawned { agent, turn, pid, start_time, boot, .. },
-                dudes_proto::InstructionObservationOwner::Managed { agent: owned, turn: owned_turn, .. }, None) => {
-                agent == owned && turn == owned_turn && *pid == key.pid
-                    && *start_time == key.start_time && *boot == key.boot
-            }
-            (Record::PtySpawned { agent, pty: spawned, pid, start_time, boot, .. },
-                dudes_proto::InstructionObservationOwner::AttachedProcess { agent: owned, .. }, Some(pty)) => {
-                agent == owned && *spawned == pty && *pid == key.pid
-                    && *start_time == key.start_time && *boot == key.boot
-            }
-            _ => false,
-        })
+        let start_matches = entries.iter().any(|(lsn, entry)| {
+            *lsn == *started_lsn
+                && match &entry.record {
+                    Record::InstructionObservationStarted { owner: seen, .. } => seen == owner,
+                    Record::InstructionObservationBatchStarted(batch) => batch.owner == *owner,
+                    _ => false,
+                }
+        });
+        start_matches
+            && entries.iter().any(|(lsn, entry)| {
+                *lsn == *spawn_lsn
+                    && match (&entry.record, owner, pty) {
+                        (
+                            Record::TurnSpawned {
+                                agent,
+                                turn,
+                                pid,
+                                start_time,
+                                boot,
+                                ..
+                            },
+                            dudes_proto::InstructionObservationOwner::Managed {
+                                agent: owned,
+                                turn: owned_turn,
+                                ..
+                            },
+                            None,
+                        ) => {
+                            agent == owned
+                                && turn == owned_turn
+                                && *pid == key.pid
+                                && *start_time == key.start_time
+                                && *boot == key.boot
+                        }
+                        (
+                            Record::PtySpawned {
+                                agent,
+                                pty: spawned,
+                                pid,
+                                start_time,
+                                boot,
+                                ..
+                            },
+                            dudes_proto::InstructionObservationOwner::AttachedProcess {
+                                agent: owned,
+                                ..
+                            },
+                            Some(pty),
+                        ) => {
+                            agent == owned
+                                && *spawned == pty
+                                && *pid == key.pid
+                                && *start_time == key.start_time
+                                && *boot == key.boot
+                        }
+                        _ => false,
+                    }
+            })
     })
 }
 
@@ -2215,6 +2268,18 @@ pub(crate) fn end_turn_with_native_payload(
     host: &SharedHost,
     input: dudes_supervisor::Input,
 ) {
+    let key = reap_native_child(fixture, host, input);
+    host.await_native_acknowledged(&key);
+    assert!(host.native_settlement_written(&key));
+}
+
+/// Ends a managed child the way a real reap does and returns once the daemon recorded the end,
+/// without waiting for the host to be told.
+pub(crate) fn reap_native_child(
+    fixture: &Fixture,
+    host: &SharedHost,
+    input: dudes_supervisor::Input,
+) -> AdoptionKey {
     let dudes_supervisor::Input::ChildExited { turn, .. } = &input else {
         panic!("expected an exact mock child completion payload")
     };
@@ -2241,8 +2306,7 @@ pub(crate) fn end_turn_with_native_payload(
     fixture.await_record("exact managed end after mock reap", |record| {
         matches!(record, Record::TurnEnded { turn: owned, .. } if *owned == turn).then_some(())
     });
-    host.await_native_acknowledged(&key);
-    assert!(host.native_settlement_written(&key));
+    key
 }
 
 /// Block until `path` holds a parsable number, and return it.
