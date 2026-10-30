@@ -1222,6 +1222,30 @@ mod tests {
     }
 
     #[test]
+    fn a_single_copy_site_sees_a_hire_through_its_confinement() {
+        assert!(matches!(
+            HireRepositories::default().workplace(),
+            Workplace::Single(_)
+        ));
+        assert!(matches!(
+            hire_of(RepositoryPolicy::WorkingTreeV1, "service", &COPIES).workplace(),
+            Workplace::Confined
+        ));
+        let unconfined = hire_of(RepositoryPolicy::OperatorTrustV1, "service", &COPIES);
+        let Workplace::Unconfined(hire) = unconfined.workplace() else {
+            panic!("an unconfined hire has a working folder and further roots");
+        };
+        let directories: Vec<_> = hire.execution_directories().collect();
+        let primary_first: Vec<_> = hire
+            .repositories
+            .primary_first()
+            .map(|entry| entry.value.recorded.execution.directory.as_path())
+            .collect();
+        assert_eq!(directories, primary_first);
+        assert_eq!(directories.len(), COPIES.len());
+    }
+
+    #[test]
     fn the_section_is_bounded_in_lines_bytes_and_path_shape() {
         use crate::task::{RepositorySectionError, repository_section};
         let ids: Vec<_> = (0..9)

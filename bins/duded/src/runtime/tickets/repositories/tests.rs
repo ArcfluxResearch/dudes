@@ -776,14 +776,12 @@ fn an_unconfined_hire_refuses_a_narrower_declaration_at_assignment_and_at_start(
             },
         ));
         for record in [&assigned, &started] {
-            let message = admission
-                .require_ticket_append(&world, record, Some(&ticket))
-                .unwrap_err()
-                .to_string();
+            let result = admission.require_ticket_append(&world, record, Some(&ticket));
             if narrower {
+                let message = result.unwrap_err().to_string();
                 assert!(message.contains("covers every repository"), "{message}");
             } else {
-                assert!(message.contains("requires a confined hire"), "{message}");
+                assert!(result.is_ok(), "{result:?}");
             }
         }
     }
