@@ -347,6 +347,22 @@ pub fn validate_start(
     Ok(())
 }
 
+/// An attached session runs outside the provider sandbox, so only a hire whose policy claims no
+/// write boundary has per-copy records for one.
+fn attached_owner_allowed(
+    owner: InstructionObservationOwner,
+    hire: &crate::repository::ScopedHireRepositories,
+) -> Result<(), InstructionValidationError> {
+    match (owner, hire.policy.confinement()) {
+        (
+            InstructionObservationOwner::AttachedProcess { .. }
+            | InstructionObservationOwner::AttachedTurn { .. },
+            crate::repository::Confinement::Confined,
+        ) => Err(InstructionValidationError::InvalidBoundary),
+        _ => Ok(()),
+    }
+}
+
 /// Validate the frozen hire and ticket association independently of goal billing.
 pub fn validate_binding(
     lsn: Lsn,
@@ -355,9 +371,10 @@ pub fn validate_binding(
     ticket: Option<InstructionTicketAssociation>,
     facts: RepositoryInstructionFacts<'_>,
 ) -> Result<(), InstructionValidationError> {
-    let Some((hired_lsn, HireRepositories::Scoped(_))) = facts.hire else {
+    let Some((hired_lsn, HireRepositories::Scoped(hire))) = facts.hire else {
         return Err(InstructionValidationError::InvalidBoundary);
     };
+    attached_owner_allowed(owner, hire)?;
     let (agent, issue) = match owner {
         InstructionObservationOwner::Managed { agent, issue, .. } => (agent, Some(issue)),
         InstructionObservationOwner::AttachedProcess { agent, .. }
@@ -439,6 +456,7 @@ pub fn validate_observation(
                 if hired_lsn != batch.binding.hired_lsn {
                     return Err(InstructionValidationError::InvalidBoundary);
                 }
+                attached_owner_allowed(batch.owner, hire)?;
                 for member in &batch.members {
                     let expected = hire
                         .repositories
