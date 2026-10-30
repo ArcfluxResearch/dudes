@@ -5,6 +5,8 @@ import type { RetiredAgentRow } from './archive.ts';
 import type { DetailTab } from './detailTabs.ts';
 import { isLayoutId } from './office3d/offices.ts';
 import type { LayoutId } from './office3d/offices.ts';
+import { priorityOf } from './ticket/priority.ts';
+import type { Priority } from './ticket/priority.ts';
 
 export type ThemePreference = 'system' | 'light' | 'dark';
 
@@ -79,9 +81,10 @@ export interface NewTicketDraft {
   readonly project: string | null;
   readonly check: string | null;
   readonly agent: string;
+  readonly priority: Priority;
 }
 
-export const EMPTY_TICKET_DRAFT: NewTicketDraft = Object.freeze({ title: '', note: '', project: null, check: null, agent: '' });
+export const EMPTY_TICKET_DRAFT: NewTicketDraft = Object.freeze({ title: '', note: '', project: null, check: null, agent: '', priority: 'none' });
 const TICKET_DRAFT_KEY = 'dudes.floor.new-ticket-draft';
 const TICKET_CREATE_KEY = 'dudes.floor.unconfirmed-ticket-create';
 
@@ -94,7 +97,9 @@ export function readNewTicketDraft(storage: () => Pick<ViewStorage, 'getItem'> =
       || !(row.project === null || typeof row.project === 'string' && row.project.length <= 256)
       || !(row.check === null || typeof row.check === 'string' && row.check.length <= 256)
       || typeof row.agent !== 'string' || row.agent.length > 256) return EMPTY_TICKET_DRAFT;
-    return { title: row.title, note: row.note, project: row.project, check: row.check, agent: row.agent };
+    const priority = row.priority === undefined ? 'none' : priorityOf(row.priority);
+    if (priority === null) return EMPTY_TICKET_DRAFT;
+    return { title: row.title, note: row.note, project: row.project, check: row.check, agent: row.agent, priority };
   } catch { return EMPTY_TICKET_DRAFT; }
 }
 
@@ -110,6 +115,30 @@ export function clearNewTicketDraft(sent: NewTicketDraft, storage: () => DraftRe
       saved.removeItem(TICKET_DRAFT_KEY);
     }
   } catch {}
+}
+
+const CREATE_MORE_KEY = 'dudes.floor.new-ticket-create-more';
+const LAST_PROJECT_KEY = 'dudes.floor.new-ticket-last-project';
+
+/** Whether the New ticket dialog stays open after a ticket is made, as this browser remembers it. */
+export function readCreateMore(storage: () => Pick<ViewStorage, 'getItem'> = browserStorage): boolean {
+  try { return storage().getItem(CREATE_MORE_KEY) === 'true'; } catch { return false; }
+}
+
+export function writeCreateMore(on: boolean, storage: () => ViewStorage = browserStorage): void {
+  try { storage().setItem(CREATE_MORE_KEY, on ? 'true' : 'false'); } catch {}
+}
+
+/** The project the last ticket was made in, or null. */
+export function readLastTicketProject(storage: () => Pick<ViewStorage, 'getItem'> = browserStorage): string | null {
+  try {
+    const value = storage().getItem(LAST_PROJECT_KEY);
+    return value !== null && value.length <= 256 ? value : null;
+  } catch { return null; }
+}
+
+export function writeLastTicketProject(project: string, storage: () => ViewStorage = browserStorage): void {
+  try { storage().setItem(LAST_PROJECT_KEY, project); } catch {}
 }
 
 export function readTicketChangesDraft(card: string, storage: () => ViewStorage = browserStorage): string {
