@@ -773,7 +773,6 @@ where
             children,
             confirmed_launch_failures: BTreeMap::new(),
             pending_attached_calls: BTreeMap::new(),
-            copy_gaps_reported: BTreeSet::new(),
             attached_instruction_boundaries: BTreeMap::new(),
             inherited_native_boundaries: crate::runtime::InheritedNativeBoundaries::default(),
             pending_native_launches: BTreeMap::new(),

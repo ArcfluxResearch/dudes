@@ -113,12 +113,26 @@ fn held_for_missing_copy(setup: &Setup, agent: AgentId) -> dudes_types::Worktree
         })
 }
 
-fn assert_no_turn_started(setup: &Setup) {
+fn issued_turns(setup: &Setup) -> usize {
+    setup
+        .fixture
+        .records()
+        .iter()
+        .filter(|record| format!("{:?}", record.kind()).contains("Issued"))
+        .count()
+}
+
+fn assert_no_turn_started(setup: &Setup, issued_before: usize) {
     assert!(setup.host.spawned().is_empty());
     assert!(!setup.fixture.records().iter().any(|record| matches!(
         record,
         Record::TurnSpawned { .. } | Record::TurnEnded { .. }
     )));
+    assert_eq!(
+        issued_turns(setup),
+        issued_before,
+        "no turn was issued after the copy went missing"
+    );
 }
 
 #[test]
@@ -128,6 +142,7 @@ fn a_chat_message_to_an_unconfined_agent_whose_second_copy_is_gone_holds_it_with
     let agent = hires.hire(params).unwrap().agent;
     let copies = setup.copies_of(agent);
     std::fs::rename(&copies[1], copies[1].with_extension("moved")).unwrap();
+    let issued_before = issued_turns(&setup);
     send_chat(&running, agent);
     let worktree = held_for_missing_copy(&setup, agent);
     running.stop(ExitCause::Ended);
@@ -138,7 +153,43 @@ fn a_chat_message_to_an_unconfined_agent_whose_second_copy_is_gone_holds_it_with
         .find(|lease| lease.path == copies[1])
         .map(|lease| lease.worktree);
     assert_eq!(Some(worktree), leased);
-    assert_no_turn_started(&setup);
+    assert_no_turn_started(&setup, issued_before);
+}
+
+#[test]
+fn replacing_a_goal_of_an_unconfined_agent_is_refused_with_a_reason_and_appends_nothing() {
+    let mut setup = Setup::new();
+    setup.settings.floor_control = crate::settings::FloorControl::On {
+        goal: true,
+        retire: false,
+        renew: true,
+    };
+    let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
+    let agent = hires.hire(params).unwrap().agent;
+    let mut socket = Client::connect(setup.settings.socket()).unwrap();
+    let before = setup.fixture.records();
+    let response = call(
+        &mut socket,
+        &setup,
+        Method::GoalReplace,
+        json!({
+            "request_id": "ab".repeat(32),
+            "agent": agent,
+            "expected_goal": dudes_types::GoalId::from_parts(8, 1),
+            "text": "make it pass",
+            "predicate": dudes_proto::Predicate::Command {
+                argv: vec!["/usr/bin/true".into()],
+                timeout_s: 1,
+            },
+            "check": {"id": "unit", "label": "Unit check"},
+            "may_already_pass": true,
+        }),
+    );
+    let error = response.error.expect("a replacement is refused");
+    assert_eq!(error.message, crate::runtime::GOAL_OUTSIDE_TICKET_REFUSAL);
+    assert_eq!(setup.fixture.records(), before, "a refusal appends nothing");
+    drop(socket);
+    running.stop(ExitCause::Ended);
 }
 
 #[test]

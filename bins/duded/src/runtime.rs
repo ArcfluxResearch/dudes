@@ -1179,9 +1179,6 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) instruction_sampler: instruction_sampling::InstructionSampler,
     pub(crate) confirmed_launch_failures: BTreeMap<Lsn, dudes_proto::InstructionObservationOwner>,
     pub(crate) pending_attached_calls: BTreeMap<Lsn, dudes_proto::InstructionObservationOwner>,
-    /// Agents whose missing copy was already turned into a hold request, so one is not repeated
-    /// on every pass while the hold is on its way to the journal.
-    pub(crate) copy_gaps_reported: BTreeSet<AgentId>,
     pub(crate) attached_instruction_boundaries:
         BTreeMap<Lsn, attached_observations::AttachedBoundary>,
     pub(super) inherited_native_boundaries: native_boundaries::InheritedNativeBoundaries,
@@ -4510,6 +4507,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let mut start = Some(start);
         let mut native_settlements = 0;
         let mut attached_queries = BTreeSet::new();
+        // Per pump, so a gap whose hold request was a no-op (fast-failure protection pending)
+        // is reported again on the next pump instead of staying silent.
+        let mut copy_gaps_reported = BTreeSet::new();
         let outcome = 'work: {
             loop {
                 if let Some(Input::PredicateEndedWithoutVerdict { goal }) = queue.front()
@@ -4553,11 +4553,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 }
                 let (admission, gaps) = self.ctx.repository_observation_with_gaps(self.sup.world());
                 self.sup.observe_repository_admission(admission);
-                self.ctx
-                    .copy_gaps_reported
-                    .retain(|agent| gaps.iter().any(|(gap, _)| gap == agent));
                 for (agent, worktree) in gaps {
-                    if self.ctx.copy_gaps_reported.insert(agent) {
+                    if copy_gaps_reported.insert(agent) {
                         queue.push_back(Input::CopyMissing { agent, worktree });
                     }
                 }

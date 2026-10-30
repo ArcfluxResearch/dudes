@@ -294,8 +294,6 @@ mod tests {
         );
     }
 
-    /// An attached launch passes the agent's model as two typed parts at the end of the argv, and
-    /// nothing when the agent is on the engine default.
     #[test]
     fn attached_launch_adds_each_further_copy_with_a_flag_of_its_own() {
         let adapter = ClaudeAdapter::new(config::ClaudeConfig::default());
@@ -335,6 +333,8 @@ mod tests {
         );
     }
 
+    /// An attached launch passes the agent's model as two typed parts at the end of the argv, and
+    /// nothing when the agent is on the engine default.
     #[test]
     fn attached_launch_ends_in_the_agents_model() {
         let adapter = ClaudeAdapter::new(config::ClaudeConfig::default());

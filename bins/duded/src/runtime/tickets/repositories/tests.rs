@@ -899,3 +899,52 @@ fn assigning_a_ticket_to_an_unconfined_agent_with_a_missing_copy_is_refused() {
     running.stop(crate::ExitCause::Ended);
     assert!(setup.host.spawned().is_empty());
 }
+
+#[test]
+fn a_queued_ticket_for_an_unconfined_agent_whose_second_copy_is_gone_holds_it_before_any_turn() {
+    let setup = setup();
+    let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
+    let agent = hires.hire(params).unwrap().agent;
+    let mut socket = Client::connect(setup.settings.socket()).unwrap();
+    assigned_unconfined_ticket(&setup, agent, &mut socket);
+    let first = setup
+        .fixture
+        .await_record("the first ticket turn", |record| match record {
+            Record::TurnSpawned { turn, .. } => Some(*turn),
+            _ => None,
+        });
+    let second = assigned_unconfined_ticket(&setup, agent, &mut socket);
+    let copy = setup.copies_of(agent)[1].clone();
+    std::fs::rename(&copy, copy.with_extension("moved")).unwrap();
+    let issued_before = issued(&setup);
+    common::end_turn(&running.handle, first);
+    setup
+        .fixture
+        .await_record("the hold", |record| match record {
+            Record::AgentHeld {
+                agent: held,
+                cause: dudes_proto::AutomaticHold::WorktreeMissing { .. },
+                ..
+            } if *held == agent => Some(()),
+            _ => None,
+        });
+    let status = read(&mut socket, &setup, second).card.status;
+    drop(socket);
+    running.stop(crate::ExitCause::Ended);
+    assert_ne!(status, dudes_types::CardStatus::Doing);
+    assert_eq!(
+        issued(&setup),
+        issued_before,
+        "no turn was issued for the queued ticket"
+    );
+    assert_eq!(setup.host.spawned().len(), 1);
+}
+
+fn issued(setup: &Setup) -> usize {
+    setup
+        .fixture
+        .records()
+        .iter()
+        .filter(|record| format!("{:?}", record.kind()).contains("Issued"))
+        .count()
+}
