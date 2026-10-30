@@ -979,7 +979,7 @@ test('Accept keeps Changes reachable and reads the Done ticket with its new sequ
 test('unknown instruction coverage in an undeclared hired repository blocks Accept and permits reviewed rework', async () => {
   const scoped = instructionReview({ coverage_unknown: true,
     changed_paths: [{ repo_id: 'docs', path: { encoding: 'utf8', value: '/docs/AGENTS.md' },
-      display: 'AGENTS.md', display_truncated: false, context: { kind: 'owned_worktree', lease: cardId(50) } }],
+      display: 'AGENTS.md', display_truncated: false, context: { kind: 'owned_worktree', lease: 'ae220aba8e440b35e1feae1c708ea101' } }],
     gaps: [], repository_gaps: [{ repo_id: 'docs', reason: 'read_failed', context: { kind: 'unresolved' },
       agent: null, path: null, display: null, display_truncated: false, origin: 'observed', holds: true }],
   });
