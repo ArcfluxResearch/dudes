@@ -80,7 +80,11 @@ const REAPED: Liveness = if cfg!(windows) {
 fn kill_owned_and_observe_gone(host: &mut RealHost, key: &AdoptionKey, context: &str) {
     let outcome = host.kill(key);
     if matches!(&outcome, KillOutcome::Signalled) {
-        assert_eq!(host.owned(), 0, "{context}: reaped row was retained");
+        assert_eq!(
+            host.owned(),
+            1,
+            "{context}: reaped row left for its native boundary check"
+        );
         assert_eq!(
             host.alive(key),
             REAPED,

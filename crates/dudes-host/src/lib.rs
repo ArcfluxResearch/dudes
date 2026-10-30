@@ -1362,17 +1362,28 @@ mod spawn_failure_tests {
             host.kill(&first),
             dudes_supervisor::host::KillOutcome::Signalled
         ));
-        let missing = host
-            .owned_targets(2)
-            .targets
-            .into_iter()
-            .find(|target| super::same_recorded_keys(target.key.as_ref(), Some(&first)))
-            .unwrap();
-        assert_eq!(missing.state, OwnedTargetState::UnknownMissingCapability);
-        assert!(missing.native_absence_receipt.is_none());
+        let absent = {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                let seen = host
+                    .owned_targets(2)
+                    .targets
+                    .into_iter()
+                    .find(|target| super::same_recorded_keys(target.key.as_ref(), Some(&first)))
+                    .unwrap();
+                if seen.state == OwnedTargetState::NativeBoundaryAbsent
+                    || std::time::Instant::now() >= deadline
+                {
+                    break seen;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        assert_eq!(absent.state, OwnedTargetState::NativeBoundaryAbsent);
+        assert_eq!(absent.native_absence_receipt.as_ref(), Some(&first_receipt));
         assert_eq!(
             host.acknowledge_native_boundary_absence(&first, &first_receipt),
-            NativeBoundaryAcknowledgement::UnknownMissingCapability
+            NativeBoundaryAcknowledgement::Acknowledged
         );
         expect_unresolved_shutdown(&mut host, "the native targets have incomplete coverage");
     }
@@ -2267,8 +2278,8 @@ mod spawn_failure_tests {
         );
         assert_eq!(
             host.owned(),
-            0,
-            "a successfully killed child is still owned (invariant 10's count)"
+            1,
+            "a killed child's reaped row stays for its native boundary check"
         );
         let reason = hold.release_reason();
         assert!(
@@ -2337,8 +2348,8 @@ mod spawn_failure_tests {
         );
         assert_eq!(
             host.owned(),
-            0,
-            "a successfully killed child is still owned (invariant 10's count)"
+            1,
+            "a killed child's reaped row stays for its native boundary check"
         );
         assert_eq!(
             hold.release_reason(),
@@ -2894,17 +2905,23 @@ impl ProcessHost for RealHost {
         {
             protocol.fail();
         }
+        let retain_reaped = self
+            .current_native_targets
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&key.pid);
         let outcome = kill::kill(
             &mut self.children,
             key,
             self.boot.as_host_boot(),
             self.grace,
+            retain_reaped,
         );
-        // Whatever the outcome, the entry is gone from `children` iff the kill reaped it, and the
-        // peer relation follows `children` rather than the outcome: a pid this host no longer owns
-        // must not keep answering for a peer.
+        // A reaped child's peer slot is released here and, for a watched child, by its watcher at
+        // the reap; the release is idempotent. A row that stays for the native boundary check does
+        // not keep answering for a peer.
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-        if !self.children.contains_key(&key.pid) {
+        if matches!(outcome, KillOutcome::Signalled) || !self.children.contains_key(&key.pid) {
             self.peers.release(key.pid);
         }
         outcome
