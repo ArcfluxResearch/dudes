@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context as _, ensure};
 use dudes_proto::repository::{
-    HireRepositories, RepoId, RepositoryEntry, RepositorySet, TicketDeclaration,
+    Confinement, HireRepositories, IncompleteDeclaration, RepoId, RepositoryEntry, RepositorySet,
+    TicketDeclaration,
 };
 use dudes_proto::repository_state::history::{RepositoryLease, validate_execution_hire};
 use dudes_proto::{Record, TicketRow};
@@ -125,7 +126,6 @@ impl CurrentHireAdmission<'_> {
         project: &str,
         selected: Option<&[RepoId]>,
     ) -> anyhow::Result<TicketDeclaration> {
-        self.require_repository_capability(HIRE_POLICY.confinement())?;
         let (_, observed) = self.current_project_repositories(world, project)?;
         let wanted = selected.map(|ids| ids.iter().collect::<BTreeSet<_>>());
         if let Some(ids) = selected {
@@ -137,11 +137,28 @@ impl CurrentHireAdmission<'_> {
                 ids.iter().all(|id| observed.repositories.get(id).is_some()),
                 "repository selection names an unknown member"
             );
+            ensure!(
+                ids.len() == observed.repositories.entries().len()
+                    || self
+                        .require_repository_capability(Confinement::Confined)
+                        .is_ok(),
+                IncompleteDeclaration
+            );
         }
+        self.require_repository_capability(HIRE_POLICY.confinement())?;
+        let primary = observed.repositories.primary_id();
         let entries: Vec<_> = observed
             .repositories
             .entries()
             .iter()
+            .filter(|entry| entry.repo_id == *primary)
+            .chain(
+                observed
+                    .repositories
+                    .entries()
+                    .iter()
+                    .filter(|entry| entry.repo_id != *primary),
+            )
             .filter(|entry| {
                 wanted
                     .as_ref()
@@ -201,6 +218,7 @@ impl CurrentHireAdmission<'_> {
         let HireRepositories::Scoped(recorded) = &row.repositories else {
             anyhow::bail!("the ticket requires a scoped hire");
         };
+        recorded.require_full_declaration(declaration)?;
         if recorded.policy.require_confined().is_err() {
             anyhow::bail!("the ticket requires a confined hire");
         }

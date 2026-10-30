@@ -170,6 +170,8 @@ pub enum RepositoryStateError {
     Issue,
     /// The hire record kind does not match the confinement of its recorded policy.
     Policy,
+    /// An unconfined hire's ticket does not cover every hired repository.
+    Declaration,
 }
 
 impl std::fmt::Display for RepositoryStateError {
@@ -188,6 +190,7 @@ impl std::fmt::Display for RepositoryStateError {
             Self::Issue => "turn repository grant does not match",
             Self::Review => "repository review evidence does not match",
             Self::Policy => "hire record kind does not match its repository policy",
+            Self::Declaration => "a ticket in a multi-repository project covers every repository",
         })
     }
 }
@@ -621,13 +624,21 @@ fn declaration_matches(
         .iter()
         .filter(|entry| declaration.repositories.get(&entry.repo_id).is_some())
         .collect();
-    selected.len() == declaration.repositories.entries().len()
-        && selected
-            .iter()
-            .zip(declaration.repositories.entries())
-            .all(|(origin, declared)| {
+    let declared = declaration.repositories.entries();
+    let primary = declaration.repositories.primary_id();
+    let primary_first: Vec<_> = selected
+        .iter()
+        .filter(|entry| entry.repo_id == *primary)
+        .chain(selected.iter().filter(|entry| entry.repo_id != *primary))
+        .copied()
+        .collect();
+    let in_order = |order: &[&RepositoryEntry<CatalogRepository>]| {
+        order.len() == declared.len()
+            && order.iter().zip(declared).all(|(origin, declared)| {
                 origin.repo_id == declared.repo_id && origin.value.origin == declared.value
             })
+    };
+    in_order(&selected) || in_order(&primary_first)
 }
 
 fn validate_start(
@@ -653,6 +664,8 @@ fn validate_start(
     let Some(HireRepositories::Scoped(hire)) = before.hire else {
         return Err(RepositoryStateError::Start);
     };
+    hire.require_full_declaration(&scope.declaration)
+        .map_err(|_| RepositoryStateError::Declaration)?;
     if hire.policy.require_confined().is_err() {
         return Err(RepositoryStateError::Start);
     }
