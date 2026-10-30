@@ -245,6 +245,15 @@ impl ProtocolWriter {
         Ok(())
     }
 
+    /// Whether the stream has ended or failed, so dropping the row can no longer fail a turn.
+    pub(crate) fn is_terminal(&self) -> bool {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .terminal()
+    }
+
     pub(crate) fn fail(&self) {
         let mut state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.terminal() {

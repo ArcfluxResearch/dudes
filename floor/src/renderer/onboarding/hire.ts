@@ -35,8 +35,8 @@ import { currentFloorSession } from '../../session.ts';
 import { AGENT_ID, getFloorState } from '../floor/store.ts';
 import type { FloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
-import { HIRE_ENGINES, isHireEngine } from './catalog.ts';
-import type { EnrolledWorkspace, HireEngine, OnboardingCatalog } from './catalog.ts';
+import { HIRE_ENGINES, isHireEngine, decodeProjectHireTarget } from './catalog.ts';
+import type { EnrolledWorkspace, HireEngine, OnboardingCatalog, ProjectHireTarget } from './catalog.ts';
 import { floorFetch } from '../../transport.ts';
 
 export type SectionKey = 'identity' | 'workspace' | 'engine';
@@ -115,20 +115,21 @@ export interface FieldProblem {
  * revision. A Claude hire leaves `provider` out: the daemon refuses an explicit
  * `claude` as noncanonical.
  */
-export interface HirePayload {
+interface HireFields {
   readonly attempt_id: string;
-  readonly workspace_id: string;
-  readonly workspace_revision?: string;
   readonly name: string;
   readonly role: string;
   readonly provider?: Exclude<HireEngine, 'claude'>;
   /** Sent only when a model is chosen; absent means the engine's default. */
   readonly model?: string;
-  /** Sent only when the agent should work in its own copy of the project. */
-  readonly own_copy?: true;
   readonly character?: string;
   readonly accent?: AccentColour;
 }
+
+export type HirePayload = HireFields & (
+  | { readonly workspace_id: string; readonly workspace_revision?: string; readonly own_copy?: true; readonly project?: never }
+  | { readonly project: ProjectHireTarget; readonly workspace_id?: never; readonly workspace_revision?: never; readonly own_copy?: never }
+);
 
 /** One attempt: its frozen payload and the serialized body every send reuses. */
 export interface HireAttempt {
@@ -329,10 +330,11 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
     problems.push({ field: 'workspace_id', section: 'workspace',
       message: 'That project is no longer offered. Choose another.' });
   } else if (chosenEngine(draft, workspace, offer.daemon) === null) {
-    problems.push({ field: 'engine', section: 'engine', message: 'Choose an engine this project offers.' });
+    problems.push({ field: 'engine', section: 'engine', message: workspace.repositoryGroup?.providers[0]?.refusal
+      ?? 'Choose an engine this project offers.' });
   }
   const model = trimAsciiSpace(draft.model ?? '');
-  if (model !== '' && !MODEL_SHAPE.test(model)) {
+  if (workspace?.repositoryGroup === undefined && model !== '' && !MODEL_SHAPE.test(model)) {
     problems.push({ field: 'model', section: 'engine', message: BAD_MODEL });
   }
   return problems;
@@ -463,18 +465,25 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
   const revision = workspace?.reloadMark?.revision;
   const engine = chosenEngine(state.draft, workspace, offer.daemon);
   const copy = ownCopyOffer(state.draft, workspace, engine, agentsIn(offer.agents, state.draft.workspaceId).length);
-  const payload: HirePayload = Object.freeze({
-    attempt_id: mintAttemptId(deps.random),
-    workspace_id: state.draft.workspaceId,
-    ...(revision === undefined ? {} : { workspace_revision: revision }),
+  const group = workspace?.repositoryGroup;
+  const model = group?.providers.find((offer) => offer.provider === engine)?.model
+    ?? trimAsciiSpace(state.draft.model ?? '');
+  const attemptId = mintAttemptId(deps.random);
+  const identity = {
     name: trimAsciiSpace(state.draft.name),
     role: trimAsciiSpace(state.draft.role) || DEFAULT_ROLE,
     ...(engine === 'codex' || engine === 'pi' ? { provider: engine } : {}),
-    ...(copy.state === 'available' && copy.checked ? { own_copy: true as const } : {}),
-    ...(trimAsciiSpace(state.draft.model ?? '') ? { model: trimAsciiSpace(state.draft.model!) } : {}),
+  } as const;
+  const appearance = {
+    ...(model ? { model } : {}),
     ...(state.draft.character ? { character: state.draft.character } : {}),
     ...(state.draft.accent ? { accent: state.draft.accent } : {}),
-  });
+  };
+  const payload: HirePayload = group === undefined
+    ? Object.freeze({ attempt_id: attemptId, workspace_id: state.draft.workspaceId,
+      ...(revision === undefined ? {} : { workspace_revision: revision }), ...identity,
+      ...(copy.state === 'available' && copy.checked ? { own_copy: true as const } : {}), ...appearance })
+    : Object.freeze({ attempt_id: attemptId, project: group.project, ...identity, ...appearance });
   const attempt: HireAttempt = Object.freeze({ payload, body: JSON.stringify(payload) });
   commit({ ...state, attempt, sending: true, outcome: null, problem: null, revealed: null, uncertain: false });
   await send(attempt, deps);
@@ -578,7 +587,7 @@ export async function postHire(
   } catch {
     return Object.freeze({ kind: 'unknown' });
   }
-  return decodeHireResponse(status, text, attempt.payload.attempt_id);
+  return decodeHireResponse(status, text, attempt.payload.attempt_id, attempt.payload.project);
 }
 
 function exactly(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
@@ -600,12 +609,21 @@ function json(text: string): unknown {
 }
 
 /** The response map. Anything that does not match its row exactly proves nothing. */
-export function decodeHireResponse(status: number, text: string, attemptId: string): HireOutcome {
+export function decodeHireResponse(status: number, text: string, attemptId: string, project?: ProjectHireTarget): HireOutcome {
   const unknown: HireOutcome = Object.freeze({ kind: 'unknown' });
   switch (status) {
     case 200: {
       const body = json(text);
-      return exactly(body, ['attempt_id', 'state', 'agent']) && body.attempt_id === attemptId
+      const fields = project === undefined ? ['attempt_id', 'state', 'agent'] : ['attempt_id', 'state', 'agent', 'project'];
+      if (!exactly(body, fields)) return unknown;
+      if (project !== undefined) {
+        const actual = decodeProjectHireTarget(body.project);
+        if (actual === null || actual.project_id !== project.project_id
+          || actual.expected_revision !== project.expected_revision || actual.primary_repo !== project.primary_repo
+          || actual.repo_ids.length !== project.repo_ids.length
+          || actual.repo_ids.some((id, index) => id !== project.repo_ids[index])) return unknown;
+      }
+      return body.attempt_id === attemptId
         && body.state === 'complete' && isId(body.agent)
         ? Object.freeze({ kind: 'complete', agent: body.agent }) : unknown;
     }
@@ -621,7 +639,7 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
       const body = json(text);
       if (exactly(body, ['attempt_id', 'state', 'reason', 'note'])
         && body.attempt_id === attemptId && body.state === 'refused'
-        && (body.reason === 'shared_folder' || body.reason === 'own_copy' || body.reason === 'model_fixed')
+        && (body.reason === 'shared_folder' || body.reason === 'own_copy' || body.reason === 'model_fixed' || body.reason === 'repository_group')
         && typeof body.note === 'string' && body.note.length > 0 && body.note.length <= 512
         && !/[\u0000-\u001f\u007f]/u.test(body.note)) {
         return Object.freeze({ kind: 'refused', note: body.note });

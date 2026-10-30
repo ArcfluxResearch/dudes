@@ -112,7 +112,7 @@ pub(crate) enum Boundary {
 }
 
 impl Boundary {
-    const fn is_complete(self) -> bool {
+    pub(crate) const fn is_complete(self) -> bool {
         matches!(self, Self::Complete)
     }
 }
