@@ -35,7 +35,7 @@ export function ModelEditor({ row, children }: { readonly row: AgentRow; readonl
     {available && !view.pinned
       ? <Button variant="ghost" size="sm" className="agent-model-line -ml-2 text-small" disabled={blocked} title={editing ? 'Close the model list' : 'Change model'}
         aria-expanded={editing} data-model-current={view.current ?? ''} data-model-next={view.next ?? ''}
-        onClick={() => { if (editing) cancelModel(); else beginModel(row); }}>{model}</Button>
+        onClick={() => { if (editing) cancelModel(); else beginModel(row); }}><span>{model}</span></Button>
       : <p className="agent-model-line m-0" data-model-current={view.current ?? ''} data-model-next={view.next ?? ''}>
         {model}{view.pinned ? ' (set in the configuration, so the next turn uses it)' : ''}
       </p>}

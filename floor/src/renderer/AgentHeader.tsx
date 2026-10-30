@@ -39,7 +39,6 @@ export interface AgentHeaderProps {
   readonly note: ControlNote | null;
   readonly liveActivity: string | null;
   readonly streamState: string | null;
-  /** The close button. */
   readonly selection: ReactNode;
   readonly retire: ReactNode;
   readonly question: ReactNode;
@@ -61,7 +60,7 @@ export interface AgentHeaderProps {
 export function AgentHeader(props: AgentHeaderProps) {
   const { row, status, note, liveActivity, streamState } = props;
   return (
-    <header className="agent-detail-head grid max-h-[50dvh] grid-cols-1 gap-3 overflow-y-auto font-sans text-ink">
+    <header className="agent-detail-head -m-1 grid max-h-[50dvh] grid-cols-1 gap-3 overflow-y-auto p-1 font-sans text-ink">
       <div className="agent-detail-bar flex items-start gap-3">
         <Portrait className={cn('agent-portrait agent-detail-portrait shrink-0 size-10', PORTRAIT_FRAME)} look={lookOf(row)} accessory={accessoryOf(row.role)}
           name={row.name} />
@@ -96,10 +95,10 @@ function StatusBand({ status, note }: { readonly status: AgentStatus; readonly n
   const detail = note?.text ?? status.detail;
   const control = note === null ? status.control : null;
   return (
-    <section className="agent-detail-state flex flex-wrap items-center gap-x-2 gap-y-1" aria-label="State" data-state={status.tone}>
-      <Badge state={status.tone}>{status.label}</Badge>
+    <section className="agent-detail-state block" aria-label="State" data-state={status.tone}>
+      <Badge state={status.tone} className="mr-2 align-middle">{status.label}</Badge>
       {detail === '' ? null : <p
-        className={cn('agent-detail-state-text m-0 min-w-0 flex-1 basis-48 text-body text-ink [overflow-wrap:anywhere]', control !== null && 'agent-detail-pause',
+        className={cn('agent-detail-state-text m-0 inline text-body text-ink [overflow-wrap:anywhere]', control !== null && 'agent-detail-pause',
           note?.kind === 'problem' && 'control-problem text-danger')}
         role={note?.kind === 'problem' ? 'alert' : control !== null || note !== null ? 'status' : undefined}
         data-pause-state={control?.kind === 'pause' ? control.state : undefined}
@@ -121,15 +120,17 @@ function ActionBar({ need, control, resumeOffered, resumeOff, showTalk, onTalk, 
       : <Button size="sm" variant="primary" onClick={() => onOpenTicket(action.card)}>{action.label}</Button>;
     return null;
   };
-  const lead = offered(need.action) ?? offered(need.second);
+  const first = offered(need.action);
+  const second = offered(need.second);
+  const lead = first ?? second;
   const resumeFirst = lead === null && resumeOffered;
   const talk = need.action.kind === 'agent' && need.action.label === 'Talk';
   const askForTask = talk && task !== null;
   return (
     <div className="agent-detail-primary grid gap-2 empty:hidden">
       <div className="agent-detail-actions flex flex-wrap items-center gap-2 empty:hidden">
-        {offered(need.action)}
-        {offered(need.second)}
+        {first}
+        {second}
         {resumeFirst ? control?.('primary', true) : null}
         {!talk || !showTalk ? null : <Button size="sm" variant={lead === null && !resumeFirst ? 'primary' : 'secondary'} onClick={onTalk}>{need.action.label}</Button>}
         {!askForTask ? null : <Button size="sm" className="agent-task-toggle" aria-expanded={taskOpen} aria-controls="agent-task-panel"

@@ -152,7 +152,7 @@ test('Give a task is a button in the bar, and its form opens in a panel under th
 
 test('the model is a small button in the meta line, which opens the editor below the line', () => {
   const html = drawer({ status: 'idle' });
-  assert.match(html, /<section class="agent-model"[^>]*><button type="button" class="agent-model-line"[^>]*title="Change model"[^>]*aria-expanded="false"[^>]*>Model: <strong>/);
+  assert.match(html, /<section class="agent-model"[^>]*><button type="button" class="agent-model-line"[^>]*title="Change model"[^>]*aria-expanded="false"[^>]*><span>Model: <strong>/);
   assert.ok(html.indexOf('class="agent-model"') > html.indexOf('class="agent-detail-actions"'), 'the meta line follows the action bar');
   assert.doesNotMatch(html, />Change model<\/button>/);
 });
