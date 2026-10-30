@@ -102,7 +102,7 @@ fn three_existing_repositories_round_trip_trust_and_refuse_every_cwd_hire_before
         dudes_config::workspace::directory(&config, "service")
             .unwrap_err()
             .to_string(),
-        "this project has explicit repositories; scoped repository execution is not available yet"
+        "this project has explicit repositories and no single folder"
     );
     let mut running = common::start(daemon);
     assert!(

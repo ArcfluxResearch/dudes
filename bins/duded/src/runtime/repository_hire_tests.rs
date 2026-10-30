@@ -188,7 +188,7 @@ impl Setup {
         claude: dudes_providers::claude::config::ClaudeConfig,
         options: crate::settings::RunOptions,
     ) -> Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng> {
-        let mut daemon = self.boot_with_options(true, claude, options);
+        let mut daemon = self.boot_with_options(false, claude, options);
         daemon.ctx.current_repositories.test_hire_policy =
             Some(dudes_proto::repository::RepositoryPolicy::OperatorTrustV1);
         daemon

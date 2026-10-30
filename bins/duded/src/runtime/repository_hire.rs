@@ -24,8 +24,9 @@ fn refused(message: impl Into<String>) -> RpcError {
 pub(super) const HIRE_POLICY: RepositoryPolicy = RepositoryPolicy::OperatorTrustV1;
 
 /// The one engine and platform decision for a multi-repository hire. The hire path and the Floor
-/// offer both ask it, so the two cannot disagree. An unconfined hire needs what a single-repo hire
-/// into its own copy needs: Claude, on a platform that makes copies.
+/// offer both ask it, so the two cannot disagree. An unconfined hire needs Claude on macOS or
+/// Linux on any architecture; only the confined sandbox is limited to the platforms its profile
+/// was proved on.
 pub(super) fn group_engine_refusal(
     provider: Provider,
     confinement: Confinement,
@@ -38,9 +39,14 @@ pub(super) fn group_engine_refusal(
             Confinement::Unconfined => "Multi-repository projects work with Claude only for now.",
         });
     }
-    (super::scoped_launch::native_platform()
-        == dudes_providers::scoped::ScopedPlatform::Unsupported)
-        .then_some("Multi-repository hiring is not available on this platform.")
+    let supported = match confinement {
+        Confinement::Confined => {
+            super::scoped_launch::native_platform()
+                != dudes_providers::scoped::ScopedPlatform::Unsupported
+        }
+        Confinement::Unconfined => cfg!(unix),
+    };
+    (!supported).then_some("Multi-repository hiring is not available on this platform.")
 }
 
 /// What a multi-repository hire needs before any lease. The unconfined policy takes the model and
@@ -710,19 +716,19 @@ mod confinement_tests {
     }
 
     #[test]
-    fn the_capability_gate_is_closed_for_both_policies_until_a_test_opens_it() {
+    fn only_the_unconfined_gate_is_open_without_the_test_switch() {
         let enrollment = crate::floor_actions::Enrollment::default();
         let mut current = CurrentRepositories::default();
         let admission = CurrentHireAdmission::new(&enrollment, &current);
         admission
-            .require_repository_capability(Confinement::Confined)
-            .unwrap_err();
-        let error = admission
             .require_repository_capability(Confinement::Unconfined)
+            .unwrap();
+        let error = admission
+            .require_repository_capability(Confinement::Confined)
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "unconfined repository execution is not enabled yet"
+            "restricted repository execution has no verified provider capability yet"
         );
         current.test_hire_capability = true;
         let admission = CurrentHireAdmission::new(&enrollment, &current);
@@ -741,8 +747,7 @@ mod confinement_tests {
             unreachable!()
         };
         let enrollment = crate::floor_actions::Enrollment::default();
-        let mut current = CurrentRepositories::default();
-        current.test_hire_capability = true;
+        let current = CurrentRepositories::default();
         let error = CurrentHireAdmission::new(&enrollment, &current)
             .require_scoped_hire_authority(&World::default(), &hire.repositories)
             .unwrap_err();

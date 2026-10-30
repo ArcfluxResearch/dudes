@@ -806,7 +806,14 @@ fn assigned_unconfined_ticket(setup: &Setup, agent: AgentId, socket: &mut Socket
 
 #[test]
 fn an_unconfined_ticket_turn_launches_in_the_primary_copy_with_the_others_added() {
-    let setup = setup();
+    let mut setup = setup();
+    setup
+        .settings
+        .daemon_env
+        .push(dudes_providers::launch::EnvVar::new(
+            "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
+            "1",
+        ));
     let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
     let agent = hires.hire(params).unwrap().agent;
     let mut socket = Client::connect(setup.settings.socket()).unwrap();
@@ -823,6 +830,28 @@ fn an_unconfined_ticket_turn_launches_in_the_primary_copy_with_the_others_added(
     let spawned = setup.host.spawned();
     assert_eq!(spawned.len(), 1);
     setup.assert_primary_with_others_added(&spawned[0], agent);
+    let argv: Vec<_> = spawned[0]
+        .argv
+        .iter()
+        .map(|part| part.to_string_lossy())
+        .collect();
+    assert_eq!(
+        argv.iter().filter(|part| *part == "--add-dir").count(),
+        3,
+        "the second and third copy, and the chat-files folder: {argv:?}"
+    );
+    assert!(
+        argv.iter()
+            .any(|part| part == "--dangerously-skip-permissions"),
+        "the operator's permission setting, as for a single-repo hire: {argv:?}"
+    );
+    assert!(
+        !spawned[0]
+            .env
+            .iter()
+            .any(|var| var.name() == "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"),
+        "the memory-file switch reached the child"
+    );
     let records = setup.fixture.records();
     assert!(
         records

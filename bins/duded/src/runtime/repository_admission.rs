@@ -242,9 +242,7 @@ impl<'a> CurrentHireAdmission<'a> {
             Confinement::Confined => anyhow::bail!(
                 "restricted repository execution has no verified provider capability yet"
             ),
-            Confinement::Unconfined => {
-                anyhow::bail!("unconfined repository execution is not enabled yet")
-            }
+            Confinement::Unconfined => Ok(()),
         }
     }
 

@@ -82,9 +82,10 @@ MCP servers are declared in the same file. See [Give an agent MCP servers](mcp-s
 On macOS and Linux, an existing project can configure an ordered list of 1 to 8 plain repository
 checkouts. Linked worktrees, submodules, and symlinked `.git` directories are refused. Starting or
 reloading the daemon validates the list in memory without recording a repository catalog.
-Per-repository trust for a newly configured list and scoped execution are unavailable in this version.
-These projects cannot be hired into from the CLI or Floor, including by passing one member's folder
-with `--cwd`.
+Trust is granted per repository, and a Claude Code agent can be hired into the whole project with
+its own copy of every repository (`dudes hire --project <id> --worktree --trusted`, or the Hire
+dialog). Codex and Pi agents cannot be hired into a project with several repositories. These
+projects cannot be hired into by passing one member's folder with `--cwd`.
 
 Replace a project's complete repository list in one edit:
 

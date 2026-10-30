@@ -755,7 +755,7 @@ pub fn repository_trust_set(
     };
     writeln!(
         out,
-        "{action} repository {} in project {}. Scoped repository execution is not available yet.",
+        "{action} repository {} in project {}.",
         Escaped(repo),
         Escaped(project)
     )
