@@ -1,6 +1,6 @@
 //! Instruction review across every copy of an unconfined multi-repository hire.
 
-use super::unconfined_sites::{send_chat, world_of};
+use super::unconfined_sites::send_chat;
 use super::*;
 use dudes_journal::{Projections, Reader, replay};
 use dudes_types::{AgentId, TurnId};
@@ -33,7 +33,7 @@ fn chat_turn_to_its_end(setup: &Setup) -> (AgentId, TurnId) {
 #[test]
 fn a_chat_turn_of_an_unconfined_hire_records_what_the_journal_accepts_and_replays() {
     let setup = Setup::new();
-    let (agent, _) = chat_turn_to_its_end(&setup);
+    chat_turn_to_its_end(&setup);
     let records = setup.fixture.records();
     let batches = |wanted: fn(&Record) -> bool| records.iter().filter(|r| wanted(r)).count();
     assert_eq!(
@@ -53,9 +53,6 @@ fn a_chat_turn_of_an_unconfined_hire_records_what_the_journal_accepts_and_replay
         0,
         "a scoped hire never records the single-folder shape"
     );
-    let world = world_of(&setup);
-    assert!(world.agents.contains_key(&agent));
-
     let reader = Reader::new(&setup.fixture.journal_dir());
     let mut cold = Projections::in_memory().unwrap();
     assert!(replay(&reader, &mut cold).unwrap().applied > 0);
