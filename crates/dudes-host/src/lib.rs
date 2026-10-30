@@ -691,7 +691,7 @@ impl RealHost {
         self
     }
 
-    /// How many children this host owns and has not reaped. The count invariant 10 is about.
+    /// How many child rows this host holds, including reaped rows kept for a native boundary check.
     #[must_use]
     pub fn owned(&self) -> usize {
         self.children.len()

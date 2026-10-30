@@ -579,8 +579,8 @@ enum Settled {
 ///
 /// Two paths, and the difference between them is what is holding the identifier still; the module
 /// docs say which and why. The entry in `children` leaves the map only when the child has actually
-/// been reaped — a refused or failed kill leaves it owned, so [`crate::RealHost::shutdown`] still
-/// reaches it.
+/// been reaped and no native boundary check still needs its row. A refused or failed kill leaves it
+/// owned, so [`crate::RealHost::shutdown`] still reaches it.
 pub(crate) fn kill(
     children: &mut BTreeMap<u32, Owned>,
     key: &AdoptionKey,
