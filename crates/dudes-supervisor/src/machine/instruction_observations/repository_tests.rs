@@ -16,6 +16,9 @@ use dudes_proto::{
 };
 use dudes_types::{CardId, CardStatus, GitCommit, Seq, Timestamp};
 
+#[path = "repository_tests/restart.rs"]
+mod restart;
+
 fn append(harness: &mut Harness, record: Record) -> Lsn {
     harness.append_replayed(Entry {
         at: Timestamp::UNIX_EPOCH,
@@ -1163,4 +1166,362 @@ fn fresh_scoped_mail_issue_keeps_the_prepared_task_and_frozen_grant() {
             .any(|seen| matches!(seen, Seen::ScopedSpawn { .. }))
     );
     assert!(harness.host.spawned.is_empty());
+}
+
+fn without_baseline() -> (
+    Harness,
+    AgentId,
+    GoalId,
+    RepositoryTurnGrant,
+    dudes_proto::repository_review::RepositoryBaselineBatch,
+) {
+    let (harness, agent, goal, grant) = fixture();
+    let baseline = harness
+        .journal
+        .iter()
+        .find_map(|entry| match &entry.record {
+            Record::TicketBaselineBatchRecorded(batch) => Some(batch.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let mut prefix = harness.journal.clone();
+    prefix.retain(|entry| !matches!(entry.record, Record::TicketBaselineBatchRecorded(_)));
+    let mut harness = Harness::from_prefix(prefix);
+    harness.answer_captures = false;
+    harness
+        .supervisor
+        .observe_repository_admission(crate::RepositoryAdmission::new([(
+            agent,
+            grant.hired_lsn,
+            true,
+        )]));
+    (harness, agent, goal, grant, baseline)
+}
+
+fn baseline_request(
+    harness: &mut Harness,
+    agent: AgentId,
+) -> Box<crate::effect::RepositoryCapture> {
+    harness.drive(Input::Spend {
+        agent,
+        view: crate::SpendView::default(),
+    });
+    harness.drive(Input::Started);
+    assert!(
+        !harness
+            .records()
+            .any(|record| record.turn_issue().is_some())
+    );
+    harness
+        .trace
+        .iter()
+        .find_map(|seen| match seen {
+            Seen::CaptureRepositoryBaseline { capture } => Some(capture.clone()),
+            _ => None,
+        })
+        .expect("the first issue requests the declared baseline")
+}
+
+#[test]
+fn a_complete_scoped_baseline_precedes_ordinary_and_uncharged_conversation_issues() {
+    for finite in [false, true] {
+        let (mut harness, agent, goal, grant, baseline) = without_baseline();
+        if finite {
+            append(&mut harness, Record::GoalCleared { agent, goal });
+            let context_lsn = harness.supervisor.world().agents[&agent].context_lsn;
+            queued_note(
+                &mut harness,
+                agent,
+                dudes_proto::BrowserNoteDestination::ManagedConversation { context_lsn },
+            );
+        }
+        let capture = baseline_request(&mut harness, agent);
+        assert_eq!(capture.grant, grant);
+        harness.drive(Input::RepositoryBaselineCaptured { capture, baseline });
+        let review = harness.supervisor.world().repository_review(goal).unwrap();
+        assert!(review.baseline.as_ref().unwrap().1.complete());
+        let issue = latest_scoped_issue(&harness);
+        assert_eq!(issue.grant, grant);
+        let record = issue.payload.clone().into_legacy_record();
+        assert_eq!(record.turn_issue().unwrap().goal, (!finite).then_some(goal));
+        assert!(review.baseline.as_ref().unwrap().0 < review.first_issue_lsn.unwrap());
+        assert!(harness.host.spawned.is_empty(), "the process seam is fake");
+    }
+}
+
+#[test]
+fn stale_or_partial_baseline_answers_cannot_issue_and_incomplete_capture_can_retry() {
+    for mode in 0..6 {
+        let (mut harness, agent, _, _, mut baseline) = without_baseline();
+        let complete = baseline.clone();
+        let capture = baseline_request(&mut harness, agent);
+        let mut answer = capture.clone();
+        match mode {
+            0 => answer.grant.catalog_lsn = Lsn(answer.grant.catalog_lsn.0 + 1),
+            1 => baseline.binding.start_lsn = Lsn(baseline.binding.start_lsn.0 + 1),
+            2 => baseline.members.clear(),
+            3 => {
+                baseline.members[0].outcome =
+                    dudes_proto::diff_stamp::BaselineOutcome::Unavailable {
+                        reason: dudes_proto::DiffRefusal::Unreadable,
+                    }
+            }
+            4 => {
+                let mut entries = answer.grant.repositories.entries().to_vec();
+                entries[0].value.execution.directory_identity.inode += 1;
+                answer.grant.repositories =
+                    RepositorySet::new(answer.grant.repositories.primary_id().clone(), entries)
+                        .unwrap();
+            }
+            _ => answer.grant.ticket.as_mut().unwrap().round += 1,
+        }
+        harness.drive(Input::RepositoryBaselineCaptured {
+            capture: answer,
+            baseline,
+        });
+        assert!(
+            !harness
+                .records()
+                .any(|record| record.turn_issue().is_some())
+        );
+        if mode == 3 {
+            let before = harness.trace.len();
+            harness.drive(Input::Started);
+            assert!(
+                harness.trace[before..]
+                    .iter()
+                    .any(|seen| matches!(seen, Seen::CaptureRepositoryBaseline { .. }))
+            );
+        }
+        harness.drive(Input::RepositoryBaselineCaptured {
+            capture,
+            baseline: complete,
+        });
+        assert!(
+            harness
+                .records()
+                .any(|record| record.turn_issue().is_some()),
+            "the current complete reply still settles mode {mode}"
+        );
+    }
+}
+
+#[test]
+fn an_issued_scoped_ticket_never_gains_a_late_baseline_even_for_uncharged_work() {
+    let (mut issued, agent, goal, _) = fixture();
+    issued.drive(Input::Spend {
+        agent,
+        view: crate::SpendView::default(),
+    });
+    issued.drive(Input::Started);
+    let mut prefix = issued.journal.clone();
+    prefix.retain(|entry| !matches!(entry.record, Record::TicketBaselineBatchRecorded(_)));
+    let mut held = Harness::from_prefix(prefix);
+    append(&mut held, Record::GoalCleared { agent, goal });
+    let context_lsn = held.supervisor.world().agents[&agent].context_lsn;
+    queued_note(
+        &mut held,
+        agent,
+        dudes_proto::BrowserNoteDestination::ManagedConversation { context_lsn },
+    );
+    let before = held.trace.len();
+    held.drive(Input::Started);
+    assert!(
+        !held.trace[before..]
+            .iter()
+            .any(|seen| matches!(seen, Seen::CaptureRepositoryBaseline { .. }))
+    );
+    assert_eq!(
+        held.supervisor
+            .world()
+            .repository_review(goal)
+            .unwrap()
+            .readiness(),
+        dudes_proto::repository_review::RepositoryReviewReadiness::MissingAfterIssue
+    );
+}
+
+#[test]
+fn finite_mail_waits_for_the_held_tickets_baseline_before_admission() {
+    let (mut harness, agent, _, _, baseline) = without_baseline();
+    append(
+        &mut harness,
+        Record::LoopDecided {
+            agent,
+            input_digest: "completion".into(),
+            gate_trace: Vec::new(),
+            decision: LoopDecision::Done,
+        },
+    );
+    append(&mut harness, serde_json::from_value(serde_json::json!({
+        "t":"mail", "id": dudes_types::MailId::from_parts(3,1), "from":{"kind":"human"},
+        "to":{"kind":"agent","agent":agent}, "act":"message", "subject":"request", "body_len":0, "state":{"state":"durable"}
+    })).unwrap());
+    let capture = baseline_request(&mut harness, agent);
+    assert!(
+        !harness
+            .trace
+            .iter()
+            .any(|seen| matches!(seen, Seen::MailWakeRefresh { .. }))
+    );
+    harness.drive(Input::RepositoryBaselineCaptured { capture, baseline });
+    assert!(
+        harness
+            .trace
+            .iter()
+            .any(|seen| matches!(seen, Seen::MailWakeRefresh { .. }))
+    );
+    assert!(harness.host.spawned.is_empty(), "the process seam is fake");
+}
+
+fn complete_review_stamp(
+    capture: &crate::effect::RepositoryCapture,
+    baseline_lsn: Lsn,
+    baseline: &dudes_proto::repository_review::RepositoryBaselineBatch,
+    check_lsn: Lsn,
+) -> dudes_proto::repository_review::RepositoryStampBatch {
+    use dudes_proto::repository_review::{
+        REVIEW_BATCH_VERSION, RepositoryStampBatch, RepositoryStampMember, RepositoryStampOutcome,
+    };
+    RepositoryStampBatch {
+        v: REVIEW_BATCH_VERSION,
+        binding: capture.binding,
+        baseline_lsn,
+        check_lsn,
+        members: baseline
+            .members
+            .iter()
+            .map(|member| RepositoryStampMember {
+                repo_id: member.repo_id.clone(),
+                interval: member.interval,
+                versions: member.versions,
+                outcome: RepositoryStampOutcome::Sampled {
+                    root: capture
+                        .grant
+                        .repositories
+                        .get(&member.repo_id)
+                        .unwrap()
+                        .execution
+                        .directory_identity,
+                    complete: true,
+                    digest: dudes_proto::diff_stamp::DigestHex::parse(&"ab".repeat(32)).unwrap(),
+                    omitted: 0,
+                    omitted_lower_bound: false,
+                    untracked: 0,
+                    untracked_lower_bound: false,
+                },
+            })
+            .collect(),
+    }
+}
+
+fn resume_and_tick(harness: &mut Harness, agent: AgentId) {
+    harness.drive(Input::Command(crate::Command::Resume {
+        agent,
+        browser: None,
+    }));
+    harness.drive(Input::Tick);
+}
+
+#[test]
+fn only_a_complete_current_scoped_stamp_resumes_the_predicate_decision() {
+    use dudes_proto::repository_review::RepositoryStampOutcome;
+    for mode in 0..6 {
+        let (mut harness, agent, goal, _) = fixture();
+        harness.answer_captures = false;
+        let Predicate::Command { argv, .. } = harness.supervisor.world().goals[&goal]
+            .goal
+            .predicate
+            .clone()
+        else {
+            unreachable!()
+        };
+        harness.drive(Input::PredicateDone {
+            goal,
+            pass: true,
+            evidence: dudes_proto::Evidence::Command {
+                argv,
+                program: Some("/usr/bin/true".into()),
+                exit: Some(0),
+                output_tail: "fake predicate seam".into(),
+            },
+        });
+        let (mut capture, baseline_lsn, baseline, check_lsn) = harness
+            .trace
+            .iter()
+            .find_map(|seen| match seen {
+                Seen::CaptureRepositoryStamp {
+                    capture,
+                    baseline_lsn,
+                    baseline,
+                    check_lsn,
+                } => Some((capture.clone(), *baseline_lsn, baseline.clone(), *check_lsn)),
+                _ => None,
+            })
+            .expect("the observed result parks its decision for the declared sample");
+        resume_and_tick(&mut harness, agent);
+        assert!(!harness.records().any(|record| matches!(
+            record,
+            Record::LoopDecided {
+                decision: LoopDecision::Done,
+                ..
+            }
+        )));
+        let mut stamp = complete_review_stamp(&capture, baseline_lsn, &baseline, check_lsn);
+        let current_capture = capture.clone();
+        let current_stamp = stamp.clone();
+        match mode {
+            0 => {}
+            1 => stamp.check_lsn = Lsn(stamp.check_lsn.0 + 1),
+            2 => {
+                if let RepositoryStampOutcome::Sampled { root, .. } = &mut stamp.members[0].outcome
+                {
+                    root.inode += 1;
+                }
+            }
+            3 => stamp.members.clear(),
+            4 => {
+                stamp.members[0].outcome = RepositoryStampOutcome::Unavailable {
+                    reason: dudes_proto::DiffRefusal::Unreadable,
+                }
+            }
+            _ => capture.grant.ticket.as_mut().unwrap().round += 1,
+        }
+        harness.drive(Input::RepositoryStampCaptured { capture, stamp });
+        resume_and_tick(&mut harness, agent);
+        let stamped = harness
+            .records()
+            .any(|record| matches!(record, Record::TicketReviewBatchStamped(_)));
+        let decided = harness.records().any(|record| {
+            matches!(
+                record,
+                Record::LoopDecided {
+                    decision: LoopDecision::Done,
+                    ..
+                }
+            )
+        });
+        assert_eq!(stamped, mode == 0 || mode == 4, "mode {mode}");
+        assert_eq!(decided, mode == 0, "mode {mode}");
+        if mode != 0 && mode != 4 {
+            harness.drive(Input::RepositoryStampCaptured {
+                capture: current_capture,
+                stamp: current_stamp,
+            });
+            assert!(
+                harness.records().any(|record| matches!(
+                    record,
+                    Record::LoopDecided {
+                        decision: LoopDecision::Done,
+                        ..
+                    }
+                )),
+                "the malformed reply did not consume mode {mode}"
+            );
+        }
+        assert!(
+            harness.host.spawned.is_empty(),
+            "the process seam is fake for {agent}"
+        );
+    }
 }
