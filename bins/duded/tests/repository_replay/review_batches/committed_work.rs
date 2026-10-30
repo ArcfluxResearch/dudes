@@ -2,7 +2,6 @@ use super::*;
 use duded::diff_capture::DiffCapture;
 use duded::git_read::Tree;
 use duded::git_read::diff::{BaselineCapture, DiffReader};
-use dudes_proto::DiffRefusal;
 
 const COMMIT: [&str; 10] = [
     "-c",
@@ -16,17 +15,6 @@ const COMMIT: [&str; 10] = [
     "-c",
     "maintenance.auto=false",
 ];
-
-/// Git's own background maintenance holds a lock the reader reports as busy until it finishes.
-fn once_idle<T>(mut read: impl FnMut() -> Result<T, DiffRefusal>) -> Result<T, DiffRefusal> {
-    for _ in 0..100 {
-        match read() {
-            Err(DiffRefusal::Busy) => std::thread::sleep(Duration::from_millis(50)),
-            settled => return settled,
-        }
-    }
-    read()
-}
 
 struct Round {
     service: DiffCapture,
@@ -57,8 +45,10 @@ impl Round {
             .iter()
             .map(|copy| {
                 let tree = Tree::recorded(copy, hire).unwrap();
-                let baseline =
-                    once_idle(|| service.reader().capture_baseline(&tree, Arc::default())).unwrap();
+                let baseline = service
+                    .reader()
+                    .capture_baseline(&tree, Arc::default())
+                    .unwrap();
                 (tree, baseline)
             })
             .collect();
@@ -83,7 +73,9 @@ impl Round {
     fn unconfined(&self) -> Option<bool> {
         let committed = |index: usize| {
             let (tree, baseline) = self.probes.get(index)?;
-            once_idle(|| self.service.committed_since(tree, baseline, Arc::default())).ok()
+            self.service
+                .committed_since(tree, baseline, Arc::default())
+                .ok()
         };
         self.run(Some(&committed))
     }
