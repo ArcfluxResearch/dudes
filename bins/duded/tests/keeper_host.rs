@@ -199,7 +199,11 @@ fn a_stop_finishes_well_inside_its_grace_and_leaves_nothing() {
         "the stop took {stopped:?} of a {grace:?} grace"
     );
     await_group_empty(key.pid, BOUND);
-    assert_eq!(host.owned(), 0);
+    assert_eq!(
+        host.owned(),
+        1,
+        "a killed child's reaped row stays for its native boundary check"
+    );
 }
 
 #[test]
