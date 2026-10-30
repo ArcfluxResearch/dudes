@@ -438,6 +438,10 @@ fn issue(settings: &duded::Settings) -> SessionIssueResult {
 
 type Now = Arc<dyn Fn() -> i64 + Send + Sync>;
 
+/// How long the stream upgrade and the first snapshot frame may take. It only catches a hang: a
+/// loaded runner has taken several seconds to boot a daemon and answer its first subscription.
+const STREAM_READ_BOUND: Duration = Duration::from_secs(8);
+
 thread_local! {
     static DAEMON_TIME: std::cell::RefCell<Option<Now>> = const { std::cell::RefCell::new(None) };
 }
@@ -522,7 +526,7 @@ fn snapshot_optional_signaled(
 ) -> Option<(Value, Vec<u8>)> {
     let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(STREAM_READ_BOUND))
         .expect("timeout");
     let request = page.upgrade_head("/floor/stream", STREAM_PROTOCOL);
     stream.write_all(request.as_bytes()).expect("upgrade");
@@ -594,7 +598,7 @@ fn upgrade_head(
 ) -> String {
     let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(STREAM_READ_BOUND))
         .expect("timeout");
     let protocols = signed.map_or_else(
         || STREAM_PROTOCOL.to_owned(),
@@ -4697,16 +4701,25 @@ fn post_control(page: &Page, path: &str, body: &Value) -> (String, Value) {
 }
 
 /// One complete raw exchange, for byte-for-byte comparison of two responses.
+///
+/// A connection that ends without a byte is tried again, twice at most. A loaded macOS runner
+/// has returned nothing for a request the Floor refuses, and a test that compares two answers
+/// needs an answer from each.
 fn raw_post(page: &Page, path: &str, body: &[u8]) -> Vec<u8> {
-    let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("timeout");
-    let mut request = signed_post_head(page, path, body).into_bytes();
-    request.extend_from_slice(body);
-    stream.write_all(&request).expect("request");
     let mut response = Vec::new();
-    let _ = stream.read_to_end(&mut response);
+    for _ in 0..3 {
+        let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut request = signed_post_head(page, path, body).into_bytes();
+        request.extend_from_slice(body);
+        stream.write_all(&request).expect("request");
+        let _ = stream.read_to_end(&mut response);
+        if !response.is_empty() {
+            break;
+        }
+    }
     response
 }
 

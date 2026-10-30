@@ -110,7 +110,7 @@ test('the composer follows the thread while the conversation fills and scrolls t
   for (const utility of ['flex', 'flex-col', 'overflow-hidden']) assert.ok(on(sheet, 'agent-drawer').includes(utility), `the drawer lacks ${utility}`);
   for (const utility of ['flex', 'flex-1', 'flex-col', 'min-h-0']) assert.ok(on(sheet, 'agent-detail').includes(utility), `the detail lacks ${utility}`);
   const tabpanel = /tabpanel" class="([^"]*)"/.exec(sheet)?.[1].split(/\s+/) ?? [];
-  assert.ok(tabpanel.includes('flex-1') && !tabpanel.includes('overflow-y-auto') && !tabpanel.includes('min-h-0'), 'a panel grows with its content and the sheet scrolls');
+  assert.ok(['flex-1', 'min-h-0', 'overflow-y-auto'].every((utility) => tabpanel.includes(utility)), 'a panel fills the room under the header and scrolls on its own');
   const wears = hook => html.match(new RegExp(`class="([^"]*\\b${hook}\\b[^"]*)"`))?.[1].split(/\s+/) ?? [];
   assert.ok(wears('chat-thread').includes('flex-1'));
   for (const utility of ['flex-1', 'min-h-0', 'overflow-y-auto']) assert.ok(wears('chat-scroll').includes(utility), utility);
@@ -155,16 +155,17 @@ test('the Chat sheet follows the visible viewport while a phone keyboard opens a
   }
 });
 
-test('the agent panel is one scroll region, so a form above the Chat never squeezes the conversation', async () => {
+test('the header keeps its place and the panels scroll under it, so a form above the Chat never squeezes the conversation', async () => {
   const html = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(), row, selectedId: A,
     onClose() {}, leaveFocusTo: 'crew-toggle' }));
   assert.match(html, /class="[^"]*\bagent-detail-context\b[^"]*">[\s\S]*<header class="[^"]*\bagent-detail-head\b[^"]*">[\s\S]*\bagent-detail-tabs\b/);
-  const context = /class="((?:[^"]*\s)?agent-detail-context(?:\s[^"]*)?)"/.exec(html)?.[1].replaceAll('&amp;', '&').split(/\s+/) ?? [];
-  assert.ok(!context.includes('overflow-y-auto') && !context.some((name) => name.includes('max-h')), 'the header and tabs do not scroll on their own');
-  const panel = /class="((?:[^"]*\s)?agent-detail(?:\s[^"]*)?)"/.exec(html)?.[1].split(/\s+/) ?? [];
-  assert.ok(panel.includes('overflow-y-auto'), 'the panel scrolls as one');
+  const on = (hook) => new RegExp(`class="((?:[^"]*\\s)?${hook}(?:\\s[^"]*)?)"`).exec(html)?.[1].replaceAll('&amp;', '&').split(/\s+/) ?? [];
+  const context = on('agent-detail-context');
+  assert.ok(context.includes('flex-none'), 'the header and tabs keep their own height');
+  assert.ok(!on('agent-detail').includes('overflow-y-auto'), 'the whole panel does not scroll');
+  const header = on('agent-detail-head');
+  assert.ok(header.includes('overflow-y-auto') && header.some((name) => name.startsWith('max-h-')), 'a tall header scrolls inside its own cap');
   assert.match(html, /<section class="chat-thread [^"]*\bmin-h-72\b/, 'the conversation keeps a usable height');
-  assert.ok(context.includes('flex-none'), 'the header keeps its own height');
   assert.match(html, /\bchat-compose\b/);
 });
 

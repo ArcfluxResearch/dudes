@@ -85,7 +85,7 @@ test('synthetic observed and inferred outcomes remain separate from status, paus
     assert.match(html, new RegExp(`Latest check ${outcome}`));
     assert.ok(html.includes(`<dt>Who ran it</dt><dd>${label}</dd>`));
     assert.match(html, /<dt>Status<\/dt><dd>active<\/dd>/);
-    assert.match(html, /<span class="agent-detail-state-text">Halted<\/span>/);
+    assert.match(html, /<p class="agent-detail-state-text">A halt from the command line stands on this agent\./);
     assert.equal(getFloorState().agents[0].goal.status, 'active');
     assert.equal(getFloorState().agents[0].paused, true);
     assert.equal(getFloorState().agents[0].halted, true);
