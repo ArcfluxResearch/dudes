@@ -65,7 +65,7 @@ test('nothing is read until the operator asks, and each action is one request', 
   try {
     assert.deepEqual(app.seen, [], 'drawing reads nothing');
     await app.click('Show changes');
-    assert.deepEqual(app.seen, [{ mode: 'manifest', card: DIFF_CARD, expected_seq: 4 }]);
+    assert.deepEqual(app.seen, [{ mode: 'manifest', card: DIFF_CARD, expected_seq: 4, repositories: { scope: 'declared' } }]);
     await app.click('Open side by side');
     assert.deepEqual(app.seen[1], { mode: 'content', manifest_id: DIFF_MANIFEST, entries: [DIFF_ENTRY] });
     assert.match(text(app.page.host), /fn count\(\) -> u8/);
@@ -74,7 +74,7 @@ test('nothing is read until the operator asks, and each action is one request', 
     assert.match(text(app.page.host), /new\.rs/);
     assert.match(text(app.page.host), /fn count/, 'paging keeps the open file');
     await app.click('Refresh');
-    assert.deepEqual(app.seen[3], { mode: 'manifest', card: DIFF_CARD, expected_seq: 4 });
+    assert.deepEqual(app.seen[3], { mode: 'manifest', card: DIFF_CARD, expected_seq: 4, repositories: { scope: 'declared' } });
     assert.doesNotMatch(text(app.page.host), /fn count/, 'a new list starts with no file open');
     await app.click('Hide changes');
     await app.draw();
@@ -163,7 +163,7 @@ test('a page of only new files lists them and never says nothing differs or that
   assert.match(out, /Added<\/span> <span class="diff-path"[^>]*>src\/fresh\.rs/);
   assert.match(out, /Nested repository<\/span> <span class="diff-path"[^>]*>vendored/);
   assert.doesNotMatch(out, /No file differs|never shown|not listed/);
-  assert.match(html(diffPage({ entries: [], untracked: 0 })), /No file differs from where this attempt began\./);
+  assert.match(html(diffPage({ entries: [], untracked: 0 })), /No changed files are listed for this repository\./);
 });
 
 test('a hard-linked file says why its text is withheld', () => {

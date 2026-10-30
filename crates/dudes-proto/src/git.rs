@@ -1,4 +1,4 @@
-//! The bounded, display-only read of one agent's checkout the authenticated Floor may request.
+//! The bounded, display-only read of an agent’s recorded repositories for the authenticated Floor.
 //!
 //! A [`GitView`] is a live read of a directory the agent writes. It is never journaled, never in a
 //! projection and never evidence: nothing in it can cause `Done` or `Stop`. Its fields are a closed
@@ -43,6 +43,10 @@ pub enum GitState {
     Ok,
     /// No current agent has this id.
     AgentUnknown,
+    /// The selector does not name an admitted recorded singleton or repository set.
+    InvalidSelection,
+    /// Earlier members spent the aggregate response allowance. This member was not read.
+    ResponseLimit,
     /// The agent's working directory has no `.git` directory at its root.
     NotACheckoutRoot,
     /// The agent's `.git` is a file and its hire names no worktree Dudes created, so this read
@@ -198,6 +202,12 @@ impl<T> Default for GitSection<T> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GitView {
+    /// Recorded repository groups for an explicit aggregate request. Empty on a singleton read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repositories: Vec<GitRepositoryView>,
+    /// Opaque identity of the complete recorded read selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_id: Option<String>,
     /// How the read ended. Every list below is empty unless this is `ok`.
     pub state: GitState,
     /// When the daemon read the repository.
@@ -214,11 +224,23 @@ pub struct GitView {
     pub changes: GitSection<GitWorkingChange>,
 }
 
+/// One bounded member of a recorded hire or ticket selection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitRepositoryView {
+    /// Stable recorded repository identity.
+    pub repo_id: crate::repository::RepoId,
+    /// Finite metadata result for this member. Nested groups are never produced.
+    pub view: Box<GitView>,
+}
+
 impl GitView {
     /// A refusal: `state` and the time, and nothing read.
     #[must_use]
     pub fn refused(state: GitState, read_at: Timestamp) -> Self {
         Self {
+            repositories: Vec::new(),
+            binding_id: None,
             state,
             read_at,
             head: None,

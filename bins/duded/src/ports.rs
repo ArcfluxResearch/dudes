@@ -938,7 +938,7 @@ pub enum Job {
     /// What the journal records about one agent's tree, for the Floor's Git read.
     GitTarget {
         /// The agent the Floor asked about.
-        agent: AgentId,
+        request: crate::floor_git::GitRequest,
         /// What to read or answer, or `None` when the journal has nothing to read for this id.
         reply: Sender<Option<crate::floor_git::GitTarget>>,
     },
@@ -1683,12 +1683,24 @@ impl Handle {
             .map_err(|_| crate::floor_look::LookRefusal::Unavailable)?
     }
     /// What the journal records about `agent`'s tree, or `None` for an unknown agent.
+    #[cfg(test)]
     pub(crate) fn git_target(
         &self,
         agent: AgentId,
     ) -> Result<Option<crate::floor_git::GitTarget>, Unavailable> {
         let (reply, answers) = mpsc::channel();
-        self.send_floor(Job::GitTarget { agent, reply })?;
+        self.send_floor(Job::GitTarget {
+            request: crate::floor_git::GitRequest::singleton(agent),
+            reply,
+        })?;
+        answers.recv().map_err(|_| Unavailable)
+    }
+    pub(crate) fn git_selected(
+        &self,
+        request: crate::floor_git::GitRequest,
+    ) -> Result<Option<crate::floor_git::GitTarget>, Unavailable> {
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::GitTarget { request, reply })?;
         answers.recv().map_err(|_| Unavailable)
     }
     /// What the journal records about `card`'s review, or `None` once the loop has ended.

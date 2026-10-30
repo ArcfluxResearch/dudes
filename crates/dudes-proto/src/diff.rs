@@ -1,8 +1,42 @@
 //! Bounded, display-only checkout review responses. These bytes are never a verdict.
 
+use crate::repository::RepoId;
 use dudes_types::{AgentId, CardId, GoalId, Lsn, Seq, Timestamp};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+/// A repository selection resolved only through the recorded ticket or hire.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "scope", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RepositoryReadSelection {
+    /// One recorded member, selected by its stable identity.
+    Repository {
+        /// Recorded repository identity.
+        repo_id: RepoId,
+    },
+    /// The complete frozen declaration of the ticket round.
+    Declared,
+    /// The complete set recorded by the hire.
+    Hired,
+}
+
+/// One expected repository, including a member that could not be sampled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffRepositoryBinding {
+    /// Recorded identity, absent only for a historical singleton.
+    pub repo_id: Option<RepoId>,
+    /// Opaque fingerprint of this member's baseline.
+    pub baseline_id: String,
+    /// Opaque fingerprint of this member's immutable target.
+    pub target_id: String,
+    /// Why this member has no readable baseline.
+    pub unavailable: Option<DiffRefusal>,
+    /// Tracked changes existed when this member's round started.
+    pub preexisting_tracked: bool,
+    /// Untracked files existed when this member's round started.
+    pub preexisting_untracked: bool,
+}
 
 /// Maximum UTF-8 bytes on one file side before JSON escaping.
 pub const MAX_DIFF_SIDE_BYTES: usize = 16 * 1024;
@@ -137,6 +171,16 @@ pub struct DiffBinding {
     pub goal: GoalId,
     /// Current recorded claimant.
     pub claimant: AgentId,
+    /// Exact recorded hire for a scoped round.
+    #[serde(with = "optional_lsn")]
+    pub hired_lsn: Option<Lsn>,
+    /// Exact recorded ticket start, including historical singleton starts.
+    #[serde(with = "optional_lsn")]
+    pub start_lsn: Option<Lsn>,
+    /// Frozen command-check target for a scoped round.
+    pub check_repo: Option<RepoId>,
+    /// Complete selected membership in recorded order, including unavailable members.
+    pub repositories: Vec<DiffRepositoryBinding>,
     /// The actual durable predicate-result position, when one exists.
     #[serde(with = "optional_lsn")]
     pub check_lsn: Option<Lsn>,
@@ -172,6 +216,8 @@ pub enum DiffAvailability {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiffEntry {
+    /// Repository that owns this path; absent only for a historical singleton.
+    pub repo_id: Option<RepoId>,
     /// Opaque selection token, absent for unavailable rows.
     pub entry_id: Option<String>,
     /// Baseline path for an exact rename, otherwise absent.
@@ -216,6 +262,8 @@ pub struct DiffPage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiffFile {
+    /// Repository that owns this path; absent only for a historical singleton.
+    pub repo_id: Option<RepoId>,
     /// Opaque token from the manifest.
     pub entry_id: String,
     /// Old rename path, otherwise absent.
@@ -322,6 +370,10 @@ mod tests {
     #[test]
     fn log_positions_use_lossless_canonical_decimal_strings() {
         let mut binding = DiffBinding {
+            hired_lsn: None,
+            start_lsn: None,
+            check_repo: None,
+            repositories: Vec::new(),
             card: CardId::NIL,
             seq: Seq(1),
             round: 1,

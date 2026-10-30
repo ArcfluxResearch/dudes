@@ -347,12 +347,16 @@ fn the_session_checks_come_before_any_read() {
         "[]".to_owned(),
         json!({ "agent_id": agent.to_string(), "path": "/etc" }).to_string(),
         json!({ "agent_id": "nope" }).to_string(),
-        " ".repeat(129),
+        " ".repeat(duded::floor_git::MAX_GIT_BODY_BYTES + 1),
     ] {
         let reply = post_body(&floor, &page, &bad);
         assert_eq!(
             reply.status,
-            if bad.len() > 128 { 413 } else { 400 },
+            if bad.len() > duded::floor_git::MAX_GIT_BODY_BYTES {
+                413
+            } else {
+                400
+            },
             "{bad:?}: {}",
             reply.head
         );

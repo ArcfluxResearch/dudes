@@ -5,7 +5,7 @@
 //! no filesystem seam and can reach only the finite routes this catalog contains.
 //!
 //! The browser stream upgrades only `GET /floor/stream`. It requires the offered subprotocols
-//! `dudes-floor-v5`, `dudes-sig.<signature>`, `dudes-time.<time>` and `dudes-id.<request id>`, and
+//! `dudes-floor-v6`, `dudes-sig.<signature>`, `dudes-time.<time>` and `dudes-id.<request id>`, and
 //! echoes only the first. Exact Host and Origin are checked before the host-only session cookie, and
 //! then the device's signature over the handshake request.
 
@@ -153,7 +153,7 @@ const CHAT_FILE_PATH: &str = "/floor/chat/file";
 const UPLOAD_DEADLINE: Duration = Duration::from_secs(120);
 /// The onboarding body cap.
 const MAX_ONBOARD_BODY: usize = 4096;
-const FLOOR_PROTOCOL: &str = "dudes-floor-v5";
+const FLOOR_PROTOCOL: &str = "dudes-floor-v6";
 /// The `Sec-WebSocket-Protocol` entries that carry a socket's signature, time and request id,
 /// because a browser socket cannot set headers.
 const SIGNATURE_PROTOCOL_PREFIX: &str = "dudes-sig.";
@@ -2838,7 +2838,7 @@ fn git_response<'a>(
     };
     let view = match reads.serve(
         session.limit_key(),
-        || handle.git_target(request.agent),
+        || handle.git_selected(request.clone()),
         || stop_requested(phase),
     ) {
         Ok(view) => view?,

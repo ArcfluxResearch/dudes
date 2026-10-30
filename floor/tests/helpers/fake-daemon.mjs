@@ -108,7 +108,7 @@ export function fakeDaemon({ links = [], now = () => NOW, origin = ORIGIN } = {}
 
   /** Whether a socket handshake is signed for `url` by a live device: four entries, the protocol first. */
   async function socket(url, protocols) {
-    if (protocols.length !== 4 || protocols[0] !== 'dudes-floor-v5') return false;
+    if (protocols.length !== 4 || protocols[0] !== 'dudes-floor-v6') return false;
     const [signature, time, request] = ['dudes-sig.', 'dudes-time.', 'dudes-id.']
       .map((prefix, at) => (protocols[at + 1].startsWith(prefix) ? protocols[at + 1].slice(prefix.length) : null));
     if (signature === null || time === null || request === null) return false;

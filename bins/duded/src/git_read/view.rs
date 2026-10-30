@@ -33,8 +33,45 @@ pub(super) struct Facts<'a> {
     pub(super) status_cut: bool,
 }
 
+/// Remaining section, entry and complete-response allowances shared by one aggregate read.
+pub(super) struct ViewBudget {
+    remaining: usize,
+    branches: usize,
+    commits: usize,
+    branch_bytes: usize,
+    commit_bytes: usize,
+    committed_bytes: usize,
+    change_bytes: usize,
+}
+
+impl ViewBudget {
+    pub(super) const fn new(bytes: usize) -> Self {
+        Self {
+            remaining: bytes,
+            branches: MAX_GIT_BRANCHES,
+            commits: MAX_GIT_COMMITS,
+            branch_bytes: MAX_GIT_BRANCH_BYTES,
+            commit_bytes: MAX_GIT_COMMIT_BYTES,
+            committed_bytes: MAX_GIT_COMMITTED_BYTES,
+            change_bytes: MAX_GIT_CHANGE_BYTES,
+        }
+    }
+    pub(super) const fn exhausted(&self) -> bool {
+        self.remaining < 1024
+    }
+    fn spent<T: serde::Serialize>(&mut self, section: &GitSection<T>) -> usize {
+        let bytes = serde_json::to_vec(section).map_or(usize::MAX, |value| value.len());
+        self.remaining = self.remaining.saturating_sub(bytes);
+        bytes
+    }
+}
+
 /// The reply for a successful read.
 pub(super) fn assemble(facts: &Facts<'_>) -> GitView {
+    assemble_bounded(facts, &mut ViewBudget::new(dudes_proto::MAX_GIT_VIEW_BYTES))
+}
+
+pub(super) fn assemble_bounded(facts: &Facts<'_>, budget: &mut ViewBudget) -> GitView {
     let current = match facts.head {
         parse::Head::Branch(name) => Some(name.as_bytes()),
         parse::Head::Detached(_) => None,
@@ -45,7 +82,9 @@ pub(super) fn assemble(facts: &Facts<'_>) -> GitView {
         .filter(|entry| matches!(entry, parse::StatusEntry::Untracked))
         .count();
     let counts = facts.counts;
-    GitView {
+    let mut result = GitView {
+        repositories: Vec::new(),
+        binding_id: None,
         state: GitState::Ok,
         read_at: facts.now,
         head: Some(GitHead {
@@ -57,11 +96,50 @@ pub(super) fn assemble(facts: &Facts<'_>) -> GitView {
             untracked: u32::try_from(untracked).unwrap_or(u32::MAX),
             untracked_cut: facts.status_cut,
         }),
-        branches: branches(facts.tips, current),
-        commits: commits(facts),
-        committed: committed(facts.committed.as_ref()),
-        changes: changes(facts.entries, facts.status_cut, untracked),
-    }
+        branches: GitSection::default(),
+        commits: GitSection::default(),
+        committed: GitSection::default(),
+        changes: GitSection::default(),
+    };
+    budget.remaining = budget
+        .remaining
+        .saturating_sub(serde_json::to_vec(&result).map_or(usize::MAX, |value| value.len()));
+    result.branches = branches(
+        facts.tips,
+        current,
+        budget.branches,
+        budget.branch_bytes.min(budget.remaining),
+    );
+    budget.branch_bytes = budget
+        .branch_bytes
+        .saturating_sub(budget.spent(&result.branches));
+    budget.branches = budget.branches.saturating_sub(result.branches.items.len());
+    result.commits = commits(
+        facts,
+        budget.commits,
+        budget.commit_bytes.min(budget.remaining),
+    );
+    budget.commit_bytes = budget
+        .commit_bytes
+        .saturating_sub(budget.spent(&result.commits));
+    budget.commits = budget.commits.saturating_sub(result.commits.items.len());
+    result.committed = committed(
+        facts.committed.as_ref(),
+        budget.committed_bytes.min(budget.remaining),
+    );
+    budget.committed_bytes = budget
+        .committed_bytes
+        .saturating_sub(budget.spent(&result.committed));
+    result.changes = changes(
+        facts.entries,
+        facts.status_cut,
+        untracked,
+        budget.change_bytes.min(budget.remaining),
+    );
+    budget.change_bytes = budget
+        .change_bytes
+        .saturating_sub(budget.spent(&result.changes));
+    result
 }
 
 fn head_id(head: &parse::Head, tips: &[Tip]) -> Option<String> {
@@ -75,7 +153,12 @@ fn head_id(head: &parse::Head, tips: &[Tip]) -> Option<String> {
 }
 
 /// The current branch first, then the rest in the order git listed them.
-fn branches(tips: &[Tip], current: Option<&[u8]>) -> GitSection<GitBranch> {
+fn branches(
+    tips: &[Tip],
+    current: Option<&[u8]>,
+    slots: usize,
+    bytes: usize,
+) -> GitSection<GitBranch> {
     let is_current = |name: &[u8]| Some(name) == current;
     let ordered = tips
         .iter()
@@ -89,15 +172,15 @@ fn branches(tips: &[Tip], current: Option<&[u8]>) -> GitSection<GitBranch> {
                 current: is_current(name),
             })
         }),
-        MAX_GIT_BRANCHES,
-        MAX_GIT_BRANCH_BYTES,
+        slots,
+        bytes,
     )
 }
 
 /// The largest integer a JavaScript number holds exactly, which the Floor requires of a time.
 const MAX_SAFE_MILLIS: i64 = 9_007_199_254_740_991;
 
-fn commits(facts: &Facts<'_>) -> GitSection<GitCommit> {
+fn commits(facts: &Facts<'_>, slots: usize, bytes: usize) -> GitSection<GitCommit> {
     let mut section = text::fill(
         facts.commits.iter().map(|commit| {
             if commit.at.unix_millis() > MAX_SAFE_MILLIS {
@@ -110,8 +193,8 @@ fn commits(facts: &Facts<'_>) -> GitSection<GitCommit> {
                 subject: text::subject(&commit.subject)?,
             })
         }),
-        MAX_GIT_COMMITS,
-        MAX_GIT_COMMIT_BYTES,
+        slots,
+        bytes,
     );
     // `log` was asked for at most twenty, so more than it printed is known from the count.
     let more = facts
@@ -121,7 +204,7 @@ fn commits(facts: &Facts<'_>) -> GitSection<GitCommit> {
     section
 }
 
-fn committed(committed: Option<&Committed>) -> GitSection<GitCommittedFile> {
+fn committed(committed: Option<&Committed>, bytes: usize) -> GitSection<GitCommittedFile> {
     let Some(Committed { files, cut }) = committed else {
         return GitSection::default();
     };
@@ -135,7 +218,7 @@ fn committed(committed: Option<&Committed>) -> GitSection<GitCommittedFile> {
             })
         }),
         usize::MAX,
-        MAX_GIT_COMMITTED_BYTES,
+        bytes,
     );
     section.truncated |= *cut;
     section
@@ -145,6 +228,7 @@ fn changes(
     entries: &[parse::StatusEntry],
     status_cut: bool,
     untracked: usize,
+    bytes: usize,
 ) -> GitSection<GitWorkingChange> {
     let mut section = text::fill(
         entries.iter().filter_map(|entry| match entry {
@@ -159,7 +243,7 @@ fn changes(
             }
         }),
         usize::MAX,
-        MAX_GIT_CHANGE_BYTES,
+        bytes,
     );
     // Tracked changes come before untracked files in the output, so a cut that has reached an
     // untracked file left every tracked change whole.
@@ -303,5 +387,43 @@ mod tests {
         assert_eq!(names, ["zed", "main"], "the current branch first");
         assert_eq!(view.branches.dropped, 1);
         assert_eq!(view.head.unwrap().id.as_deref(), Some("cccccccccccc"));
+    }
+
+    #[test]
+    fn repository_groups_share_branch_counts_and_serialized_section_room() {
+        let tips: Vec<Tip> = (0..30)
+            .map(|index| (format!("branch-{index}").into_bytes(), id('a')))
+            .collect();
+        let head = parse::Head::Detached(id('a'));
+        let entries = (0..500)
+            .map(|index| parse::StatusEntry::Changed {
+                kind: GitChangeKind::Modified,
+                staged: false,
+                path: format!("{}-{index:03}.rs", "x".repeat(180)).into_bytes(),
+            })
+            .collect::<Vec<_>>();
+        let facts = Facts {
+            head: &head,
+            now: Timestamp::UNIX_EPOCH,
+            tips: &tips,
+            against: GitAgainst::WorktreeStart,
+            counts: Some((0, 0)),
+            commits: &[],
+            log_cut: false,
+            committed: None,
+            entries: &entries,
+            status_cut: false,
+        };
+        let mut budget = ViewBudget::new(dudes_proto::MAX_GIT_VIEW_BYTES - 4096);
+        let first = assemble_bounded(&facts, &mut budget);
+        let second = assemble_bounded(&facts, &mut budget);
+        assert_eq!(
+            first.branches.items.len() + second.branches.items.len(),
+            MAX_GIT_BRANCHES
+        );
+        assert!(second.branches.truncated);
+        assert!(second.changes.truncated);
+        assert!(size(&first.changes) + size(&second.changes) <= MAX_GIT_CHANGE_BYTES + 64);
+        assert!(size(&first) + size(&second) < dudes_proto::MAX_GIT_VIEW_BYTES - 1024);
     }
 }
