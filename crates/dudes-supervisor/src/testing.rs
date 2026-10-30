@@ -1443,15 +1443,28 @@ impl Harness {
     /// hire of one agent into all of them with the first label as primary, then observe the
     /// agent's repositories as admitted. Copies live under `<dir>/copies/<label>`. Returns the
     /// agent and the hire's position.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one replayed catalog, trust, lease and hire prefix"
-    )]
     pub fn hire_with_repository_copies(
         &mut self,
         policy: dudes_proto::repository::RepositoryPolicy,
         labels: &[&str],
         dir: &std::path::Path,
+    ) -> (AgentId, Lsn) {
+        self.hire_with_repository_options(policy, labels, dir, Vec::new(), None)
+    }
+
+    /// [`Self::hire_with_repository_copies`] with the declared servers and isolation the hire
+    /// record carries.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one replayed catalog, trust, lease and hire prefix"
+    )]
+    pub fn hire_with_repository_options(
+        &mut self,
+        policy: dudes_proto::repository::RepositoryPolicy,
+        labels: &[&str],
+        dir: &std::path::Path,
+        mcp_servers: Vec<dudes_types::McpServerName>,
+        isolation: Option<dudes_types::IsolationMode>,
     ) -> (AgentId, Lsn) {
         use dudes_proto::record::{
             FileIdentity, Hex32, RecordedWorkspace, TrustPin, TrustedRepository,
@@ -1565,6 +1578,8 @@ impl Harness {
             max_turns: None,
             max_budget: None,
             model: None,
+            isolation,
+            mcp_servers,
             browser_onboarding: None,
             repositories: ScopedRepositories {
                 project: RecordedWorkspace {

@@ -186,3 +186,61 @@ fn a_missing_copy_of_an_unconfined_hire_holds_the_agent_before_any_launch() {
             if *held == agent)));
     assert!(spawns(&restarted).is_empty());
 }
+
+#[test]
+fn a_hire_with_declared_servers_launches_them_as_a_single_repository_agent_does() {
+    use dudes_providers::claude::ClaudeAdapter;
+    use dudes_providers::mcp::{self, LoadedServers};
+    use dudes_supervisor::testing::{FakeClock, FakeHost};
+
+    let table = serde_json::from_str(r#"{"url": "https://example.com/mcp"}"#).unwrap();
+    let servers = LoadedServers::new(
+        &[mcp::declare("memory", table).expect("a valid declaration")]
+            .into_iter()
+            .collect(),
+        &[],
+        |command| Some(format!("/opt/bin/{command}")),
+    );
+    let mut harness = Harness::with_config(
+        dudes_supervisor::Config {
+            mcp: servers,
+            ..Harness::config()
+        },
+        FakeClock::ticking(1_787_394_600_000, 1),
+        FakeHost::wall_clock_anchored(),
+        || Box::new(ClaudeAdapter::default()),
+    );
+    let (agent, _) = harness.hire_with_repository_options(
+        RepositoryPolicy::OperatorTrustV1,
+        &LABELS,
+        &root(),
+        vec![dudes_types::McpServerName::parse("memory").unwrap()],
+        None,
+    );
+    let row = &harness.supervisor.world().agents[&agent];
+    assert_eq!(row.mcp.desired.len(), 1);
+    harness.drive(Input::Spend {
+        agent,
+        view: SpendView::default(),
+    });
+    queue_chat(&mut harness, agent, "Who are you?");
+    let launched = spawns(&harness);
+    assert_eq!(launched.len(), 1, "one chat turn launched");
+    let config = launched[0]
+        .argv
+        .windows(2)
+        .find(|words| words[0] == "--mcp-config")
+        .expect("the declared server reaches the launch")[1]
+        .to_str()
+        .unwrap();
+    let config: serde_json::Value = serde_json::from_str(config).unwrap();
+    assert_eq!(
+        config["mcpServers"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["memory"]
+    );
+    assert_eq!(launched[0].cwd, copy_of("service"));
+}

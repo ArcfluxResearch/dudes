@@ -26,7 +26,7 @@ pub(crate) struct CurrentRepositories {
 }
 
 impl CurrentRepositories {
-    /// The policy a project hire records; only a test can select the unconfined one.
+    /// The policy a project hire records; only a test can select the confined one.
     #[cfg_attr(
         not(test),
         expect(

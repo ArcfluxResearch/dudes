@@ -356,9 +356,10 @@ impl Record {
                     max_budget: hire.max_budget,
                     model: hire.model.as_ref(),
                     sandbox: None,
-                    isolation: None,
-                    trusted: false,
-                    mcp_servers: &[],
+                    isolation: hire.isolation,
+                    trusted: hire.repositories.policy.confinement()
+                        == crate::repository::Confinement::Unconfined,
+                    mcp_servers: &hire.mcp_servers,
                     browser_onboarding: hire.browser_onboarding.is_some(),
                 },
                 repositories: HireRepositoryRecord::Scoped(&hire.repositories),

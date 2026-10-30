@@ -57,6 +57,33 @@ fn an_unconfined_hire_survives_the_journal_and_folds_like_a_confined_one() {
 }
 
 #[test]
+fn an_unconfined_hire_with_options_replays_and_a_confined_one_is_refused() {
+    let with_options = |mut hire: dudes_proto::repository::RepositoryHire| {
+        hire.isolation = Some(dudes_types::IsolationMode::Bare);
+        hire.mcp_servers = vec![dudes_types::McpServerName::parse("memory").unwrap()];
+        hire
+    };
+    let (store, agent) = replayed(|hire| unconfined(&with_options(hire)));
+    assert!(store.agent(agent).unwrap().is_some());
+
+    let (prefix, hire) = authority();
+    let mut store = Projections::in_memory().unwrap();
+    apply_prefix(&mut store, &prefix);
+    let before = store.export().unwrap();
+    let confined = entry(Record::AgentHiredWithRepositories(Box::new(with_options(
+        hire,
+    ))));
+    assert!(matches!(
+        store.apply(Lsn(4), 2, &confined),
+        Err(Error::Repository {
+            reason: RepositoryStateError::Options,
+            ..
+        })
+    ));
+    assert_eq!(store.export().unwrap(), before);
+}
+
+#[test]
 fn a_hire_record_kind_must_match_its_recorded_policy() {
     let (prefix, hire) = authority();
     let mut store = Projections::in_memory().unwrap();
