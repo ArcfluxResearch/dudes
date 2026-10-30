@@ -115,13 +115,10 @@ fn held_for_missing_copy(setup: &Setup, agent: AgentId) -> dudes_types::Worktree
 
 fn assert_no_turn_started(setup: &Setup) {
     assert!(setup.host.spawned().is_empty());
-    assert!(
-        !setup
-            .fixture
-            .records()
-            .iter()
-            .any(|record| matches!(record, Record::TurnSpawned { .. } | Record::TurnEnded { .. }))
-    );
+    assert!(!setup.fixture.records().iter().any(|record| matches!(
+        record,
+        Record::TurnSpawned { .. } | Record::TurnEnded { .. }
+    )));
 }
 
 #[test]
@@ -145,21 +142,23 @@ fn a_chat_message_to_an_unconfined_agent_whose_second_copy_is_gone_holds_it_with
 }
 
 #[test]
-fn attaching_an_unconfined_agent_opens_the_primary_copy_with_the_others_added() {
-    let mut setup = Setup::new();
-    setup.host = common::SharedHost::with_native_evidence(setup.fixture.journal_dir());
+fn attaching_an_unconfined_agent_is_refused_with_a_reason_and_appends_nothing() {
+    let setup = Setup::new();
     let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
     let agent = hires.hire(params).unwrap().agent;
     running.stop(ExitCause::Ended);
     learn_a_session(&setup, agent);
     let mut daemon = setup.boot_unconfined();
-    let attached = daemon.attach(agent, dudes_proto::Actor::System, None, 80, 24);
-    assert!(attached.is_err(), "the recording host opens nothing");
-    eprintln!("ATTACH {attached:?}");
-    let opened = setup.pty_opened.lock().unwrap().clone();
-    assert_eq!(opened.len(), 1);
-    setup.assert_primary_with_others_added(&opened[0], agent);
-    assert_eq!(opened[0].argv[1..3], ["--resume", SESSION]);
+    let before = setup.fixture.records();
+    let error = daemon
+        .attach(agent, dudes_proto::Actor::System, None, 80, 24)
+        .expect_err("a multi-repository attach waits for its instruction record");
+    assert_eq!(
+        error.message,
+        crate::runtime::ATTACH_MULTI_REPOSITORY_REFUSAL
+    );
+    assert_eq!(setup.fixture.records(), before);
+    assert!(setup.pty_opened.lock().unwrap().is_empty());
 }
 
 const SESSION: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -241,7 +240,8 @@ fn a_goal_outside_a_ticket_is_refused_with_a_reason_for_an_unconfined_agent() {
         "goal": dudes_types::GoalId::from_parts(8, 1).to_string(),
         "text": "make it pass",
     });
-    let request = crate::floor_goal::GoalRequest::parse(&serde_json::to_vec(&body).unwrap()).unwrap();
+    let request =
+        crate::floor_goal::GoalRequest::parse(&serde_json::to_vec(&body).unwrap()).unwrap();
     let outcome = running.handle.goal(session(), request).unwrap();
     assert!(
         matches!(

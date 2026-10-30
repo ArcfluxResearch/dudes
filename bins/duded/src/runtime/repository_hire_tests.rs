@@ -239,7 +239,9 @@ impl Setup {
         else {
             panic!("a repository hire");
         };
-        hire.execution_directories().map(Path::to_path_buf).collect()
+        hire.execution_directories()
+            .map(Path::to_path_buf)
+            .collect()
     }
 
     /// Whether a launch works in the primary copy and adds each other copy, nothing else.

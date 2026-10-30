@@ -530,6 +530,14 @@ pub enum Input {
     /// decide cannot issue or re-issue a turn into a missing tree. The daemon never falls back to
     /// the repository.
     MissingWorktrees(Vec<(AgentId, dudes_types::WorktreeId)>),
+    /// The daemon found a leased copy of an unconfined hire gone while the agent was running, before
+    /// any turn was issued into it. The agent is held, as at startup, and nothing is launched.
+    CopyMissing {
+        /// Owning agent.
+        agent: AgentId,
+        /// The leased copy that is no longer there.
+        worktree: dudes_types::WorktreeId,
+    },
     /// Replay is finished; run the three crash rules and decide. Sent exactly once per daemon
     /// run, after the last [`Input::Replayed`] and **before the first append** — `Reader::locate`
     /// catches a re-created current segment only while no append has happened since.

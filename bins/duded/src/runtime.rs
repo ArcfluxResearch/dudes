@@ -380,6 +380,11 @@ fn missing_unconfined_copy(
     .flatten()
 }
 
+/// An attached session records the instructions it started with in the one folder it opens,
+/// and a multi-repository agent's record names every copy.
+pub(crate) const ATTACH_MULTI_REPOSITORY_REFUSAL: &str =
+    "Opening the real CLI is not available for a multi-repository agent yet.";
+
 /// The reason shown for a goal set outside a ticket on a multi-repository agent. The check of
 /// such a goal has no single folder to run in, so only a ticket gives the agent a goal for now.
 pub(crate) const GOAL_OUTSIDE_TICKET_REFUSAL: &str = "A goal outside a ticket is not available for a multi-repository agent yet. Give it a ticket instead.";
@@ -388,10 +393,9 @@ fn refuse_goal_outside_a_ticket(
     repositories: &dudes_proto::repository::HireRepositories,
 ) -> Result<(), RpcError> {
     match repositories.workplace() {
-        dudes_proto::repository::Workplace::Unconfined(_) => Err(error(
-            ErrorCode::Refused,
-            GOAL_OUTSIDE_TICKET_REFUSAL,
-        )),
+        dudes_proto::repository::Workplace::Unconfined(_) => {
+            Err(error(ErrorCode::Refused, GOAL_OUTSIDE_TICKET_REFUSAL))
+        }
         dudes_proto::repository::Workplace::Single(_)
         | dudes_proto::repository::Workplace::Confined => Ok(()),
     }
@@ -1175,6 +1179,9 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) instruction_sampler: instruction_sampling::InstructionSampler,
     pub(crate) confirmed_launch_failures: BTreeMap<Lsn, dudes_proto::InstructionObservationOwner>,
     pub(crate) pending_attached_calls: BTreeMap<Lsn, dudes_proto::InstructionObservationOwner>,
+    /// Agents whose missing copy was already turned into a hold request, so one is not repeated
+    /// on every pass while the hold is on its way to the journal.
+    pub(crate) copy_gaps_reported: BTreeSet<AgentId>,
     pub(crate) attached_instruction_boundaries:
         BTreeMap<Lsn, attached_observations::AttachedBoundary>,
     pub(super) inherited_native_boundaries: native_boundaries::InheritedNativeBoundaries,
@@ -4544,9 +4551,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 {
                     break 'work Err(error);
                 }
-                self.sup.observe_repository_admission(
-                    self.ctx.repository_observation(self.sup.world()),
-                );
+                let (admission, gaps) = self.ctx.repository_observation_with_gaps(self.sup.world());
+                self.sup.observe_repository_admission(admission);
+                self.ctx
+                    .copy_gaps_reported
+                    .retain(|agent| gaps.iter().any(|(gap, _)| gap == agent));
+                for (agent, worktree) in gaps {
+                    if self.ctx.copy_gaps_reported.insert(agent) {
+                        queue.push_back(Input::CopyMissing { agent, worktree });
+                    }
+                }
                 let Self {
                     sup, ctx, closing, ..
                 } = self;
@@ -5818,6 +5832,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         check_terminal_size(cols, rows)?;
         if self.ctx.holds_pty(agent) {
             return Err(refused("that agent already has an attached PTY"));
+        }
+        if self.sup.world().agents.get(&agent).is_some_and(|row| {
+            matches!(
+                row.repositories.workplace(),
+                dudes_proto::repository::Workplace::Unconfined(_)
+            )
+        }) {
+            return Err(refused(ATTACH_MULTI_REPOSITORY_REFUSAL));
         }
         if self
             .sup
@@ -8627,27 +8649,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .agents
             .get(&agent)
             .ok_or_else(|| anyhow::anyhow!("attached launch owner is unavailable"))?;
-        let recorded_cwd = match row.repositories.workplace() {
-            dudes_proto::repository::Workplace::Single(repository) => Some(repository.cwd()),
-            dudes_proto::repository::Workplace::Unconfined(hire) => {
-                hire.execution_directories().next()
-            }
-            dudes_proto::repository::Workplace::Confined => None,
-        };
-        if recorded_cwd != Some(spec.cwd.as_path()) {
+        if row
+            .repositories
+            .singleton()
+            .is_none_or(|repository| repository.cwd() != spec.cwd)
+        {
             queue.push_back(Input::PtyExited { agent });
             report.record_open(
                 agent,
                 Err("the recorded repository is unavailable for this attachment".to_owned()),
-            )?;
-            return Ok(());
-        }
-        if missing_unconfined_copy(sup.world(), row).is_some() {
-            queue.push_back(Input::PtyExited { agent });
-            report.record_open(
-                agent,
-                Err("a copy of this agent's repositories is missing, so it cannot be attached"
-                    .to_owned()),
             )?;
             return Ok(());
         }

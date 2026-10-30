@@ -849,21 +849,28 @@ fn an_unconfined_ticket_whose_second_copy_goes_missing_before_its_turn_holds_the
     *vanishing.lock().unwrap() = Some(setup.copies_of(agent)[1].clone());
     let mut socket = Client::connect(setup.settings.socket()).unwrap();
     let card = assigned_unconfined_ticket(&setup, agent, &mut socket);
-    let worktree = setup.fixture.await_record("the hold", |record| match record {
-        Record::AgentHeld {
-            agent: held,
-            cause: dudes_proto::AutomaticHold::WorktreeMissing { worktree },
-            ..
-        } if *held == agent => Some(*worktree),
-        _ => None,
-    });
+    let worktree = setup
+        .fixture
+        .await_record("the hold", |record| match record {
+            Record::AgentHeld {
+                agent: held,
+                cause: dudes_proto::AutomaticHold::WorktreeMissing { worktree },
+                ..
+            } if *held == agent => Some(*worktree),
+            _ => None,
+        });
     let status = read(&mut socket, &setup, card).card.status;
     drop(socket);
     running.stop(crate::ExitCause::Ended);
-    assert!(setup.fixture.records().iter().any(
-        |record| record.worktree_lease().is_some_and(|lease| lease.worktree == worktree
-            && lease.path == setup.copies_of(agent)[1])
-    ));
+    assert!(
+        setup
+            .fixture
+            .records()
+            .iter()
+            .any(|record| record.worktree_lease().is_some_and(
+                |lease| lease.worktree == worktree && lease.path == setup.copies_of(agent)[1]
+            ))
+    );
     assert_eq!(status, dudes_types::CardStatus::Doing);
     assert!(setup.host.spawned().is_empty());
 }

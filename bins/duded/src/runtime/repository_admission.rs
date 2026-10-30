@@ -450,15 +450,33 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     }
 
     pub(super) fn repository_observation(&self, world: &World) -> RepositoryAdmission {
-        RepositoryAdmission::new(world.agents.iter().filter(|(_, row)| !row.retired).map(
-            |(agent, row)| {
-                (
-                    *agent,
-                    row.mcp.hire_lsn,
-                    self.repository_allowed(world, *agent),
-                )
-            },
-        ))
+        self.repository_observation_with_gaps(world).0
+    }
+
+    /// The observation, and the unconfined agents that are not held, are refused execution and
+    /// have a leased copy gone. The hold is recorded before a message, mail or ticket reaches
+    /// such an agent, so no turn is issued into the gap and left without a process.
+    pub(super) fn repository_observation_with_gaps(
+        &self,
+        world: &World,
+    ) -> (RepositoryAdmission, Vec<(AgentId, dudes_types::WorktreeId)>) {
+        let mut gaps = Vec::new();
+        let observed: Vec<_> = world
+            .agents
+            .iter()
+            .filter(|(_, row)| !row.retired)
+            .map(|(agent, row)| {
+                let allowed = self.repository_allowed(world, *agent);
+                if !allowed
+                    && row.automatic_hold.is_none()
+                    && let Some(worktree) = super::missing_unconfined_copy(world, row)
+                {
+                    gaps.push((*agent, worktree));
+                }
+                (*agent, row.mcp.hire_lsn, allowed)
+            })
+            .collect();
+        (RepositoryAdmission::new(observed), gaps)
     }
 
     pub(super) fn repository_turn_allowed(&self, world: &World, turn: dudes_types::TurnId) -> bool {
