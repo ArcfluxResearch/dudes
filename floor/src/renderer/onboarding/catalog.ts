@@ -56,6 +56,25 @@ export interface EnrolledWorkspace {
   readonly trusted: boolean;
   /** Present only for a workspace a reload added or changed. */
   readonly reloadMark?: ReloadMark;
+  readonly repositoryGroup?: RepositoryGroupOffer;
+}
+
+export interface ProjectHireTarget {
+  readonly project_id: string;
+  readonly expected_revision: string;
+  readonly primary_repo: string;
+  readonly repo_ids: readonly string[];
+}
+
+export interface RepositoryGroupOffer {
+  readonly project: ProjectHireTarget;
+  readonly repositories: readonly { readonly repo_id: string; readonly label: string }[];
+  readonly providers: readonly {
+    readonly provider: HireEngine;
+    readonly enabled: boolean;
+    readonly model: string | null;
+    readonly refusal: string | null;
+  }[];
 }
 
 /** The whole offer: the floor-wide ceiling and every eligible workspace. */
@@ -82,7 +101,8 @@ const WORKSPACE_KEYS = Object.freeze([
   'workspace_id', 'label', 'engines', 'goal_usd_micros', 'agent_usd_per_day_micros', 'agent_tokens_per_day',
   'goal_tokens', 'hop_cap',
 ]);
-const OPTIONAL_WORKSPACE_KEYS = Object.freeze(['trusted', 'reload_mark']);
+const OPTIONAL_WORKSPACE_KEYS = Object.freeze(['trusted', 'reload_mark', 'repository_group']);
+const REPO_ID = /^[a-z][a-z0-9_-]{0,31}$/;
 
 function exactly(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
@@ -109,8 +129,8 @@ function ceiling(value: unknown, allowZero: boolean): string | null | undefined 
 }
 
 /** A non-empty list of offered engines, each once, in `HIRE_ENGINES` order. */
-function engines(value: unknown): readonly HireEngine[] | null {
-  if (!Array.isArray(value) || value.length === 0) return null;
+function engines(value: unknown, allowEmpty = false): readonly HireEngine[] | null {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) return null;
   let previous = -1;
   for (const engine of value) {
     const at = ENGINE_ORDER.indexOf(engine as HireEngine);
@@ -118,6 +138,42 @@ function engines(value: unknown): readonly HireEngine[] | null {
     previous = at;
   }
   return Object.freeze([...value] as HireEngine[]);
+}
+
+export function decodeProjectHireTarget(value: unknown): ProjectHireTarget | null {
+  if (!exactly(value, ['project_id', 'expected_revision', 'primary_repo', 'repo_ids'])
+    || typeof value.project_id !== 'string' || !WORKSPACE_ID.test(value.project_id)
+    || u64(value.expected_revision) === null || value.expected_revision === '0'
+    || typeof value.primary_repo !== 'string' || !REPO_ID.test(value.primary_repo)
+    || !Array.isArray(value.repo_ids) || value.repo_ids.length < 1 || value.repo_ids.length > 8
+    || !value.repo_ids.every((id) => typeof id === 'string' && REPO_ID.test(id))
+    || new Set(value.repo_ids).size !== value.repo_ids.length || !value.repo_ids.includes(value.primary_repo)) return null;
+  return Object.freeze({ project_id: value.project_id, expected_revision: value.expected_revision as string,
+    primary_repo: value.primary_repo, repo_ids: Object.freeze([...value.repo_ids] as string[]) });
+}
+
+function repositoryGroup(value: unknown): RepositoryGroupOffer | null {
+  if (!exactly(value, ['project', 'repositories', 'providers'])) return null;
+  const project = decodeProjectHireTarget(value.project);
+  if (project === null || !Array.isArray(value.repositories) || value.repositories.length !== project.repo_ids.length
+    || !Array.isArray(value.providers) || value.providers.length !== ENGINE_ORDER.length) return null;
+  const repositories: { repo_id: string; label: string }[] = [];
+  for (const [index, member] of value.repositories.entries()) {
+    if (!exactly(member, ['repo_id', 'label']) || member.repo_id !== project.repo_ids[index]) return null;
+    const label = display(member.label);
+    if (label === null) return null;
+    repositories.push(Object.freeze({ repo_id: project.repo_ids[index]!, label }));
+  }
+  const providers: RepositoryGroupOffer['providers'][number][] = [];
+  for (const [index, offer] of value.providers.entries()) {
+    if (!exactly(offer, ['provider', 'enabled', 'model', 'refusal']) || offer.provider !== ENGINE_ORDER[index]
+      || typeof offer.enabled !== 'boolean'
+      || (offer.model !== null && (typeof offer.model !== 'string' || offer.model.length < 1 || offer.model.length > 64))
+      || (offer.enabled ? offer.refusal !== null : display(offer.refusal) === null)) return null;
+    providers.push(Object.freeze({ provider: ENGINE_ORDER[index]!, enabled: offer.enabled,
+      model: offer.model as string | null, refusal: offer.refusal as string | null }));
+  }
+  return Object.freeze({ project, repositories: Object.freeze(repositories), providers: Object.freeze(providers) });
 }
 
 function reloadMark(value: unknown): ReloadMark | null {
@@ -170,7 +226,11 @@ export function decodeOnboardingCatalog(value: unknown): OnboardingCatalog | nul
       return null;
     }
     const label = display(fields.label);
-    const offered = engines(fields.engines);
+    const group = own.includes('repository_group') ? repositoryGroup(fields.repository_group) : undefined;
+    if (group === null || (group !== undefined && group.project.project_id !== id)) return null;
+    const offered = engines(fields.engines, group !== undefined);
+    if (group !== undefined && (offered === null
+      || offered.join(',') !== group.providers.filter((offer) => offer.enabled).map((offer) => offer.provider).join(','))) return null;
     const goal = ceiling(fields.goal_usd_micros, false);
     const agent = ceiling(fields.agent_usd_per_day_micros, false);
     const agentTokens = ceiling(fields.agent_tokens_per_day, true);
@@ -186,6 +246,7 @@ export function decodeOnboardingCatalog(value: unknown): OnboardingCatalog | nul
       goalUsdMicros: goal, agentUsdPerDayMicros: agent, agentTokensPerDay: agentTokens, goalTokens, hopCap: hops,
       trusted: fields.trusted === true,
       ...(mark === null ? {} : { reloadMark: mark }),
+      ...(group === undefined ? {} : { repositoryGroup: group }),
     }));
   }
   return Object.freeze({ floorUsdPerDayMicros: floor, workspaces: Object.freeze(workspaces) });

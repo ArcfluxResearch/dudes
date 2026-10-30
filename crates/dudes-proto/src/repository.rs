@@ -290,6 +290,9 @@ pub struct RepositoryHire {
     pub max_budget: Option<dudes_types::Usd>,
     /// Recorded model selection.
     pub model: Option<dudes_types::ModelName>,
+    /// Browser retry and session association for this complete atomic hire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_onboarding: Option<Box<crate::record::BrowserOnboardingHire>>,
     /// Complete atomic copy assignment.
     pub repositories: ScopedRepositories,
 }
@@ -832,16 +835,17 @@ mod tests {
     fn a_repository_hire_refuses_unknown_fields_in_records_and_entries() {
         let record = crate::record::samples::record(crate::RecordKind::AgentHiredWithRepositories);
         let mut value = serde_json::to_value(&record).unwrap();
+        assert!(value.get("browser_onboarding").is_none());
         assert_eq!(
             serde_json::from_value::<crate::Record>(value.clone()).unwrap(),
             record
         );
-        value["browser_onboarding"] = serde_json::json!({"attempt": "future"});
+        value["future_browser_field"] = serde_json::json!({"attempt": "future"});
         let error = serde_json::from_value::<crate::Record>(value.clone()).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("unknown field `browser_onboarding`")
+                .contains("unknown field `future_browser_field`")
         );
 
         let entry = crate::Entry {
@@ -853,12 +857,12 @@ mod tests {
             serde_json::from_value::<crate::Entry>(value.clone()).unwrap(),
             entry
         );
-        value["browser_onboarding"] = serde_json::json!({"attempt": "future"});
+        value["future_browser_field"] = serde_json::json!({"attempt": "future"});
         let error = serde_json::from_value::<crate::Entry>(value).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("unknown field `browser_onboarding`")
+                .contains("unknown field `future_browser_field`")
         );
     }
 

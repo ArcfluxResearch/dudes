@@ -198,6 +198,211 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<H, P, C, R> {
+    pub(super) fn browser_repository_offer(
+        &self,
+        profile: &crate::floor_actions::Profile,
+    ) -> Option<crate::floor_actions::RepositoryGroupOffer> {
+        use crate::floor_actions::{
+            OnboardProject, RepositoryGroupOffer, RepositoryLabel, RepositoryProviderOffer,
+        };
+        let admission =
+            CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories);
+        let (_, observed) = admission
+            .current_project_repositories(self.sup.world(), &profile.id)
+            .ok()?;
+        let target = ProjectHireTarget {
+            project_id: profile.id.clone(),
+            expected_revision: observed.lsn?,
+        };
+        let trusted = admission
+            .current_repository_hire_facts(self.sup.world(), &target)
+            .is_ok();
+        let available = self.offered_engines(profile);
+        let providers = crate::floor_actions::BROWSER_ENGINES
+            .into_iter()
+            .map(|provider| {
+                let refusal = if admission.require_repository_capability().is_err() {
+                    Some("Multi-repository hiring is not enabled yet.")
+                } else if provider != Provider::Claude {
+                    Some("Multi-repository projects are not available for this engine yet.")
+                } else if super::scoped_launch::native_platform()
+                    == dudes_providers::scoped::ScopedPlatform::Unsupported
+                {
+                    Some("Multi-repository hiring is not available on this platform.")
+                } else if !trusted {
+                    Some("Trust every repository in this project before hiring.")
+                } else if !self.onboarding_profile_resources_eligible(profile)
+                    || !available.contains(&provider)
+                    || self.model_fixed_by_config(provider)
+                {
+                    Some("This engine's configuration cannot admit the required model and limits.")
+                } else {
+                    None
+                };
+                RepositoryProviderOffer {
+                    provider,
+                    enabled: refusal.is_none(),
+                    model: (provider == Provider::Claude).then_some("claude-sonnet-4-6"),
+                    refusal,
+                }
+            })
+            .collect();
+        Some(RepositoryGroupOffer {
+            project: OnboardProject {
+                target,
+                repositories: RepositorySet::new(
+                    observed.repositories.primary_id().clone(),
+                    observed
+                        .repositories
+                        .entries()
+                        .iter()
+                        .map(|entry| RepositoryEntry {
+                            repo_id: entry.repo_id.clone(),
+                            value: (),
+                        })
+                        .collect(),
+                )
+                .ok()?,
+            },
+            repositories: observed
+                .repositories
+                .entries()
+                .iter()
+                .map(|entry| RepositoryLabel {
+                    repo_id: entry.repo_id.clone(),
+                    label: entry.value.label.clone(),
+                })
+                .collect(),
+            providers,
+        })
+    }
+
+    pub(super) fn onboarding_repository_plan(
+        &self,
+        session: &crate::floor_session::SessionIdentity,
+        request: &crate::floor_actions::OnboardRequest,
+    ) -> Result<RepositoryHirePlan, crate::floor_actions::OnboardRefusal> {
+        use crate::floor_actions::{OnboardRefusal, OnboardTarget};
+        let OnboardTarget::Project(project) = &request.target else {
+            return Err(OnboardRefusal::Forbidden);
+        };
+        if !session.is_valid()
+            || !self.ctx.switches.load().hire
+            || self.ctx.onboarding_index.count(session.digest()) >= 4
+        {
+            return Err(OnboardRefusal::Forbidden);
+        }
+        let admission =
+            CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories);
+        let (profile, observed) = admission
+            .current_project_repositories(self.sup.world(), &project.target.project_id)
+            .map_err(|_| OnboardRefusal::ProfileChanged)?;
+        if observed.lsn != Some(project.target.expected_revision)
+            || observed.repositories.primary_id() != project.repositories.primary_id()
+            || !observed
+                .repositories
+                .entries()
+                .iter()
+                .map(|entry| &entry.repo_id)
+                .eq(project
+                    .repositories
+                    .entries()
+                    .iter()
+                    .map(|entry| &entry.repo_id))
+        {
+            return Err(OnboardRefusal::ProfileChanged);
+        }
+        if request.model.is_some() && self.model_fixed_by_config(request.provider) {
+            return Err(OnboardRefusal::ModelFixed);
+        }
+        let offer = self
+            .browser_repository_offer(profile)
+            .ok_or(OnboardRefusal::ProfileChanged)?;
+        let provider = offer
+            .providers
+            .iter()
+            .find(|provider| provider.provider == request.provider)
+            .ok_or(OnboardRefusal::Forbidden)?;
+        if let Some(refusal) = provider.refusal {
+            return Err(OnboardRefusal::RepositoryGroup(refusal));
+        }
+        if provider.model != request.model.as_ref().map(dudes_types::ModelName::as_str) {
+            return Err(OnboardRefusal::RepositoryGroup(
+                "This project requires claude-sonnet-4-6 for multi-repository work. Nobody was hired.",
+            ));
+        }
+        let params = HireParams {
+            project: Some(project.target.clone()),
+            cwd: std::path::PathBuf::new(),
+            name: request.name.clone(),
+            character: request.character,
+            accent: request.accent,
+            role: request.role.clone(),
+            department: profile.department.clone(),
+            provider: request.provider,
+            budget: profile.agent_budget,
+            sandbox: None,
+            isolation: None,
+            max_turns: None,
+            max_budget: None,
+            model: request.model.clone(),
+            trusted: true,
+            checkout: Some(Checkout::Worktree),
+            from: None,
+            mcp_servers: Vec::new(),
+        };
+        self.repository_hire_plan(params)
+            .map_err(|_| OnboardRefusal::RepositoryGroup(crate::floor_actions::GROUP_COPY_FAILED))
+    }
+
+    pub(super) fn onboard_project_prepared(
+        &mut self,
+        session: &crate::floor_session::SessionIdentity,
+        request: &crate::floor_actions::OnboardRequest,
+        prepared: &PreparedRepositoryGroup,
+    ) -> crate::floor_actions::OnboardStep {
+        use crate::floor_actions::{OnboardRefusal, OnboardStep};
+        if self
+            .ctx
+            .onboarding_index
+            .attempt(request.attempt_id)
+            .is_some()
+        {
+            return OnboardStep::Answer(Err(OnboardRefusal::Conflict));
+        }
+        let result = (|| {
+            if self.exited || self.ctx.journal_writes_stopped() {
+                return Err(OnboardRefusal::UnavailableNoEffect);
+            }
+            let current = self.onboarding_repository_plan(session, request)?;
+            if current != prepared.plan {
+                return Err(OnboardRefusal::ProfileChanged);
+            }
+            let mut hire = self.prepared_repository_hire(prepared).map_err(|_| {
+                OnboardRefusal::RepositoryGroup(crate::floor_actions::GROUP_COPY_FAILED)
+            })?;
+            hire.browser_onboarding = Some(Box::new(dudes_proto::record::BrowserOnboardingHire {
+                attempt_id: request.attempt_id,
+                request_digest: request.request_digest,
+                profile_id: current.project.id,
+                session_digest: session.digest(),
+                intended_goal: None,
+                trust_lsn: None,
+            }));
+            self.operator_authority.seal();
+            self.pump_onboarding(session, Command::HireWithRepositories(Box::new(hire)))?;
+            self.ctx
+                .onboarding_pause
+                .hit(super::OnboardingPausePoint::BetweenEffects);
+            self.ctx
+                .onboarding_index
+                .attempt(request.attempt_id)
+                .ok_or(OnboardRefusal::Unavailable)?
+                .outcome(request)
+        })();
+        OnboardStep::Answer(result)
+    }
+
     pub(super) fn repository_hire_target(
         &self,
         project: &str,
@@ -357,6 +562,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             max_turns: params.max_turns,
             max_budget: params.max_budget,
             model: params.model.clone(),
+            browser_onboarding: None,
             repositories: ScopedRepositories {
                 project: plan.project.clone(),
                 catalog_lsn: plan.catalog_lsn,
