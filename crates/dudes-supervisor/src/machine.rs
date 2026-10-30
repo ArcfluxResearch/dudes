@@ -63,6 +63,8 @@ mod repository_admission_tests;
 mod ticket_review;
 #[cfg(test)]
 mod ticket_start;
+#[cfg(test)]
+mod unconfined_launch_tests;
 use browser_notes::BrowserLaunchPhase;
 use mail_wakes::{MailRefresh, MailRefreshPhase};
 use repositories::IssueRepositories;
@@ -1297,7 +1299,27 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 turn,
                 refusal,
                 dispatch_token,
-            } => self.on_launch_admission_refused(agent, turn, &refusal, dispatch_token, operation),
+            } => self.on_launch_admission_refused(
+                agent,
+                turn,
+                dudes_proto::AutomaticHold::LaunchRefused {
+                    reason: refusal.to_string(),
+                },
+                dispatch_token,
+                operation,
+            ),
+            Input::LaunchWorktreeMissing {
+                agent,
+                turn,
+                worktree,
+                dispatch_token,
+            } => self.on_launch_admission_refused(
+                agent,
+                Some(turn),
+                dudes_proto::AutomaticHold::WorktreeMissing { worktree },
+                dispatch_token,
+                operation,
+            ),
             Input::InstructionAttachedOpenFailed {
                 started_lsn,
                 cleanup_unconfirmed,
@@ -2597,6 +2619,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         };
         let agent_dir = self.agent_dir(agent);
         let ctx = AgentCtx {
+            extra_dirs: &[],
             agent,
             cwd: repository.cwd(),
             agent_dir: &agent_dir,
@@ -3068,7 +3091,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return;
         }
-        if !task.contains(row.identity_line(agent).as_str()) {
+        let Some(identity) = row.identity_line(agent) else {
+            return;
+        };
+        if !task.contains(identity.as_str()) {
             return;
         }
         let Some((turn, launch)) = self.prepare_new_issue(agent, &row, task, operation) else {
@@ -3161,8 +3187,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Err(refusal) => return ManagedLaunch::Refused(LaunchError::McpServer(refusal)),
         };
         let agent_dir = self.agent_dir(agent);
-        let repository = match repositories {
-            IssueRepositories::Legacy(repository) => repository,
+        let unconfined_dirs;
+        let (cwd, extra_dirs): (&std::path::Path, &[PathBuf]) = match repositories {
+            IssueRepositories::Legacy(repository) => (repository.cwd(), &[]),
             IssueRepositories::Scoped(grant) => match grant.policy.confinement() {
                 dudes_proto::repository::Confinement::Confined => {
                     if !mcp_servers.is_empty() || row.mcp.first_edit.is_some() {
@@ -3187,13 +3214,28 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     }));
                 }
                 dudes_proto::repository::Confinement::Unconfined => {
-                    return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
+                    let covers_hire = grant_covers_hire(&row.repositories, grant);
+                    if !covers_hire {
+                        return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
+                    }
+                    let mut copies = grant.repositories.primary_first();
+                    let Some(primary) = copies.next() else {
+                        return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
+                    };
+                    unconfined_dirs = copies
+                        .map(|entry| entry.value.execution.directory.clone())
+                        .collect::<Vec<_>>();
+                    (
+                        primary.value.execution.directory.as_path(),
+                        unconfined_dirs.as_slice(),
+                    )
                 }
             },
         };
         let ctx = AgentCtx {
             agent,
-            cwd: repository.cwd(),
+            cwd,
+            extra_dirs,
             agent_dir: &agent_dir,
             daemon_env: &self.config.daemon_env,
             sandbox: row.sandbox,
@@ -3354,11 +3396,23 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &mut self,
         agent: AgentId,
         turn: Option<TurnId>,
-        refusal: &crate::SharedFolderRefusal,
+        cause: dudes_proto::AutomaticHold,
         dispatch_token: Option<PersistToken>,
         operation: &crate::RecoveryOperation<'_>,
     ) {
-        if self.launch_held(agent, operation)
+        // A missing copy is itself why the repository admission now refuses the agent, so it only
+        // asks whether the agent is held already; any other cause defers to every launch gate.
+        let held = if matches!(cause, dudes_proto::AutomaticHold::WorktreeMissing { .. }) {
+            self.protection_pending(agent)
+                || self
+                    .world
+                    .agents
+                    .get(&agent)
+                    .is_none_or(|row| row.automatic_hold.is_some())
+        } else {
+            self.launch_held(agent, operation)
+        };
+        if held
             || self.world.agents.get(&agent).is_none_or(|row| row.retired)
             || turn.is_some_and(|turn| {
                 self.world
@@ -3383,9 +3437,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Record::AgentHeld {
                 agent,
                 provenance: Provenance::Observed,
-                cause: dudes_proto::AutomaticHold::LaunchRefused {
-                    reason: refusal.to_string(),
-                },
+                cause,
             },
             Then::LaunchAdmissionHeld {
                 agent,
@@ -5760,6 +5812,28 @@ fn digest_changed(stored: Option<&str>, computed: Option<&str>) -> bool {
         (_, None) | (None, Some(_)) => true,
         (Some(stored), Some(computed)) => stored != computed,
     }
+}
+
+/// Whether an unconfined turn grant names exactly the copies the hire recorded, so the working
+/// directories a launch adds are the ones the identity line lists.
+fn grant_covers_hire(
+    hire: &dudes_proto::repository::HireRepositories,
+    grant: &dudes_proto::repository::RepositoryTurnGrant,
+) -> bool {
+    let dudes_proto::repository::HireRepositories::Scoped(hire) = hire else {
+        return false;
+    };
+    let hired: std::collections::BTreeSet<_> = hire
+        .repositories
+        .primary_first()
+        .map(|entry| (&entry.repo_id, &entry.value.recorded.execution.directory))
+        .collect();
+    let granted: std::collections::BTreeSet<_> = grant
+        .repositories
+        .primary_first()
+        .map(|entry| (&entry.repo_id, &entry.value.execution.directory))
+        .collect();
+    hired == granted
 }
 
 #[cfg(test)]

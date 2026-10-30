@@ -146,6 +146,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let adapter = adapter(&input, &scope.private.profile)?;
     let ctx = AgentCtx {
+        extra_dirs: &[],
         agent: AgentId::from_parts(1, 1),
         cwd: Path::new(field("legacy_cwd")?),
         agent_dir: Path::new(field("agent_dir")?),

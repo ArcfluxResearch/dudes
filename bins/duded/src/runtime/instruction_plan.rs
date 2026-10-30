@@ -1210,6 +1210,7 @@ mod tests {
             home.as_os_str(),
         )];
         let ctx = AgentCtx {
+            extra_dirs: &[],
             agent: agent(),
             cwd: folder,
             agent_dir: &agent_dir,

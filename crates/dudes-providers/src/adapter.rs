@@ -56,6 +56,9 @@ pub struct AgentCtx<'a> {
     /// [`LoadedServers::admit`](crate::mcp::LoadedServers::admit) for this launch. Empty for an agent
     /// with none and for every attached launch.
     pub mcp_servers: &'a [McpLaunch],
+    /// Further working copies the agent may read and write besides `cwd`, in launch order. Only
+    /// an adapter that can add directories accepts a non-empty list.
+    pub extra_dirs: &'a [PathBuf],
 }
 
 /// The folder under an agent's directory that holds the files a person sent in Chat.

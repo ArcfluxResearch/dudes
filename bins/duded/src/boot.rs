@@ -704,6 +704,8 @@ where
             #[cfg(test)]
             before_recovery_dispatch: None,
             #[cfg(test)]
+            before_launch_copy_check: None,
+            #[cfg(test)]
             before_recovery_append: None,
             #[cfg(test)]
             after_recovery_fsync: None,

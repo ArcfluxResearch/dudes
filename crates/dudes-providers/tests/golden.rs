@@ -45,6 +45,7 @@ fn claude_hook_events() -> [&'static str; 10] {
 
 fn hook_ctx() -> AgentCtx<'static> {
     AgentCtx {
+        extra_dirs: &[],
         agent: AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
         cwd: Path::new("/tmp/dudes-work"),
         agent_dir: Path::new(AGENT_DIR),

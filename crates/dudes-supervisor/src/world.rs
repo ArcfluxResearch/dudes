@@ -205,15 +205,10 @@ impl AgentRow {
     }
 
     /// The identity line a task for this agent opens with, from the name and role the row holds
-    /// now.
+    /// now. `None` when the hire's repository section cannot be composed, which refuses the turn.
     #[must_use]
-    pub fn identity_line(&self, agent: AgentId) -> dudes_proto::IdentityLine {
-        dudes_proto::IdentityLine::for_commands(
-            agent,
-            &self.name,
-            &self.role,
-            self.task_command_set(),
-        )
+    pub fn identity_line(&self, agent: AgentId) -> Option<dudes_proto::IdentityLine> {
+        dudes_proto::IdentityLine::for_hire(agent, &self.name, &self.role, &self.repositories).ok()
     }
 }
 
@@ -2291,11 +2286,13 @@ impl World {
         task: &str,
     ) -> bool {
         self.browser_notes.get(&note_lsn).is_some_and(|note| {
-            dudes_proto::identified_conversation_task(
-                &row.identity_line(agent),
-                note.task.as_deref().unwrap_or(&note.text),
-                note.answer_to.is_some(),
-            ) == task
+            row.identity_line(agent).is_some_and(|line| {
+                dudes_proto::identified_conversation_task(
+                    &line,
+                    note.task.as_deref().unwrap_or(&note.text),
+                    note.answer_to.is_some(),
+                ) == task
+            })
         })
     }
 
@@ -2852,7 +2849,7 @@ impl World {
             // and must not. Whatever was last pushed on `Input::Work`, or the default when
             // nothing has been: no card, no mail, no digest, which is the goal text alone.
             work: WorkInput {
-                identity: Some(row.identity_line(agent)),
+                identity: Some(row.identity_line(agent)?),
                 ..work
             },
             answers: row

@@ -8,7 +8,7 @@ use dudes_supervisor::ManagedSpawn;
 use dudes_supervisor::machine::BrowserNoteCancelDisposition;
 use dudes_supervisor::world::BrowserNoteState;
 
-fn managed_launch_cwd<'a>(
+pub(super) fn managed_launch_cwd<'a>(
     world: &'a dudes_supervisor::World,
     turn: dudes_types::TurnId,
     launch: &'a ManagedSpawn,
@@ -20,6 +20,22 @@ fn managed_launch_cwd<'a>(
         .ok_or_else(|| std::io::Error::other("managed repository authority is unavailable"))?;
     match launch {
         ManagedSpawn::Composed { spec, .. } if authority.singleton().is_some() => Ok(&spec.cwd),
+        ManagedSpawn::Composed { spec, .. } => {
+            let grant = authority.grant().ok_or_else(|| {
+                std::io::Error::other("managed launch authority differs from its issue")
+            })?;
+            match grant.policy.confinement() {
+                dudes_proto::repository::Confinement::Unconfined
+                    if spec.cwd == grant.repositories.primary().execution.directory =>
+                {
+                    Ok(&spec.cwd)
+                }
+                dudes_proto::repository::Confinement::Unconfined
+                | dudes_proto::repository::Confinement::Confined => Err(std::io::Error::other(
+                    "managed launch authority differs from its issue",
+                )),
+            }
+        }
         ManagedSpawn::Scoped { .. } => {
             let grant = authority.grant().ok_or_else(|| {
                 std::io::Error::other("scoped repository authority is unavailable")
@@ -29,13 +45,10 @@ fn managed_launch_cwd<'a>(
                     Ok(grant.repositories.primary().execution.directory.as_path())
                 }
                 dudes_proto::repository::Confinement::Unconfined => Err(std::io::Error::other(
-                    "unconfined repository hires cannot launch yet",
+                    "an unconfined repository hire launches through the ordinary path",
                 )),
             }
         }
-        ManagedSpawn::Composed { .. } => Err(std::io::Error::other(
-            "managed launch authority differs from its issue",
-        )),
     }
 }
 
@@ -346,6 +359,41 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
+    /// Queue the hold for an unconfined hire whose copy is gone, so the turn never reaches the host.
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "only a test hooks the moment before the check"
+        )
+    )]
+    fn hold_for_missing_copy(
+        &mut self,
+        world: &dudes_supervisor::World,
+        (agent, turn): (dudes_types::AgentId, dudes_types::TurnId),
+        dispatch_token: Option<dudes_supervisor::PersistToken>,
+        queue: &mut std::collections::VecDeque<Input>,
+    ) -> bool {
+        #[cfg(test)]
+        if let Some(before) = self.before_launch_copy_check.take() {
+            before();
+        }
+        let Some(worktree) = world
+            .agents
+            .get(&agent)
+            .and_then(|owner| super::missing_unconfined_copy(world, owner))
+        else {
+            return false;
+        };
+        queue.push_back(Input::LaunchWorktreeMissing {
+            agent,
+            turn,
+            worktree,
+            dispatch_token,
+        });
+        true
+    }
+
     pub(super) fn spawn_turn<R: Rng>(
         &mut self,
         turn: dudes_types::TurnId,
@@ -366,6 +414,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .get(&agent)
             .ok_or_else(|| anyhow::anyhow!("managed launch owner is unavailable"))?;
         let cwd = managed_launch_cwd(sup.world(), turn, launch)?;
+        if self.hold_for_missing_copy(sup.world(), (agent, turn), None, queue) {
+            return Ok(());
+        }
         let candidate = self.scoped_browser_candidate(sup, turn);
         if let Err(refusal) = self
             .admit_prior_attempt_with_candidate(sup, agent, Some(turn), candidate)
@@ -403,6 +454,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the admission checks run in the order the dispatch intent depends on"
+    )]
     pub(super) fn dispatch_browser_intent<R: Rng>(
         &mut self,
         effect: &dudes_supervisor::Effect,
@@ -444,6 +499,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .agents
             .get(agent)
             .ok_or_else(|| anyhow::anyhow!("browser dispatch owner is unavailable"))?;
+        if self.hold_for_missing_copy(sup.world(), (*agent, *turn), Some(*token), queue) {
+            return Ok(());
+        }
         if let Err(refusal) = self
             .admit_prior_attempt_with_candidate(sup, *agent, Some(*turn), candidate)
             .and_then(|()| {
@@ -539,10 +597,29 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .as_ref()
             .filter(|authority| authority.matches_hire(owner.mcp.hire_lsn, &owner.repositories))
             .ok_or_else(|| std::io::Error::other("managed repository authority is unavailable"))?;
-        let repository = authority
-            .singleton()
-            .ok_or_else(|| std::io::Error::other("managed repository authority is unsupported"))?;
-        if spec.cwd != repository.cwd() {
+        let expected = match (authority.singleton(), authority.grant(), authority.hire()) {
+            (Some(repository), _, _) => repository.cwd(),
+            (None, Some(grant), dudes_proto::repository::HireRepositories::Scoped(hire))
+                if grant.policy.confinement()
+                    == dudes_proto::repository::Confinement::Unconfined =>
+            {
+                if !hire
+                    .repositories
+                    .entries()
+                    .iter()
+                    .all(|entry| crate::worktree::is_owned_repository(&entry.value.recorded))
+                {
+                    return Err(std::io::Error::other("a hired repository copy is missing"));
+                }
+                grant.repositories.primary().execution.directory.as_path()
+            }
+            _ => {
+                return Err(std::io::Error::other(
+                    "managed repository authority is unsupported",
+                ));
+            }
+        };
+        if spec.cwd != expected {
             return Err(std::io::Error::other(
                 "managed launch differs from its recorded repository",
             ));

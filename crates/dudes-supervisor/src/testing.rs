@@ -1439,6 +1439,156 @@ impl Harness {
             .expect("the goal was journaled")
     }
 
+    /// Replay a project catalog, one trust grant and one pending copy for each of `labels`, and a
+    /// hire of one agent into all of them with the first label as primary, then observe the
+    /// agent's repositories as admitted. Copies live under `<dir>/copies/<label>`. Returns the
+    /// agent and the hire's position.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one replayed catalog, trust, lease and hire prefix"
+    )]
+    pub fn hire_with_repository_copies(
+        &mut self,
+        policy: dudes_proto::repository::RepositoryPolicy,
+        labels: &[&str],
+        dir: &std::path::Path,
+    ) -> (AgentId, Lsn) {
+        use dudes_proto::record::{
+            FileIdentity, Hex32, RecordedWorkspace, TrustPin, TrustedRepository,
+        };
+        use dudes_proto::repository::{
+            CatalogRepository, ExecutionRepository, OwnedRepository, RepoId, RepositoryEntry,
+            RepositoryHire, RepositorySet, ScopedRepositories,
+        };
+        use dudes_types::{GitCommit, WorktreeId};
+        let ids: Vec<RepoId> = labels.iter().map(|id| RepoId::parse(id).unwrap()).collect();
+        let origins: Vec<TrustedRepository> = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| TrustedRepository {
+                directory: dir.join("origins").join(label),
+                common_dir: dir.join("origins").join(label).join(".git"),
+                directory_identity: FileIdentity {
+                    device: 1,
+                    inode: 100 + index as u64,
+                },
+                common_identity: FileIdentity {
+                    device: 1,
+                    inode: 200 + index as u64,
+                },
+            })
+            .collect();
+        let catalog = self.append_record(Record::ProjectRepositoriesRecorded {
+            project: "service".into(),
+            repositories: RepositorySet::new(
+                ids[0].clone(),
+                ids.iter()
+                    .zip(&origins)
+                    .map(|(repo_id, origin)| RepositoryEntry {
+                        repo_id: repo_id.clone(),
+                        value: CatalogRepository {
+                            label: repo_id.as_str().into(),
+                            origin: origin.clone(),
+                        },
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+        });
+        let base = GitCommit::parse("0000000000000000000000000000000000000000").unwrap();
+        let trusts: Vec<Lsn> = ids
+            .iter()
+            .zip(&origins)
+            .map(|(repo_id, origin)| {
+                self.append_record(Record::RepositoryTrustSet {
+                    project: "service".into(),
+                    repo_id: repo_id.clone(),
+                    origin: origin.clone(),
+                    catalog_lsn: catalog,
+                    pin: Some(TrustPin {
+                        claude_tree: None,
+                        mcp_json: None,
+                        attributes: Hex32::new([7; 32]),
+                        config: Hex32::new([8; 32]),
+                    }),
+                })
+            })
+            .collect();
+        let mut owned = Vec::new();
+        for (index, (repo_id, origin)) in ids.iter().zip(&origins).enumerate() {
+            let worktree =
+                WorktreeId::from_bytes([u8::try_from(index).expect("few copies") + 1; 16]);
+            let path = dir.join("copies").join(repo_id.as_str());
+            self.append_record(Record::WorktreeLeased {
+                worktree,
+                origin: origin.directory.clone(),
+                path: path.clone(),
+                branch: format!("dudes/{index:012}"),
+                base,
+                from: None,
+            });
+            owned.push(RepositoryEntry {
+                repo_id: repo_id.clone(),
+                value: OwnedRepository {
+                    origin: origin.clone(),
+                    execution: ExecutionRepository {
+                        directory: path,
+                        directory_identity: FileIdentity {
+                            device: 1,
+                            inode: 300 + index as u64,
+                        },
+                        git_dir: origin.common_dir.join(format!("worktrees/copy{index}")),
+                        git_identity: FileIdentity {
+                            device: 1,
+                            inode: 400 + index as u64,
+                        },
+                    },
+                    worktree,
+                    base,
+                    trust_lsn: trusts[index],
+                },
+            });
+        }
+        let agent = AgentId::from_parts(1, 1);
+        let hire = Box::new(RepositoryHire {
+            id: agent,
+            name: "Kim".into(),
+            character: None,
+            accent: None,
+            role: "engineer".into(),
+            department: "eng".into(),
+            provider: Provider::Claude,
+            budget: AgentBudget {
+                usd_per_day: None,
+                tokens_per_day: None,
+            },
+            max_turns: None,
+            max_budget: None,
+            model: None,
+            browser_onboarding: None,
+            repositories: ScopedRepositories {
+                project: RecordedWorkspace {
+                    id: "service".into(),
+                    label: "Service".into(),
+                },
+                catalog_lsn: catalog,
+                policy,
+                repositories: RepositorySet::new(ids[0].clone(), owned).unwrap(),
+            },
+        });
+        let hired = self.append_record(hire.into_record());
+        self.supervisor
+            .observe_repository_admission(crate::RepositoryAdmission::new([(agent, hired, true)]));
+        (agent, hired)
+    }
+
+    fn append_record(&mut self, record: Record) -> Lsn {
+        self.append_replayed(Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record,
+        })
+    }
+
     /// The turn the agent has in flight, when it has one.
     #[must_use]
     pub fn open_turn(&self, agent: AgentId) -> Option<TurnId> {

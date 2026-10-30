@@ -236,6 +236,9 @@ impl Adapter for CodexAdapter {
         if let Some(offset) = task.find('\0') {
             return Err(LaunchError::TaskContainsNul { offset });
         }
+        if !ctx.extra_dirs.is_empty() {
+            return Err(LaunchError::ExtraDirectoriesUnsupported);
+        }
         let declared = mcp_options(ctx.mcp_servers)?;
         let env = mcp::with_secrets(self.child_env(ctx.daemon_env), ctx.mcp_servers);
         if self.config.streaming {
@@ -351,6 +354,7 @@ mod tests {
 
     fn ctx(env: &[EnvVar]) -> AgentCtx<'_> {
         AgentCtx {
+            extra_dirs: &[],
             agent: AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("a ulid"),
             cwd: Path::new("/repo"),
             agent_dir: Path::new("/var/lib/dudes/agents/01ARZ3NDEKTSV4RRFFQ69G5FAV"),
@@ -516,6 +520,30 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn codex_refuses_extra_directories_on_both_transports() {
+        let env = home();
+        let copies = [PathBuf::from("/data/b")];
+        let context = AgentCtx {
+            extra_dirs: &copies,
+            ..ctx(&env)
+        };
+        let selection = ModelSelection::provider_default();
+        assert_eq!(
+            CodexAdapter::default().managed(&context, TASK, &TurnSession::Assigned, &selection),
+            Err(LaunchError::ExtraDirectoriesUnsupported)
+        );
+        assert_eq!(
+            CodexAdapter::new(CodexConfig {
+                streaming: true,
+                ..CodexConfig::default()
+            })
+            .with_managed_home("/data/providers/codex".into())
+            .managed(&context, TASK, &TurnSession::Assigned, &selection),
+            Err(LaunchError::ExtraDirectoriesUnsupported)
+        );
+    }
+
     /// Opted in, exec and app-server each gain exactly one `-c` per server, in name order, and each
     /// value reads back as the literal table, operator text included. Mutants: drop
     /// `default_tools_approval_mode`, format the table by hand so the URL's quote ends the string,
@@ -525,6 +553,7 @@ mod tests {
         let servers = declared(&["search", "odd", "memory"]);
         let env = home();
         let context = AgentCtx {
+            extra_dirs: &[],
             mcp_servers: &servers,
             ..ctx(&env)
         };
@@ -615,6 +644,7 @@ mod tests {
     fn a_program_server_is_refused_at_the_launch() {
         let servers = crate::mcp::fixture::servers(&["notes"]);
         let context = AgentCtx {
+            extra_dirs: &[],
             mcp_servers: &servers,
             ..ctx(&[])
         };

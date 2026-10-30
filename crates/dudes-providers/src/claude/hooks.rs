@@ -274,6 +274,7 @@ mod tests {
     fn an_unusable_hook_command_installs_nothing() {
         let agent_dir = std::path::Path::new("/var/lib/dudes/agents/01ARZ3NDEKTSV4RRFFQ69G5FAV");
         let ctx = AgentCtx {
+            extra_dirs: &[],
             agent: agent(),
             cwd: std::path::Path::new("/repo"),
             agent_dir,

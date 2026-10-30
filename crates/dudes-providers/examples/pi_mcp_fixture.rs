@@ -49,6 +49,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         command: field("program")?.to_owned(),
     });
     let context = AgentCtx {
+        extra_dirs: &[],
         agent: AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV")?,
         cwd: Path::new(field("cwd")?),
         agent_dir: Path::new(field("agent_dir")?),

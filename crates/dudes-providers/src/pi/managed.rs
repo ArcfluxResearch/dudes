@@ -199,6 +199,9 @@ impl Adapter for PiAdapter {
         if let Some(offset) = task.find('\0') {
             return Err(LaunchError::TaskContainsNul { offset });
         }
+        if !ctx.extra_dirs.is_empty() {
+            return Err(LaunchError::ExtraDirectoriesUnsupported);
+        }
         let mut argv = vec![
             OsString::from(&self.config.command),
             "--mode".into(),
@@ -340,6 +343,7 @@ mod tests {
 
     fn ctx(env: &[EnvVar]) -> AgentCtx<'_> {
         AgentCtx {
+            extra_dirs: &[],
             agent: AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("a ulid"),
             cwd: Path::new("/repo"),
             agent_dir: Path::new(AGENT_DIR),
@@ -350,6 +354,24 @@ mod tests {
             max_budget: None,
             mcp_servers: &[],
         }
+    }
+
+    #[test]
+    fn pi_refuses_extra_directories() {
+        let copies = [std::path::PathBuf::from("/data/b")];
+        let context = AgentCtx {
+            extra_dirs: &copies,
+            ..ctx(&[])
+        };
+        assert_eq!(
+            PiAdapter::default().managed(
+                &context,
+                "task",
+                &TurnSession::Assigned,
+                &ModelSelection::provider_default()
+            ),
+            Err(LaunchError::ExtraDirectoriesUnsupported)
+        );
     }
 
     fn launch_task(task: &str, session: &TurnSession) -> Result<LaunchSpec, LaunchError> {
@@ -387,6 +409,7 @@ mod tests {
         );
         let servers = crate::mcp::fixture::servers(&["search", "memory"]);
         let context = AgentCtx {
+            extra_dirs: &[],
             mcp_servers: &servers,
             ..ctx(&[])
         };
@@ -454,6 +477,7 @@ mod tests {
         assert_eq!(
             PiAdapter::default().managed(
                 &AgentCtx {
+                    extra_dirs: &[],
                     mcp_servers: &servers,
                     ..ctx(&[])
                 },
@@ -503,6 +527,7 @@ mod tests {
         };
         http.url = "https://memory.example/mcp?quote=\"}\n".to_owned();
         let context = AgentCtx {
+            extra_dirs: &[],
             mcp_servers: &servers,
             ..ctx(&[])
         };

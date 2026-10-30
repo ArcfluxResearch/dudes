@@ -292,11 +292,16 @@ impl ClaudeAdapter {
         // Files sent in Chat live outside the project, and Claude reads outside its working
         // directories only for a folder it is given. The launch creates the folder, so the flag
         // always names one that exists. `--add-dir` takes every following element that is not an
-        // option, and the operator's extra arguments that follow begin with an option.
+        // option, and the operator's extra arguments that follow begin with an option. Each
+        // further copy gets a flag of its own, so no flag can take a following copy, extra
+        // argument or the `--` before the task as part of its list.
         argv.extend([
             OsString::from("--add-dir"),
             ctx.agent_dir.join(CHAT_FILES_DIR).into_os_string(),
         ]);
+        for dir in ctx.extra_dirs {
+            argv.extend([OsString::from("--add-dir"), dir.clone().into_os_string()]);
+        }
         argv.extend(self.config.extra_args.iter().cloned());
         if let Some(task) = task {
             argv.push("--".into());
@@ -781,6 +786,7 @@ mod tests {
 
     fn ctx(env: &[EnvVar]) -> AgentCtx<'_> {
         AgentCtx {
+            extra_dirs: &[],
             agent: AgentId::parse(AGENT).unwrap(),
             cwd: Path::new("/tmp/dudes-fixture"),
             agent_dir: Path::new(AGENT_DIR),
@@ -795,6 +801,7 @@ mod tests {
 
     fn trusted_ctx(env: &[EnvVar]) -> AgentCtx<'_> {
         AgentCtx {
+            extra_dirs: &[],
             trusted: true,
             ..ctx(env)
         }
@@ -950,6 +957,38 @@ mod tests {
     }
 
     #[test]
+    fn every_extra_copy_gets_its_own_add_dir_flag_before_the_task_separator() {
+        let copies = [PathBuf::from("/data/b"), PathBuf::from("/data/c")];
+        let context = AgentCtx {
+            extra_dirs: &copies,
+            ..ctx(&[])
+        };
+        let adapter = ClaudeAdapter::new(ClaudeConfig {
+            extra_args: vec!["--verbose".into()],
+            ..ClaudeConfig::default()
+        });
+        let spec = adapter
+            .managed(&context, "--add-dir /sneaky", &first(), &none())
+            .expect("a launch");
+        let mut tail = files_flag();
+        tail.extend(os(&[
+            "--add-dir",
+            "/data/b",
+            "--add-dir",
+            "/data/c",
+            "--verbose",
+            "--",
+            "--add-dir /sneaky",
+        ]));
+        assert!(
+            spec.argv.ends_with(&tail),
+            "copies follow the chat folder in order and the task stays last: {:?}",
+            spec.argv
+        );
+        assert_eq!(spec.cwd, Path::new("/tmp/dudes-fixture"));
+    }
+
+    #[test]
     fn claude_refuses_a_turn_that_announces_no_session() {
         assert_eq!(
             ClaudeAdapter::default().managed(
@@ -1004,6 +1043,7 @@ mod tests {
         let long = "t".repeat(ClaudeConfig::default().task_argv_max_bytes + 1);
         for trusted in [false, true] {
             let context = AgentCtx {
+                extra_dirs: &[],
                 trusted,
                 mcp_servers: &servers,
                 ..ctx(&[])
@@ -1032,6 +1072,7 @@ mod tests {
             }
         }
         let with = AgentCtx {
+            extra_dirs: &[],
             mcp_servers: &servers,
             ..ctx(&[])
         };
@@ -1050,6 +1091,7 @@ mod tests {
     fn a_program_server_env_blanks_what_it_does_not_own() {
         let servers = declared_servers(&["memory", "notes", "search"]);
         let context = AgentCtx {
+            extra_dirs: &[],
             trusted: true,
             mcp_servers: &servers,
             ..ctx(&[])
@@ -1141,6 +1183,7 @@ mod tests {
     fn a_program_server_argument_names_the_agents_folder() {
         let servers = folder_servers();
         let context = AgentCtx {
+            extra_dirs: &[],
             trusted: true,
             mcp_servers: &servers,
             ..ctx(&[])
@@ -1165,6 +1208,7 @@ mod tests {
         let servers = folder_servers();
         let bad = Path::new(OsStr::from_bytes(b"/tmp/\xff"));
         let context = AgentCtx {
+            extra_dirs: &[],
             trusted: true,
             cwd: bad,
             mcp_servers: &servers,
@@ -1186,6 +1230,7 @@ mod tests {
         let servers = declared_servers(&["memory", "notes", "search"]);
         let daemon_env = [EnvVar::new("PATH", "/usr/bin")];
         let context = AgentCtx {
+            extra_dirs: &[],
             trusted: true,
             mcp_servers: &servers,
             ..ctx(&daemon_env)
@@ -1472,6 +1517,7 @@ mod tests {
                         .expect("a non-empty task without NUL is a launch")
                         .argv;
                     let c = AgentCtx {
+                        extra_dirs: &[],
                         agent_dir: spaced,
                         ..base
                     };

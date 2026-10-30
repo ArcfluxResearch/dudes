@@ -21,6 +21,26 @@ pub(crate) struct CurrentRepositories {
     bindings: BTreeMap<String, BTreeMap<RepoId, TrustedRepository>>,
     #[cfg(test)]
     pub(crate) test_hire_capability: bool,
+    #[cfg(test)]
+    pub(crate) test_hire_policy: Option<dudes_proto::repository::RepositoryPolicy>,
+}
+
+impl CurrentRepositories {
+    /// The policy a project hire records; only a test can select the unconfined one.
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "only a test can select a policy other than the fixed one"
+        )
+    )]
+    pub(super) fn hire_policy(&self) -> dudes_proto::repository::RepositoryPolicy {
+        #[cfg(test)]
+        if let Some(policy) = self.test_hire_policy {
+            return policy;
+        }
+        super::repository_hire::HIRE_POLICY
+    }
 }
 
 #[derive(Clone)]
@@ -161,7 +181,7 @@ fn explicit_repository_roots<'a>(
 
 pub(super) struct CurrentHireAdmission<'a> {
     enrollment: &'a Enrollment,
-    current: &'a CurrentRepositories,
+    pub(super) current: &'a CurrentRepositories,
 }
 
 impl<'a> CurrentHireAdmission<'a> {
@@ -214,18 +234,16 @@ impl<'a> CurrentHireAdmission<'a> {
         )
     )]
     pub(super) fn require_repository_capability(&self, confinement: Confinement) -> Result<()> {
+        #[cfg(test)]
+        if self.current.test_hire_capability {
+            return Ok(());
+        }
         match confinement {
-            Confinement::Confined => {
-                #[cfg(test)]
-                if self.current.test_hire_capability {
-                    return Ok(());
-                }
-                anyhow::bail!(
-                    "restricted repository execution has no verified provider capability yet"
-                );
-            }
+            Confinement::Confined => anyhow::bail!(
+                "restricted repository execution has no verified provider capability yet"
+            ),
             Confinement::Unconfined => {
-                anyhow::bail!("unconfined repository execution is not enabled yet");
+                anyhow::bail!("unconfined repository execution is not enabled yet")
             }
         }
     }

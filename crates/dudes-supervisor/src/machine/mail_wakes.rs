@@ -225,7 +225,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 trigger: candidate.trigger,
                 frontier: candidate.frontier,
                 unread_count,
-                task: MailWakeTask::identified(&row.identity_line(agent), unread_count)?,
+                task: MailWakeTask::identified(&row.identity_line(agent)?, unread_count)?,
                 targets,
             };
             (

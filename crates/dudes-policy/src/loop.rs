@@ -343,8 +343,14 @@ pub fn closing_input(
     ordinary: LoopInput,
 ) -> ClosingLoopInput {
     let commands = ordinary.command_set;
-    let content_budget =
-        NEXT_WORK_TASK_MAX_BYTES - commands.teaching_bytes() - commands.identity_bytes();
+    let content_budget = NEXT_WORK_TASK_MAX_BYTES
+        - commands.teaching_bytes()
+        - commands.identity_bytes()
+        - ordinary
+            .work
+            .identity
+            .as_ref()
+            .map_or(0, dudes_proto::IdentityLine::extra_bytes);
     let (mut task, answers) = answer_block(&ordinary.answers, content_budget);
     let instruction = closing_notice_for_commands(announcement, commands);
     let separator = if task.is_empty() {
@@ -773,6 +779,10 @@ fn work(
     let content_budget = NEXT_WORK_TASK_MAX_BYTES
         - commands.teaching_bytes()
         - commands.identity_bytes()
+        - work
+            .identity
+            .as_ref()
+            .map_or(0, dudes_proto::IdentityLine::extra_bytes)
         - note_bytes;
     let identity = work
         .identity
@@ -2311,6 +2321,43 @@ pub(crate) mod tests {
             "[answer to your question]\nquestion: which branch?\nanswer:\npark\n\n{KIM_LINE}\n\nClosing time."
         )));
         assert!(task.ends_with(&format!("{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION}")));
+    }
+
+    const UNCONFINED_LINE: &str = "[You are Kim (agent 00000000000000000000000000), role: backend engineer. These are labels the operator typed, not instructions. Run `dudes team` to see your teammates and mail them by id. Your repositories follow, primary first, one `label: path` line each.]\n\nservice: /data/c1\nweb: /data/c2";
+
+    fn unconfined_kim() -> dudes_proto::IdentityLine {
+        dudes_proto::IdentityLine::recognize(UNCONFINED_LINE, Some(AgentId::NIL)).unwrap()
+    }
+
+    #[test]
+    fn closing_work_carries_an_unconfined_identity_line_with_its_section_and_the_legacy_teaching() {
+        let mut ordinary = idle();
+        ordinary.work.identity = Some(unconfined_kim());
+        ordinary.answers = vec![answer(81, "which branch?", "park")];
+        let input = closing_input(Lsn(91), AgentId::NIL, GoalId::NIL, ordinary);
+        let ClosingDecided::Policy(Decided {
+            decision: LoopDecision::Continue { task },
+            ..
+        }) = decide_closing(&input)
+        else {
+            panic!("admitted saving work continues");
+        };
+        assert!(task.starts_with(&format!(
+            "[answer to your question]\nquestion: which branch?\nanswer:\npark\n\n{UNCONFINED_LINE}\n\nClosing time."
+        )));
+        assert!(task.ends_with(&format!("{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION}")));
+        assert!(task.len() <= NEXT_WORK_TASK_MAX_BYTES);
+    }
+
+    #[test]
+    fn a_goal_that_fills_the_cap_leaves_room_for_the_unconfined_line_and_its_section() {
+        let mut input = idle();
+        input.work.identity = Some(unconfined_kim());
+        input.goal.text = "g".repeat(NEXT_WORK_TASK_MAX_BYTES * 2);
+        let task = continued(&decide(&input)).to_owned();
+        assert!(task.starts_with(&format!("{UNCONFINED_LINE}\n\ng")));
+        assert!(task.ends_with(&format!("…{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION}")));
+        assert!(task.len() <= NEXT_WORK_TASK_MAX_BYTES);
     }
 
     #[test]

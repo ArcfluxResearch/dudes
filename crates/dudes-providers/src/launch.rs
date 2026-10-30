@@ -274,6 +274,10 @@ pub enum LaunchError {
         /// Byte offset of the first NUL in the task.
         offset: usize,
     },
+    /// The adapter's engine cannot add working directories, so a launch that names extra copies
+    /// would run with fewer of them than the hire owns.
+    #[error("this engine cannot add working directories to a launch")]
+    ExtraDirectoriesUnsupported,
     /// The task carries no work.
     #[error("task is empty")]
     EmptyTask,

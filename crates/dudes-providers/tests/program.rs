@@ -38,6 +38,7 @@ fn each_adapter_reports_the_program_its_managed_launch_runs() {
         ),
     ];
     let ctx = AgentCtx {
+        extra_dirs: &[],
         agent: AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("a ulid"),
         cwd: Path::new("/repo"),
         agent_dir: Path::new("/var/lib/dudes/agents/01ARZ3NDEKTSV4RRFFQ69G5FAV"),

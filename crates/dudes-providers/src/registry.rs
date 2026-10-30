@@ -249,6 +249,7 @@ mod tests {
                 .get(Provider::Claude)
                 .expect("the table was configured");
             let ctx = AgentCtx {
+                extra_dirs: &[],
                 agent: AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("a well-formed ULID"),
                 cwd: Path::new("/repo"),
                 agent_dir: Path::new("/var/lib/dudes/agents/a"),

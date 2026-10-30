@@ -201,6 +201,7 @@ mod tests {
             EnvVar::new("CLAUDECODE", "nested-session"),
         ];
         let ctx = AgentCtx {
+            extra_dirs: &[],
             agent: AgentId::parse(AGENT).expect("fixture agent id"),
             cwd: Path::new("//fixture.invalid/work tree"),
             agent_dir: Path::new(AGENT_DIR),
@@ -299,6 +300,7 @@ mod tests {
     fn attached_launch_ends_in_the_agents_model() {
         let adapter = ClaudeAdapter::new(config::ClaudeConfig::default());
         let ctx = AgentCtx {
+            extra_dirs: &[],
             agent: AgentId::parse(AGENT).expect("fixture agent id"),
             cwd: Path::new("//fixture.invalid/work tree"),
             agent_dir: Path::new(AGENT_DIR),

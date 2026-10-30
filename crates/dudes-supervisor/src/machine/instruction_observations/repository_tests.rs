@@ -755,7 +755,7 @@ fn fresh_scoped_ordinary_and_closing_work_use_the_recorded_hire_even_for_one_rep
         panic!("ordinary work")
     };
     assert_scoped_guidance(&task);
-    assert!(task.starts_with(row.identity_line(agent).as_str()));
+    assert!(task.starts_with(row.identity_line(agent).unwrap().as_str()));
     let closing = dudes_policy::closing_input(Lsn(50), agent, goal, input);
     let dudes_policy::ClosingDecided::Policy(dudes_policy::Decided {
         decision: LoopDecision::Continue { task },
@@ -1906,11 +1906,10 @@ fn hired_only(policy: RepositoryPolicy) -> (Harness, AgentId, Lsn) {
 }
 
 #[test]
-fn an_unconfined_hire_gets_no_grant_and_no_launch_while_a_confined_one_does() {
+fn an_unconfined_hire_launches_in_its_primary_copy_while_a_confined_one_stays_scoped() {
     use crate::machine::repositories::IssueRepositories;
     use crate::machine::{ManagedLaunch, ManagedSpawn};
     use dudes_providers::adapter::TurnSession;
-    use dudes_providers::launch::LaunchError;
     use dudes_types::ModelSelection;
 
     let (confined, agent, _) = hired_only(RepositoryPolicy::WorkingTreeV1);
@@ -1920,24 +1919,28 @@ fn an_unconfined_hire_gets_no_grant_and_no_launch_while_a_confined_one_does() {
     };
     let (unconfined, same_agent, _) = hired_only(RepositoryPolicy::OperatorTrustV1);
     assert_eq!(same_agent, agent);
-    assert!(unconfined.supervisor.issue_repositories(agent).is_none());
+    let Some(IssueRepositories::Scoped(unconfined_grant)) =
+        unconfined.supervisor.issue_repositories(agent)
+    else {
+        panic!("an unconfined hire is granted its copies");
+    };
+    assert_eq!(unconfined_grant.policy, RepositoryPolicy::OperatorTrustV1);
 
-    let mut unconfined_grant = grant.clone();
-    unconfined_grant.policy = RepositoryPolicy::OperatorTrustV1;
     let row = &unconfined.supervisor.world().agents[&agent];
     let launch = unconfined.supervisor.launch(
         agent,
         row,
-        Some(&IssueRepositories::Scoped(unconfined_grant)),
+        Some(&IssueRepositories::Scoped(unconfined_grant.clone())),
         "task",
-        &TurnSession::Assigned,
+        &TurnSession::First(dudes_types::SessionId::from(
+            "5fd0cb4a-2d31-4c2c-9e6a-0f2b2a1f7c11",
+        )),
         &ModelSelection::named("claude-sonnet-4-6"),
     );
     assert!(
-        matches!(
-            launch,
-            ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable)
-        ),
+        matches!(&launch, ManagedLaunch::Ready(prepared) if matches!(&prepared.spawn,
+            ManagedSpawn::Composed { spec, .. }
+                if spec.cwd == unconfined_grant.repositories.primary().execution.directory)),
         "{launch:?}"
     );
     let row = &confined.supervisor.world().agents[&agent];
