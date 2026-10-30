@@ -95,6 +95,14 @@ export function TerminalAttach({ floor, row }: { readonly floor: FloorState; rea
   return <TerminalAttachView floor={floor} offer={terminalOffer(floor, row, channel)} />;
 }
 
+/** The one muted line the header shows when this agent's engine has no terminal of its own to open. */
+export function TerminalNote({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow }) {
+  const channel = useSyncExternalStore(subscribeToTerminal, getTerminalState, getTerminalState);
+  const offer = terminalOffer(floor, row, channel);
+  return offer.kind === 'unavailable' && offer.reason === 'engine'
+    ? <p className="agent-attach-note m-0 text-small text-muted" aria-hidden="true">{UNAVAILABLE.engine}</p> : null;
+}
+
 function whyNoAttach(floor: FloorState, offer: Exclude<TerminalOffer, { readonly kind: 'none' | 'attach' }>): string {
   switch (offer.kind) {
     case 'open-here': return 'This agent’s CLI is already open.';
@@ -115,15 +123,15 @@ export function TerminalAttachView({ floor, offer }: { readonly floor: FloorStat
   const targetRow = target === null ? undefined : floor.agents.find((row) => row.id === target);
   const claudeTrust = targetRow?.provider === 'claude';
   return (
-    <div className="agent-detail-terminal flex flex-wrap items-center gap-x-3 gap-y-1" data-terminal-offer={offer.kind}>
-      <Button className="terminal-attach" title={hint} aria-describedby="terminal-hint" icon={<TerminalIcon {...ICON} />}
+    <div className="agent-detail-terminal contents" data-terminal-offer={offer.kind}>
+      <Button size="sm" className="terminal-attach" title={hint} aria-describedby="terminal-hint" icon={<TerminalIcon {...ICON} />}
         aria-haspopup={claudeTrust ? 'dialog' : undefined} aria-disabled={target === null || undefined}
         onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Open the real CLI</Button>
       {confirming && target !== null && targetRow !== undefined && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
         model={nextModel(floor, targetRow)}
         onCancel={() => setConfirming(false)}
         onConfirm={() => { setConfirming(false); attachTerminal(target, browserTerminalPorts()); }} /> : null}
-      <span className={offer.kind === 'unavailable' && offer.reason === 'engine' ? 'agent-attach-note text-small text-muted' : 'sr-only'} id="terminal-hint">{hint}</span>
+      <span className="sr-only" id="terminal-hint">{hint}</span>
     </div>
   );
 }

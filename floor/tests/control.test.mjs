@@ -77,8 +77,9 @@ const BIG = '18446744073709551615';
 const REQUEST_ID = 'A'.repeat(43);
 const FRESH = `${'B'.repeat(42)}E`;
 const SIBLING = Object.freeze({});
-const PAUSING = 'Pausing — the current turn runs to its end; no new turn will start';
-const REFUSING = 'Paused — your prompts and tool calls are refused';
+const PAUSING = 'Pausing after this turn. No new turn will start.';
+const REFUSING = 'Your prompts and tool calls are refused.';
+const PAUSED = 'No new turn will start until you press Resume.';
 
 /** A Managed agent mid-turn, not paused, with no control record yet. */
 function agent(fields = {}) {
@@ -189,6 +190,7 @@ let invalidateFloorEpoch;
 let noteTransport;
 let resetFloorStore;
 let StripView;
+let noteOf;
 let StatusView;
 let stage;
 
@@ -203,7 +205,7 @@ before(async () => {
   control = await server.ssrLoadModule('/src/renderer/control/control.ts');
   ({ applyServerFrame, beginFloorEpoch, getFloorState, invalidateFloorEpoch, noteTransport, resetFloorStore } =
     await server.ssrLoadModule('/src/renderer/floor/store.ts'));
-  ({ ControlStripView: StripView, ControlStatusView: StatusView } =
+  ({ ControlStripView: StripView, ControlStatusView: StatusView, controlNoteOf: noteOf } =
     await server.ssrLoadModule('/src/renderer/control/ControlPanel.tsx'));
   stage = await loadStage(server);
 });
@@ -217,11 +219,21 @@ beforeEach(() => {
   control.resetControl();
 });
 
-/** The strip in one agent's detail, as the page draws it for the state this module holds and the session it holds. */
-function strip(id = ADA, session = 1) {
+/** The buttons in one agent's action bar, for the state this module holds and the session it holds. */
+function buttons(id = ADA, session = 1) {
   const row = rowOf(id);
   return row === null ? '' : renderToStaticMarkup(createElement(StripView,
-    { control: control.getControlState(), floor: getFloorState(), row, session }));
+    { control: control.getControlState(), floor: getFloorState(), row, session, part: 'rest', resumeFirst: false }));
+}
+
+/** The status band of one agent's drawer: its badge and the one sentence after it. */
+function band(id = ADA) {
+  return center(id).match(/<section class="agent-detail-state"[\s\S]*?<\/section>/)?.[0] ?? '';
+}
+
+/** The buttons and the status band, as one string to read. */
+function strip(id = ADA, session = 1) {
+  return buttons(id, session) + band(id);
 }
 
 /** The one request's status, for the session the page holds now (1 until a link is pasted). */
@@ -242,7 +254,7 @@ function buttonsIn(html) {
 
 /** Every wording line in some markup, as [state, text]. */
 function wordingsIn(html) {
-  return [...html.matchAll(/<p class="agent-detail-pause" role="status" data-pause-state="([a-z]+)">([^<]*)<\/p>/g)]
+  return [...html.matchAll(/<p class="agent-detail-state-text agent-detail-pause" role="status" data-pause-state="([a-z]+)">([^<]*)<\/p>/g)]
     .map(([, state, text]) => [state, text]);
 }
 
@@ -302,8 +314,8 @@ test('Pause only while not paused; Resume only while paused and not halted; Stop
         drawn += buttons.length;
         for (const text of buttons) assert.doesNotMatch(text, /halt|restart/i, `${label}: a button names ${text}`);
         // A halt the Floor cannot lift is said, in a sentence and not on a control.
-        if (halted) assert.match(html, /<p class="control-halt-note">A halt from the command line stands on this agent\./, label);
-        else assert.doesNotMatch(html, /control-halt-note/, label);
+        if (halted) assert.match(html, /<p class="agent-detail-state-text">A halt from the command line stands on this agent\./, label);
+        else assert.doesNotMatch(html, /A halt from the command line/, label);
       }
     }
   }
@@ -318,21 +330,21 @@ test('a halt this page made offers Resume and says Stopping, then Stopped; an op
   assert.equal(gate().stop, false, 'no second stop while a halt stands');
   let html = strip();
   assert.deepEqual(buttonsIn(html), ['Resume']);
-  assert.match(html, /data-stop-state="stopping">Stopping — the turn’s process is being ended; no new turn will start</);
+  assert.match(html, /data-stop-state="stopping">Stopping this turn\. No new turn will start\.</);
   assert.match(html, /Resume lifts your stop\. The stopped turn is not brought back/);
-  assert.doesNotMatch(html, /control-halt-note/, 'the halt note is for the operator’s halt');
+  assert.doesNotMatch(html, /A halt from the command line/, 'the halt note is for the operator’s halt');
 
   resetFloorStore();
   subscribe({ agents: [stopped({ status: 'idle' })] });
   html = strip();
-  assert.match(html, /data-stop-state="stopped">Stopped — no new turn will start until you press Resume</);
+  assert.match(html, /data-stop-state="stopped">No new turn will start until you press Resume\.</);
   assert.deepEqual(buttonsIn(html), ['Resume']);
 
   resetFloorStore();
   subscribe({ agents: [agent({ halted: true, status: 'idle', control_lsn: LSN })] });
   html = strip();
   assert.doesNotMatch(html, /data-stop-state/);
-  assert.match(html, /control-halt-note/);
+  assert.match(html, /A halt from the command line stands on this agent/);
   assert.deepEqual(buttonsIn(html), ['Pause'], 'the unchanged offer for an operator’s halt');
 });
 
@@ -386,7 +398,7 @@ test('one press posts exactly three fields to its own route with the REQUEST_ID 
   net.signOut();
   await press(net, 'pause');
   assert.equal(net.calls.length, 0);
-  assert.match(strip(), /<p class="control-problem" role="alert">This page has no Floor session, so nothing was sent\.<\/p>/);
+  assert.match(strip(), /<p class="agent-detail-state-text control-problem" role="alert">This page has no Floor session, so nothing was sent\.<\/p>/);
 });
 
 test('a malformed control_lsn closes the controls instead of sending null', async () => {
@@ -419,10 +431,10 @@ test('each state wording is rendered from paused, mode and status alone', () => 
     [{ mode: 'managed', status: 'running' }, 'pausing', PAUSING],
     [{ mode: 'attached', status: 'attached' }, 'refusing', REFUSING],
     [{ mode: 'attached', status: 'waiting', question: 'Which tag?', question_lsn: LSN }, 'refusing', REFUSING],
-    [{ mode: 'managed', status: 'idle' }, 'paused', 'Paused'],
-    [{ mode: 'managed', status: 'waiting', question: 'Which tag?', question_lsn: LSN }, 'paused', 'Paused'],
-    [{ mode: 'managed', status: 'exhausted' }, 'paused', 'Paused'],
-    [{ mode: 'managed', status: 'done' }, 'paused', 'Paused'],
+    [{ mode: 'managed', status: 'idle' }, 'paused', PAUSED],
+    [{ mode: 'managed', status: 'waiting', question: 'Which tag?', question_lsn: LSN }, 'paused', PAUSED],
+    [{ mode: 'managed', status: 'exhausted' }, 'paused', PAUSED],
+    [{ mode: 'managed', status: 'done' }, 'paused', PAUSED],
   ];
   for (const sibling of [SIBLING, null]) {
     for (const [fields, state, text] of cases) {
@@ -431,9 +443,9 @@ test('each state wording is rendered from paused, mode and status alone', () => 
       const label = `${fields.mode}/${fields.status}, sibling ${sibling !== null}`;
       const html = center();
       assert.deepEqual(wordingsIn(html), [[state, text]], label);
-      // The same control wording is now beside the fitting Resume action.
+      // The wording is the status band's one sentence, after the name and the badge.
       assert.match(html,
-        /<aside class="agent-detail"[^>]*>[\s\S]*<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<section class="agent-detail-state"[^>]*>[\s\S]*?<div class="agent-detail-control"[^>]*><p class="agent-detail-pause"/,
+        /<aside class="agent-detail"[^>]*>[\s\S]*<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<section class="agent-detail-state"[^>]*><span[^>]*><span[^>]*><\/span>Paused<\/span><p class="agent-detail-state-text agent-detail-pause"/,
         label);
     }
   }
@@ -465,8 +477,8 @@ test('an idle paused agent whose goal predicate passed shows Paused, never Done'
     resetFloorStore();
     subscribe({ agents: [passed], control: sibling });
     const html = center();
-    assert.deepEqual(wordingsIn(html), [['paused', 'Paused']]);
-    assert.match(html, /<span class="agent-detail-state-text">Paused<\/span>/, 'the row is not drawn, so the absence below proves nothing');
+    assert.deepEqual(wordingsIn(html), [['paused', PAUSED]]);
+    assert.match(html, /<section class="agent-detail-state"[^>]*><span[^>]*><span[^>]*><\/span>Paused<\/span>/, 'the row is not drawn, so the absence below proves nothing');
     assert.doesNotMatch(html, /\bDone\b/, 'an idle paused agent reads Done');
     assert.doesNotMatch(html, /data-status="done"|<dd>done<\/dd>/);
   }
@@ -487,14 +499,15 @@ test('200 promises only the cause; a stopped or started turn is shown from proje
   delta([agent({ paused: true, control_lsn: NEXT })], 10);
   assert.deepEqual(wordingsIn(strip()), [['pausing', PAUSING]]);
   delta([agent({ paused: true, status: 'idle', control_lsn: NEXT })], 11);
-  assert.deepEqual(wordingsIn(strip()), [['paused', 'Paused']]);
+  assert.deepEqual(wordingsIn(strip()), [['paused', PAUSED]]);
   assert.match(status(), /data-control-continuation="idle">No work is running now\. The agent is idle\./);
 
   await press(daemon(APPLIED), 'resume');
   html = status();
   assert.match(html, /Resume recorded\. The pause or stop is lifted\. That is not the same as new work starting\./);
   assert.match(html, /data-control-continuation="waiting">New work has not started yet\./);
-  assert.deepEqual(wordingsIn(strip()), [['paused', 'Paused']], 'the 200 lifted a pause the projection still holds');
+  assert.match(strip(), /<span[^>]*><span[^>]*><\/span>Paused<\/span><p class="agent-detail-state-text" role="status">This resume was recorded, but the Floor has not shown it yet\./,
+    'the 200 lifted a pause the projection still holds');
   delta([agent({ status: 'idle', control_lsn: '1099511628301' })], 12);
   assert.deepEqual(wordingsIn(strip()), []);
   assert.match(status(), /data-control-continuation="waiting"/);
@@ -823,7 +836,7 @@ test('a 200 holds the pressed verb until a delta moves its control position, and
   assert.equal(gate().offer, 'pause');
   assert.match(strip(), /<button(?=[^>]*class="control-pause")(?=[^>]*aria-disabled="true")/,
     'the pressed verb is offered again before the floor has shown the request');
-  assert.match(strip(), /<p>This pause was recorded, but the Floor has not shown it yet\.<\/p>/);
+  assert.match(strip(), /<p class="agent-detail-state-text" role="status">This pause was recorded, but the Floor has not shown it yet\.<\/p>/);
   await control.submitControl('pause', gate(), net);
   assert.equal(net.calls.length, 1, 'a second press sent the same control position again');
   assert.match(strip(), /<button(?=[^>]*class="control-pause")(?=[^>]*data-focus-on-leave="control-status-title")/,
@@ -905,7 +918,7 @@ test('a 403 says what a press does next: an ended session keeps no settled reque
     assert.match(strip(id, net.generation), /<button(?=[^>]*class="control-pause")(?=[^>]*aria-disabled="true")/,
       `${id}’s Pause is offered beside a request to paste a new link`);
   }
-  assert.match(strip(ADA, net.generation),
+  assert.match(noteOf(control.getControlState(), getFloorState(), rowOf(ADA), net.generation)?.text ?? '',
     /Dudes no longer accepts this page’s sign-in, so it can no longer pause or resume\./);
   await control.submitControl('pause', gate(), net);
   assert.equal(net.calls.length, 1, 'a press went out on the session that was refused');
