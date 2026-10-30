@@ -1592,6 +1592,68 @@ mod spawn_failure_tests {
     }
 
     #[test]
+    fn an_acknowledged_finished_child_releases_its_row() {
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let key = completed_query_target(&mut host);
+        let receipt = observed_absence(&host, &key)
+            .native_absence_receipt
+            .expect("an observed absence carries its receipt");
+        assert_eq!(host.owned(), 1, "an unacknowledged row is held");
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &receipt),
+            NativeBoundaryAcknowledgement::Acknowledged
+        );
+        assert_eq!(host.owned(), 0, "an acknowledged, reaped row is released");
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &receipt),
+            NativeBoundaryAcknowledgement::RefusedUnobserved,
+            "a second acknowledgement finds nothing to release"
+        );
+        host.shutdown().expect("nothing is left to contain");
+        assert!(matches!(
+            host.kill(&key),
+            dudes_supervisor::host::KillOutcome::Refused {
+                liveness: Liveness::Gone
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_acknowledged_killed_child_releases_its_row() {
+        let dir = tempfile::tempdir().expect("killed row tempdir");
+        let mark = dir.path().join("killed.pid");
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let key = match host.spawn(
+            &spec_with_mark("park", None, Some(&mark)),
+            &ManagedInstall::default(),
+        ) {
+            SpawnResult::Spawned(key) => key,
+            other => panic!("the killed target did not spawn: {other:?}"),
+        };
+        assert_eq!(await_number(&mark), key.pid);
+        assert!(matches!(
+            host.kill(&key),
+            dudes_supervisor::host::KillOutcome::Signalled
+        ));
+        assert_eq!(host.owned(), 1, "a killed row waits for its boundary check");
+        let receipt = observed_absence(&host, &key)
+            .native_absence_receipt
+            .expect("an observed absence carries its receipt");
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &receipt),
+            NativeBoundaryAcknowledgement::Acknowledged
+        );
+        assert_eq!(host.owned(), 0, "an acknowledged, reaped row is released");
+        assert!(matches!(
+            host.kill(&key),
+            dudes_supervisor::host::KillOutcome::Refused {
+                liveness: Liveness::Gone
+            }
+        ));
+    }
+
+    #[test]
     fn acknowledged_history_does_not_fill_the_current_native_target_query_bound() {
         use super::{
             CurrentNativeTarget, acknowledge_current_native_target, query_current_native_targets,
