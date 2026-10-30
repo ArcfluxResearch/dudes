@@ -16,6 +16,8 @@ use crate::worktree::git::Git;
 use crate::worktree::hire::{RepositoryHirePlan, WorktreeHires};
 pub(super) use common::repository_runner::Runner;
 
+mod browser_groups;
+
 pub(super) struct Setup {
     pub(super) fixture: common::Fixture,
     roots: tempfile::TempDir,

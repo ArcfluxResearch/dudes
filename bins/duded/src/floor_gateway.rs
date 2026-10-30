@@ -2120,6 +2120,15 @@ fn onboard_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) 
             "OK",
             &serde_json::json!({ "attempt_id": attempt_id, "state": "complete", "agent": agent }),
         ),
+        Ok(OnboardOutcome::ProjectComplete {
+            attempt_id,
+            agent,
+            project,
+        }) => action_json(
+            200,
+            "OK",
+            &serde_json::json!({ "attempt_id": attempt_id, "state": "complete", "agent": agent, "project": project }),
+        ),
         Err(OnboardRefusal::Forbidden) => error_response(403, "Forbidden"),
         Err(OnboardRefusal::Conflict) => error_response(409, "Conflict"),
         Err(OnboardRefusal::Unavailable) => {
@@ -2161,6 +2170,13 @@ fn onboard_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) 
             &serde_json::json!({
                 "attempt_id": attempt_wire, "state": "refused", "reason": "own_copy",
                 "note": refusal.to_string()
+            }),
+        ),
+        Err(OnboardRefusal::RepositoryGroup(note)) => action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({
+                "attempt_id": attempt_wire, "state": "refused", "reason": "repository_group", "note": note
             }),
         ),
     }
