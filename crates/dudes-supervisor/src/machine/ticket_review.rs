@@ -33,9 +33,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let HireRepositories::Scoped(hire) = &row.repositories else {
             return None;
         };
-        if hire.policy.require_confined().is_err() {
-            return None;
-        }
         let round = self.world.active_repository_round(agent).ok()??;
         let review = self.world.repository_review(round.goal)?;
         Some(RepositoryCapture {

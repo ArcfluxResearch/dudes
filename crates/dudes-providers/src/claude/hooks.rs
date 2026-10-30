@@ -43,6 +43,9 @@ pub(super) fn compose_attached(
         OsString::from("--settings"),
         settings_path(ctx).into_os_string(),
     ]);
+    for dir in ctx.extra_dirs {
+        argv.extend([OsString::from("--add-dir"), dir.clone().into_os_string()]);
+    }
     if let Some(name) = model.selector() {
         // A leading dash would read as a flag.
         if name.is_empty() || name.starts_with('-') {

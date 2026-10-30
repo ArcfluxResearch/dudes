@@ -244,13 +244,14 @@ export interface GoalAttempt {
 }
 
 type FixedRefusal = 'agent_absent' | 'agent_halted' | 'stale_goal' | 'turn_open' | 'predicate_claimed'
-  | 'predicate_todo' | 'goal_exhausted' | 'goal_not_exhausted' | 'workspace_unavailable' | 'profile_changed';
+  | 'predicate_todo' | 'goal_exhausted' | 'goal_not_exhausted' | 'workspace_unavailable' | 'profile_changed'
+  | 'multi_repository';
 
 /** The reasons each route can answer with, besides a check's. A reason from the other route proves nothing. */
 const CHANGE_REASONS: ReadonlySet<string> = new Set(['agent_absent', 'agent_halted', 'stale_goal', 'turn_open',
-  'predicate_claimed', 'predicate_todo', 'workspace_unavailable', 'profile_changed', 'goal_exhausted']);
+  'predicate_claimed', 'predicate_todo', 'workspace_unavailable', 'profile_changed', 'goal_exhausted', 'multi_repository']);
 const RENEW_REASONS: ReadonlySet<string> = new Set(['agent_absent', 'agent_halted', 'stale_goal', 'turn_open',
-  'predicate_claimed', 'predicate_todo', 'goal_not_exhausted', 'workspace_unavailable', 'profile_changed']);
+  'predicate_claimed', 'predicate_todo', 'goal_not_exhausted', 'workspace_unavailable', 'profile_changed', 'multi_repository']);
 
 export type GoalRefusalReason = FixedRefusal | CheckRefusal;
 
@@ -265,6 +266,7 @@ export const REFUSAL_REASONS: Readonly<Record<FixedRefusal, string>> = Object.fr
   agent_halted: 'A halt stands on this agent, so nothing was recorded. Press Resume first if you stopped it from this page; '
     + 'a halt from the command line only the local operator can lift.',
   agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
+  multi_repository: 'A goal outside a ticket is not available for a multi-repository agent yet. Give it a ticket instead.',
   goal_not_exhausted: 'This task still has work attempts or spending allowance, so nothing was recorded. Change its text instead.',
   workspace_unavailable: 'This agent’s project is no longer set up at its folder, so that check cannot be '
     + 'chosen. Nothing changed.',

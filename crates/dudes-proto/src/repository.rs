@@ -331,6 +331,15 @@ impl std::fmt::Display for IncompleteDeclaration {
 impl std::error::Error for IncompleteDeclaration {}
 
 impl ScopedHireRepositories {
+    /// Every copy's working folder, the primary first and the others in hire order.
+    pub fn execution_directories(&self) -> impl Iterator<Item = &Path> {
+        self.repositories
+            .primary_first()
+            .map(|entry| entry.value.recorded.execution.directory.as_path())
+    }
+}
+
+impl ScopedHireRepositories {
     /// An unconfined hire is ticketed over its full set, primary first and the rest in hire order.
     /// A confined hire may be ticketed over a subset, which callers check separately.
     pub fn require_full_declaration(
@@ -455,6 +464,17 @@ impl SingletonRepository {
     }
 }
 
+/// How a site written for one working copy sees a hire.
+#[derive(Clone, Copy, Debug)]
+pub enum Workplace<'a> {
+    /// One copy at the recorded folder.
+    Single(&'a SingletonRepository),
+    /// Several copies the agent may all write. Work starts in the primary copy and adds the rest.
+    Unconfined(&'a ScopedHireRepositories),
+    /// Several copies behind a provider boundary. A single-copy site has no answer for it.
+    Confined,
+}
+
 /// The repository authority owned by an agent row.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "repository", rename_all = "snake_case")]
@@ -479,6 +499,19 @@ impl HireRepositories {
         match self {
             Self::Legacy(repository) => Some(repository),
             Self::Scoped(_) => None,
+        }
+    }
+
+    /// How a site written for one working copy sees this hire. Matching on it, not on
+    /// [`Self::singleton`] returning `None`, is what gives a multi-repository hire an answer.
+    #[must_use]
+    pub fn workplace(&self) -> Workplace<'_> {
+        match self {
+            Self::Legacy(repository) => Workplace::Single(repository),
+            Self::Scoped(hire) => match hire.policy.confinement() {
+                Confinement::Unconfined => Workplace::Unconfined(hire),
+                Confinement::Confined => Workplace::Confined,
+            },
         }
     }
 

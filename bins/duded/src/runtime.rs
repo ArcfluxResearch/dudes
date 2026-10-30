@@ -380,6 +380,23 @@ fn missing_unconfined_copy(
     .flatten()
 }
 
+/// The reason shown for a goal set outside a ticket on a multi-repository agent. The check of
+/// such a goal has no single folder to run in, so only a ticket gives the agent a goal for now.
+pub(crate) const GOAL_OUTSIDE_TICKET_REFUSAL: &str = "A goal outside a ticket is not available for a multi-repository agent yet. Give it a ticket instead.";
+
+fn refuse_goal_outside_a_ticket(
+    repositories: &dudes_proto::repository::HireRepositories,
+) -> Result<(), RpcError> {
+    match repositories.workplace() {
+        dudes_proto::repository::Workplace::Unconfined(_) => Err(error(
+            ErrorCode::Refused,
+            GOAL_OUTSIDE_TICKET_REFUSAL,
+        )),
+        dudes_proto::repository::Workplace::Single(_)
+        | dudes_proto::repository::Workplace::Confined => Ok(()),
+    }
+}
+
 fn known_preappend_refusal(error: &anyhow::Error) -> bool {
     error.downcast_ref::<KnownNoEffect>().is_some()
         || error.downcast_ref::<HireAuthorityRefusal>().is_some()
@@ -3755,6 +3772,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         else {
             return refused(Refusal::AgentAbsent);
         };
+        refuse_goal_outside_a_ticket(&agent.repositories)?;
         if agent.halted {
             return refused(Refusal::AgentHalted);
         }
@@ -3865,6 +3883,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 format!("there is no live agent {}", params.agent),
             ));
         };
+        refuse_goal_outside_a_ticket(&row.repositories)?;
         // No evidence can complete a Claimed or Todo goal, so
         // a fresh one is refused before any append.
         if matches!(
@@ -4119,6 +4138,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         };
         if row.halted {
             return Some("agent_halted");
+        }
+        if refuse_goal_outside_a_ticket(&row.repositories).is_err() {
+            return Some("multi_repository");
         }
         if row.goal != Some(request.goal) {
             return Some("stale_goal");
@@ -8605,15 +8627,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .agents
             .get(&agent)
             .ok_or_else(|| anyhow::anyhow!("attached launch owner is unavailable"))?;
-        if row
-            .repositories
-            .singleton()
-            .is_none_or(|repository| repository.cwd() != spec.cwd)
-        {
+        let recorded_cwd = match row.repositories.workplace() {
+            dudes_proto::repository::Workplace::Single(repository) => Some(repository.cwd()),
+            dudes_proto::repository::Workplace::Unconfined(hire) => {
+                hire.execution_directories().next()
+            }
+            dudes_proto::repository::Workplace::Confined => None,
+        };
+        if recorded_cwd != Some(spec.cwd.as_path()) {
             queue.push_back(Input::PtyExited { agent });
             report.record_open(
                 agent,
                 Err("the recorded repository is unavailable for this attachment".to_owned()),
+            )?;
+            return Ok(());
+        }
+        if missing_unconfined_copy(sup.world(), row).is_some() {
+            queue.push_back(Input::PtyExited { agent });
+            report.record_open(
+                agent,
+                Err("a copy of this agent's repositories is missing, so it cannot be attached"
+                    .to_owned()),
             )?;
             return Ok(());
         }

@@ -2614,14 +2614,23 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(adapter) = self.adapters.get(row.provider) else {
             return;
         };
-        let Some(repository) = row.repositories.singleton() else {
-            return;
+        let (cwd, extra_dirs): (&std::path::Path, Vec<PathBuf>) = match row.repositories.workplace()
+        {
+            dudes_proto::repository::Workplace::Single(repository) => (repository.cwd(), Vec::new()),
+            dudes_proto::repository::Workplace::Unconfined(hire) => {
+                let mut copies = hire.execution_directories();
+                let Some(primary) = copies.next() else {
+                    return;
+                };
+                (primary, copies.map(Path::to_path_buf).collect())
+            }
+            dudes_proto::repository::Workplace::Confined => return,
         };
         let agent_dir = self.agent_dir(agent);
         let ctx = AgentCtx {
-            extra_dirs: &[],
+            extra_dirs: &extra_dirs,
             agent,
-            cwd: repository.cwd(),
+            cwd,
             agent_dir: &agent_dir,
             daemon_env: &self.config.daemon_env,
             sandbox: row.sandbox,

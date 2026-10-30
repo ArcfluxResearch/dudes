@@ -788,3 +788,109 @@ fn an_unconfined_hire_refuses_a_narrower_declaration_at_assignment_and_at_start(
         }
     }
 }
+
+fn assigned_unconfined_ticket(setup: &Setup, agent: AgentId, socket: &mut Socket) -> CardId {
+    let created: TicketCreateResult = ok(
+        socket,
+        setup,
+        Method::TicketCreate,
+        json!({"title": "Cover all", "check_repo": "api"}),
+    );
+    let queued = read(socket, setup, created.card);
+    let _: Value = ok(
+        socket,
+        setup,
+        Method::TicketAssign,
+        json!({"card": created.card, "agent": agent, "expected_seq": queued.card.seq}),
+    );
+    created.card
+}
+
+#[test]
+fn an_unconfined_ticket_turn_launches_in_the_primary_copy_with_the_others_added() {
+    let setup = setup();
+    let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
+    let agent = hires.hire(params).unwrap().agent;
+    let mut socket = Client::connect(setup.settings.socket()).unwrap();
+    let card = assigned_unconfined_ticket(&setup, agent, &mut socket);
+    setup.fixture.await_record("the ticket turn", |record| {
+        matches!(record, Record::TurnSpawned { .. }).then_some(())
+    });
+    assert_eq!(
+        read(&mut socket, &setup, card).card.status,
+        dudes_types::CardStatus::Doing
+    );
+    drop(socket);
+    running.stop(crate::ExitCause::Ended);
+    let spawned = setup.host.spawned();
+    assert_eq!(spawned.len(), 1);
+    setup.assert_primary_with_others_added(&spawned[0], agent);
+    let records = setup.fixture.records();
+    assert!(
+        records
+            .iter()
+            .any(|record| matches!(record, Record::TicketStartedWithRepositories(_)))
+    );
+}
+
+#[test]
+fn an_unconfined_ticket_whose_second_copy_goes_missing_before_its_turn_holds_the_agent() {
+    let setup = setup();
+    let mut daemon = setup.boot_unconfined();
+    let vanishing = std::sync::Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+    let hook = vanishing.clone();
+    daemon.ctx.before_launch_copy_check = Some(Box::new(move || {
+        if let Some(copy) = hook.lock().unwrap().take() {
+            std::fs::rename(&copy, copy.with_extension("moved")).unwrap();
+        }
+    }));
+    let (mut running, hires, params) = setup.start_from(daemon);
+    let agent = hires.hire(params).unwrap().agent;
+    *vanishing.lock().unwrap() = Some(setup.copies_of(agent)[1].clone());
+    let mut socket = Client::connect(setup.settings.socket()).unwrap();
+    let card = assigned_unconfined_ticket(&setup, agent, &mut socket);
+    let worktree = setup.fixture.await_record("the hold", |record| match record {
+        Record::AgentHeld {
+            agent: held,
+            cause: dudes_proto::AutomaticHold::WorktreeMissing { worktree },
+            ..
+        } if *held == agent => Some(*worktree),
+        _ => None,
+    });
+    let status = read(&mut socket, &setup, card).card.status;
+    drop(socket);
+    running.stop(crate::ExitCause::Ended);
+    assert!(setup.fixture.records().iter().any(
+        |record| record.worktree_lease().is_some_and(|lease| lease.worktree == worktree
+            && lease.path == setup.copies_of(agent)[1])
+    ));
+    assert_eq!(status, dudes_types::CardStatus::Doing);
+    assert!(setup.host.spawned().is_empty());
+}
+
+#[test]
+fn assigning_a_ticket_to_an_unconfined_agent_with_a_missing_copy_is_refused() {
+    let setup = setup();
+    let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
+    let agent = hires.hire(params).unwrap().agent;
+    let mut socket = Client::connect(setup.settings.socket()).unwrap();
+    let created: TicketCreateResult = ok(
+        &mut socket,
+        &setup,
+        Method::TicketCreate,
+        json!({"title": "Cover all", "check_repo": "api"}),
+    );
+    let queued = read(&mut socket, &setup, created.card);
+    let copy = setup.copies_of(agent)[1].clone();
+    std::fs::rename(&copy, copy.with_extension("moved")).unwrap();
+    refused(
+        &mut socket,
+        &setup,
+        Method::TicketAssign,
+        json!({"card": created.card, "agent": agent, "expected_seq": queued.card.seq}),
+        "copy is unavailable",
+    );
+    drop(socket);
+    running.stop(crate::ExitCause::Ended);
+    assert!(setup.host.spawned().is_empty());
+}
