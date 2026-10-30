@@ -169,7 +169,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         Ok(Handled::folded(through))
     }
 
-    fn mail_wake_input_for(
+    pub(super) fn mail_wake_input_for(
         &self,
         agent: AgentId,
         at: Timestamp,

@@ -5438,6 +5438,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(row) = self.world.agents.get(&agent) else {
             return (HookReply::ALLOW, None);
         };
+        let commands = row.task_command_set();
         if row.retired || row.halted {
             return (
                 HookReply {
@@ -5518,7 +5519,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .get(&agent)
                 .is_some_and(|row| row.acknowledged.is_none())
         {
-            let notice = dudes_policy::closing_notice(session.announcement);
+            let notice = dudes_policy::closing_notice_for_commands(session.announcement, commands);
             reply.context = Some(
                 reply
                     .context
@@ -5526,7 +5527,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             );
         }
         if row.attached && matches!(kind, EventKind::PromptSubmit | EventKind::PostTool { .. }) {
-            let extra = dudes_policy::supplemental_context(work);
+            let extra = dudes_policy::supplemental_context_for_commands(work, commands);
             reply.context = Some(match reply.context.take() {
                 Some(text) => format!("{text}\n\n{extra}"),
                 None => extra,

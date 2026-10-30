@@ -131,12 +131,12 @@ pub use reply::{HookDecision, HookReply, VendorReply};
 pub use rpc::hook::{HookToken, InvalidHookToken};
 pub use task::{
     ANSWER_CLOSING, IDENTITY_BYTES, IdentityLine, MAIL_INSTRUCTION, MEMORY_INSTRUCTION,
-    NoteContract, TEACHING_BYTES, TaskContract, identified_conversation_task,
-    identified_mail_wake_task, identified_taught_note_task, normalized_browser_note,
-    recognize_identified_conversation_task, recognize_identified_mail_wake_task,
-    recognize_identified_taught_note_task, recognize_taught_note_task, taught_note_task,
-    valid_identified_taught_admission, valid_identified_taught_decision, valid_taught_admission,
-    valid_taught_decision,
+    NoteContract, SCOPED_MAIL_INSTRUCTION, TEACHING_BYTES, TaskCommandSet, TaskContract,
+    identified_conversation_task, identified_mail_wake_task, identified_taught_note_task,
+    normalized_browser_note, recognize_identified_conversation_task,
+    recognize_identified_mail_wake_task, recognize_identified_taught_note_task,
+    recognize_taught_note_task, taught_note_task, valid_identified_taught_admission,
+    valid_identified_taught_decision, valid_taught_admission, valid_taught_decision,
 };
 pub use ticket::{
     Priority, QueueClass, QueueKey, TicketCheck, TicketCheckResult, TicketReason, TicketRefusal,

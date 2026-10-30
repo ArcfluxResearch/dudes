@@ -128,10 +128,22 @@ impl JsonSchema for MailWakeTask {
         let tasks: Vec<_> = (1..=32)
             .map(|count| crate::task::mail_wake_task(count).expect("bounded task"))
             .collect();
-        let suffix = crate::task::schema_suffix();
+        let patterns: Vec<_> = [
+            crate::task::TaskCommandSet::Legacy,
+            crate::task::TaskCommandSet::ScopedFileMail,
+        ]
+        .into_iter()
+        .map(|commands| {
+            format!(
+                "{}\\[(?:[1-9]|[12][0-9]|3[0-2]) unread mail\\]{}$",
+                crate::task::schema_identity_prefix(commands),
+                crate::task::schema_teaching_suffix(commands)
+            )
+        })
+        .collect();
         schemars::json_schema!({"oneOf":[
             {"type":"string","enum":tasks},
-            {"type":"string","pattern":format!("^\\[You are [^\\]]+\\]\\n\\n\\[(?:[1-9]|[12][0-9]|3[0-2]) unread mail\\]{suffix}$")}
+            {"type":"string","pattern":format!("(?:{}|{})", patterns[0], patterns[1])}
         ]})
     }
 }
