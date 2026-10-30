@@ -11,6 +11,36 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.102.0] - 2026-10-31
+
+### Highlights
+
+- **A Claude Code agent can now be hired into a project made of several repositories.** List the repositories once with `dudes project repositories <project> --primary <id> --repo <id>=<path> ...`, then hire with `dudes hire --project <project> --worktree --trusted` or the Hire dialog. The agent gets its own copy of every repository, works in the primary copy, and has the other copies added to its session. Chat, mail and ticket turns all start that way. (#339)
+- **A ticket in such a project always covers every repository.** The ticket lists the primary repository first and the others after it, and its review shows a diff for each repository. A ticket that names only some of the repositories is refused. (#327, #339)
+- **Commits count as changes.** The default "files changed" check used to look only for uncommitted changes, so a round whose work was all committed counted as having changed nothing. In a multi-repository project it now also passes when any copy holds a commit made since the start of the round. (#333)
+- **Instruction files are reviewed in every copy.** A skill, command or agent file changed in any hired copy during a ticket round holds the round for your review, as it does for a single-repository agent. (#338)
+- **Recovery, attach and chat work as they do for a single-repository agent.** After a crash or restart, an interrupted turn is issued again once, in the primary copy with the other copies added, and a copy that has gone missing holds the agent instead. Open the real CLI starts Claude in the primary copy with the other copies added and watches every copy. (#331, #337, #338)
+
+### What the agent may write and what Claude loads
+
+- **The agent may change any file in any of its own copies.** It can commit there and run commands, under the same permission setting and trust as a single-repository agent in its own copy. Dudes does not confine it to the repositories a ticket names, and every ticket names all of them.
+- **Skills, commands and agents load from every copy.** Claude Code offers them from each copy, and Dudes reviews those files in every copy.
+- **Memory files, settings, hooks and MCP files load only from the primary copy.** Dudes removes `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` from the agent's environment, so another copy's memory files cannot load. (#338)
+
+### Changes
+
+- Groundwork for the above: a policy for hires that may write every copy and a journal record to carry it, the options a single-repository hire takes (model, permission setting, declared servers), launching a turn in the primary copy with the other copies added, and the checks that used to assume one working copy. (#324, #328, #330, #337)
+- What stays refused: Codex and Pi agents ("Multi-repository projects work with Claude only for now."), native Windows ("Multi-repository hiring is not available on this platform."), a goal outside a ticket ("A goal outside a ticket is not available for a multi-repository agent yet. Give it a ticket instead."), and a ticket for only some of the repositories. (#327, #337, #339)
+
+### Fixes
+
+- The Floor ticket page showed "Dudes sent a reply this page could not read." and no path list when a round changed an instruction file in an agent's own copy, in a multi-repository or a single-repository project. It now shows the review with the changed paths. (#340)
+- On a multi-repository hire, every ticket ended in Needs you and Accept always failed with "Instruction coverage is incomplete in a hired repository", even when the agent changed nothing. A ticket round now reaches Ready for you, Accept works, and an interrupted round recovers and starts again. (#341)
+
+### Breaking
+
+- **The first start after the upgrade rebuilds the saved views once.** The projection version moves from 71 to 73. Nothing is lost, and the rebuild runs once.
+
 ## [0.101.2] - 2026-10-31
 
 ### Highlights
