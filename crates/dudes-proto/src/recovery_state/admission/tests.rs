@@ -1,3 +1,5 @@
+mod scoped;
+
 use super::*;
 use crate::record::{Hex32, samples};
 use crate::recovery::RecoveryWork;
@@ -17,6 +19,7 @@ struct Fixture {
     goal: Goal,
     binding: RecoveryBinding,
     issue: RecoveryIssue,
+    repositories: crate::repository::TurnRepositories,
 }
 
 impl Fixture {
@@ -88,6 +91,11 @@ impl Fixture {
                 model_selection: Some(ModelSelection::provider_default()),
             },
             issue,
+            repositories: crate::repository::TurnRepositories::recorded(
+                Lsn(10),
+                &crate::repository::HireRepositories::default(),
+                None,
+            ),
         }
     }
 
@@ -123,7 +131,8 @@ impl Fixture {
             mode: Mode::Managed,
             attempt: crate::recovery_state::RecoveryAttempt::default(),
             ticket: None,
-            lease: None,
+            repositories: &self.repositories,
+            leases: Vec::new(),
         }
     }
 }

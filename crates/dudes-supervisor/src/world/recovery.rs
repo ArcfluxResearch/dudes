@@ -2,7 +2,7 @@ mod record;
 
 use dudes_proto::recovery::RecoveryBinding;
 use dudes_proto::recovery_state::admission::{
-    RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent, RecoveryLeaseCurrent,
+    RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent,
 };
 use dudes_proto::recovery_state::history::{
     RecoveryAttemptContext, RecoveryHoldWitness, RecoveryPriorControl, RecoveryStandingControl,
@@ -94,23 +94,10 @@ impl World {
                     },
                 )
             });
-        let lease = agent
-            .repositories
-            .singleton()
-            .ok_or(RecoveryStateError::Binding)?
-            .worktree()
-            .map(|id| {
-                let row = self.worktrees.get(&id).ok_or(RecoveryStateError::Binding)?;
-                Ok(RecoveryLeaseCurrent {
-                    worktree: id,
-                    agent: row.agent,
-                    removed: row.removed,
-                })
-            })
-            .transpose()?;
+        let leases = self.recovery_leases(agent)?;
         RecoveryCurrent {
             through,
-            agent: current_agent(binding.work.agent, agent)?,
+            agent: current_agent(binding.work.agent, agent),
             goal: RecoveryGoalCurrent {
                 goal: goal.goal.id,
                 agent: goal.agent,
@@ -136,9 +123,33 @@ impl World {
                 confirmation_lsn: turn.confirmation_lsn,
             },
             ticket,
-            lease,
+            repositories,
+            leases,
         }
         .bind(binding, &self.recovery_history)
+    }
+
+    fn recovery_leases<'a>(
+        &'a self,
+        agent: &'a super::AgentRow,
+    ) -> Result<Vec<dudes_proto::repository_state::history::RepositoryLease<'a>>, RecoveryStateError>
+    {
+        agent
+            .repositories
+            .worktrees()
+            .map(|id| {
+                let row = self.worktrees.get(&id).ok_or(RecoveryStateError::Binding)?;
+                Ok(dudes_proto::repository_state::history::RepositoryLease {
+                    worktree: id,
+                    leased_lsn: row.leased_lsn,
+                    origin: &row.origin,
+                    path: &row.path,
+                    base: row.base,
+                    agent: row.agent,
+                    removed: row.removed.is_some(),
+                })
+            })
+            .collect()
     }
 
     /// Validate a typed transition before any mutable world fold.
@@ -346,19 +357,12 @@ fn standing_control(agent: &super::AgentRow) -> RecoveryStandingControl {
     }
 }
 
-fn current_agent(
-    id: dudes_types::AgentId,
-    agent: &super::AgentRow,
-) -> std::result::Result<RecoveryAgentCurrent, RecoveryStateError> {
-    Ok(RecoveryAgentCurrent {
+fn current_agent(id: dudes_types::AgentId, agent: &super::AgentRow) -> RecoveryAgentCurrent {
+    RecoveryAgentCurrent {
         agent: id,
         hired_lsn: agent.mcp.hire_lsn,
         provider: agent.provider,
-        worktree: agent
-            .repositories
-            .singleton()
-            .ok_or(RecoveryStateError::Binding)?
-            .worktree(),
+        worktree: agent.repositories.primary_worktree(),
         mode: if agent.attached {
             Mode::Attached
         } else {
@@ -370,5 +374,5 @@ fn current_agent(
         control_lsn: agent.control_lsn,
         session: agent.session.clone(),
         session_lsn: agent.session_lsn,
-    })
+    }
 }

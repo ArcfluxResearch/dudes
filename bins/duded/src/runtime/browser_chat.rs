@@ -357,8 +357,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .get(&agent)
             .ok_or_else(|| anyhow::anyhow!("managed launch owner is unavailable"))?;
         let cwd = managed_launch_cwd(sup.world(), turn, launch)?;
+        let candidate = self.scoped_browser_candidate(sup, turn);
         if let Err(refusal) = self
-            .admit_prior_attempt(sup, agent, Some(turn))
+            .admit_prior_attempt_with_candidate(sup, agent, Some(turn), candidate)
             .and_then(|()| {
                 self.admit_shared_folder(
                     sup,
@@ -419,7 +420,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             });
             return Ok(());
         }
-        if !self.recovery_dispatch_allowed(sup, *turn) {
+        let candidate = self.scoped_browser_candidate(sup, *turn);
+        if !self.recovery_dispatch_allowed_for(sup, *turn, candidate) {
             return Ok(());
         }
         let launch = self.with_recovery_facts(sup, &[], |sup, operation| {
@@ -434,7 +436,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .get(agent)
             .ok_or_else(|| anyhow::anyhow!("browser dispatch owner is unavailable"))?;
         if let Err(refusal) = self
-            .admit_prior_attempt(sup, *agent, Some(*turn))
+            .admit_prior_attempt_with_candidate(sup, *agent, Some(*turn), candidate)
             .and_then(|()| {
                 self.admit_shared_folder(
                     sup,

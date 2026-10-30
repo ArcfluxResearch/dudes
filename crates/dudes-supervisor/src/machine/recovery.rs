@@ -286,9 +286,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .1
                 .repositories
                 .as_ref()
-                .and_then(dudes_proto::repository::TurnRepositories::singleton)
-                .ok_or(RecoveryRefusal::StaleWork)?
-                .worktree(),
+                .map(|repositories| repositories.hire().primary_worktree())
+                .ok_or(RecoveryRefusal::StaleWork)?,
             provider: row.provider,
             model_selection: turn.1.model_selection.clone(),
         })
@@ -1242,7 +1241,10 @@ enum InvalidationSubject {
 }
 
 impl InvalidationSubject {
-    fn for_binding(binding: &RecoveryBinding) -> Vec<Self> {
+    fn for_binding(
+        binding: &RecoveryBinding,
+        history: &dudes_proto::recovery_state::history::RecoveryHistory,
+    ) -> Vec<Self> {
         let work = binding.work;
         let mut keys = vec![
             Self::GoalSet(work.agent),
@@ -1260,8 +1262,8 @@ impl InvalidationSubject {
                 Self::TicketRemoved(ticket.card),
             ]);
         }
-        if let Some(lease) = binding.worktree {
-            keys.push(Self::Lease(lease));
+        if let Ok(leases) = history.hired_worktrees(binding) {
+            keys.extend(leases.into_iter().map(Self::Lease));
         }
         keys
     }
@@ -1288,6 +1290,7 @@ impl InvalidationSubject {
 pub(super) struct Discovery {
     claims: std::collections::BTreeMap<Lsn, RecoveryClaimRef>,
     subjects: std::collections::BTreeMap<InvalidationSubject, usize>,
+    claim_subjects: std::collections::BTreeMap<Lsn, Vec<InvalidationSubject>>,
     evidence: std::collections::BTreeMap<InvalidationSubject, [Option<Lsn>; 2]>,
     cursor: Option<Lsn>,
     dirty: bool,
@@ -1300,11 +1303,11 @@ impl Discovery {
         self.dirty || self.inflight.is_some()
     }
 
-    fn retire(&mut self, authorization: &RecoveryAuthorized, lsn: Lsn) {
+    fn retire(&mut self, lsn: Lsn) {
         if self.claims.remove(&lsn).is_none() {
             return;
         }
-        for key in InvalidationSubject::for_binding(&authorization.binding) {
+        for key in self.claim_subjects.remove(&lsn).unwrap_or_default() {
             if let Some(count) = self.subjects.get_mut(&key) {
                 *count -= 1;
                 if *count == 0 {
@@ -1343,7 +1346,7 @@ impl Discovery {
     }
 
     pub(super) fn folded(&mut self, world: &crate::World, lsn: Lsn, record: &Record) {
-        let Ok((state, _)) = world.recovery_projection() else {
+        let Ok((state, history)) = world.recovery_projection() else {
             return;
         };
         match record {
@@ -1357,14 +1360,16 @@ impl Discovery {
                     .is_ok_and(|receipt| matches!(receipt.state, RecoveryClaimState::Pending))
                     && self.claims.insert(lsn, claim).is_none()
                 {
-                    for key in InvalidationSubject::for_binding(&authorization.binding) {
-                        *self.subjects.entry(key).or_default() += 1;
+                    let keys = InvalidationSubject::for_binding(&authorization.binding, history);
+                    for key in &keys {
+                        *self.subjects.entry(*key).or_default() += 1;
                     }
+                    self.claim_subjects.insert(lsn, keys);
                 }
             }
             Record::RecoveryInvalidated(invalidated) => {
-                if let Ok(receipt) = state.claim_receipt(invalidated.claim) {
-                    self.retire(receipt.authorization, invalidated.claim.authorization_lsn);
+                if state.claim_receipt(invalidated.claim).is_ok() {
+                    self.retire(invalidated.claim.authorization_lsn);
                 }
             }
             _ => {
@@ -1374,7 +1379,7 @@ impl Discovery {
                     && let Ok(receipt) = state.claim_receipt(claim)
                     && !matches!(receipt.state, RecoveryClaimState::Pending)
                 {
-                    self.retire(receipt.authorization, claim.authorization_lsn);
+                    self.retire(claim.authorization_lsn);
                 }
             }
         }
@@ -1444,10 +1449,13 @@ impl Discovery {
 
     fn candidates(
         &self,
-        binding: &RecoveryBinding,
+        claim_lsn: Lsn,
     ) -> Vec<dudes_proto::recovery::RecoveryInvalidationEvidence> {
-        InvalidationSubject::for_binding(binding)
+        self.claim_subjects
+            .get(&claim_lsn)
             .into_iter()
+            .flatten()
+            .copied()
             .flat_map(|key| {
                 self.evidence
                     .get(&key)
@@ -1490,8 +1498,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 return;
             };
             if !matches!(receipt.state, RecoveryClaimState::Pending) {
-                self.recovery_discovery
-                    .retire(receipt.authorization, claim.authorization_lsn);
+                self.recovery_discovery.retire(claim.authorization_lsn);
                 continue;
             }
             let Some(through) = self.world.last_applied_lsn else {
@@ -1499,7 +1506,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             };
             let candidate = self
                 .recovery_discovery
-                .candidates(&receipt.authorization.binding)
+                .candidates(claim.authorization_lsn)
                 .into_iter()
                 .find_map(|evidence| {
                     let record = dudes_proto::recovery::RecoveryInvalidated { claim, evidence };
