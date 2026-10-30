@@ -607,6 +607,62 @@ fn assert_held_controls(
 }
 
 #[test]
+fn a_halted_turns_native_boundary_settles_and_frees_its_folder_for_a_peer() {
+    let fixture = common::Fixture::new();
+    let project = fixture.state.path().join("project");
+    let work = fixture.state.path().join("child");
+    let home = fixture.state.path().join("owned-home");
+    for path in [&project, &work, &home] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let project = project.canonicalize().unwrap();
+    let instruction = project.join("CLAUDE.md");
+    std::fs::write(&instruction, "initial project instruction\n").unwrap();
+    let command = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/two-roles/bin/claude")
+        .canonicalize()
+        .unwrap();
+    let settings = owned_settings(&fixture, &project, &work, &home, true, true);
+    let (mut running, _) = start_review_daemon(&settings, command, true, false);
+    let agent = hire_shared_peers(&running, &project);
+    let mut socket = Client::connect(settings.socket()).unwrap();
+    let credential = || {
+        OperatorCredential::new(
+            std::fs::read_to_string(
+                settings
+                    .runtime_dir
+                    .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let mut call = |method, params| {
+        socket
+            .call_as_operator(method, Some(params), credential())
+            .unwrap()
+    };
+    let (_, turn) = start_ticket(&fixture, &mut call, agent);
+    let started_lsn = assert_sampled_start(&fixture, turn, &instruction);
+    success(call(Method::LoopHalt, json!({"agent":agent})));
+    fixture.await_record(
+        "the halted native child's durable absence",
+        |record| match record {
+            Record::InstructionAttemptBoundarySettled {
+                started_lsn: settled,
+                proof:
+                    dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent { .. },
+                ..
+            } if *settled == started_lsn => Some(()),
+            _ => None,
+        },
+    );
+    assert_completed_peer_hire(&mut call, &project);
+    drop(socket);
+    running.stop(duded::ExitCause::ShutdownRpc);
+}
+
+#[test]
 fn a_real_managed_edit_requires_exact_review_and_acknowledgment_keeps_pause() {
     managed_review(true, Completion::Fails, true, false);
 }

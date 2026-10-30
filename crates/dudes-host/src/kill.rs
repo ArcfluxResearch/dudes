@@ -579,17 +579,18 @@ enum Settled {
 ///
 /// Two paths, and the difference between them is what is holding the identifier still; the module
 /// docs say which and why. The entry in `children` leaves the map only when the child has actually
-/// been reaped — a refused or failed kill leaves it owned, so [`crate::RealHost::shutdown`] still
-/// reaches it.
+/// been reaped and no native boundary check still needs its row. A refused or failed kill leaves it
+/// owned, so [`crate::RealHost::shutdown`] still reaches it.
 pub(crate) fn kill(
     children: &mut BTreeMap<u32, Owned>,
     key: &AdoptionKey,
     host_boot: Option<&str>,
     grace: Duration,
+    retain_reaped: bool,
 ) -> KillOutcome {
     match children.remove(&key.pid) {
         Some(owned) => {
-            let (outcome, keep) = kill_owned(owned, key, host_boot, grace);
+            let (outcome, keep) = kill_owned(owned, key, host_boot, grace, retain_reaped);
             if let Some(owned) = keep {
                 children.insert(key.pid, owned);
             }
@@ -600,7 +601,9 @@ pub(crate) fn kill(
 }
 
 /// The escalation against a child this host owns. Returns the child to the caller unless it was
-/// reaped, in which case there is nothing left to own.
+/// reaped and the caller has no use for the row. `retain_reaped` is that use: a reaped row keeps
+/// the group capability, boundary and reap confirmation that a later whole-group absence check
+/// needs, exactly as a child that exited on its own keeps them until shutdown.
 ///
 /// **Which guard applies is decided here rather than assumed**, and that is what the watcher costs.
 /// The reservation is the fact that *this host has not reaped the child*, and the
@@ -618,6 +621,7 @@ fn kill_owned(
     key: &AdoptionKey,
     host_boot: Option<&str>,
     grace: Duration,
+    retain_reaped: bool,
 ) -> (KillOutcome, Option<Owned>) {
     if let Err(liveness) = names_the_owned_child(&owned, key) {
         return (KillOutcome::Refused { liveness }, Some(owned));
@@ -626,7 +630,11 @@ fn kill_owned(
     let guard = guard_for(owned.exit.reaped(), key, host_boot);
     let target = PlatTarget::new(&owned.grip, pid);
     let (outcome, keep) = kill_selected(&target, &mut owned.exit, guard, grace);
-    (outcome, keep.then_some(owned))
+    let reaped = matches!(outcome, KillOutcome::Signalled);
+    (
+        outcome,
+        (keep || (retain_reaped && reaped)).then_some(owned),
+    )
 }
 
 /// Run an already-selected owned child through escalation and say whether its row remains owned.

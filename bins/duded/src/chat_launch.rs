@@ -282,6 +282,7 @@ fn resolve(queue: &Arc<(Mutex<Queue>, Condvar)>, pause: &BrowserLaunchPause, han
                             .prepare_scoped(request.launch, request.attempt)
                     })
                     .map_err(|reason| {
+                        tracing::warn!(error = %reason, "scoped launch preparation failed");
                         format!("scoped launch preparation failed ({:?})", reason.kind())
                     });
                 WorkerCompletion::Scoped(Box::new(ScopedCompletion {
