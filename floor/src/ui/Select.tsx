@@ -1,6 +1,6 @@
 import { Check, ChevronDown } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import type { FocusEvent, KeyboardEvent, Ref } from 'react';
+import type { FocusEvent, KeyboardEvent, ReactNode, Ref } from 'react';
 
 import { FIELD_BOX } from './Field.tsx';
 import { useFieldControl } from './fieldContext.ts';
@@ -13,6 +13,16 @@ export interface SelectOption {
   readonly value: string;
   readonly label: string;
   readonly disabled?: boolean;
+  /** What the closed button shows when this option is chosen, if shorter than the label. */
+  readonly short?: string;
+  /** A mark drawn before the label, in the list and on the button. */
+  readonly icon?: ReactNode;
+  /** A mark drawn after the label on the closed button only, such as a warning that the label does not say. */
+  readonly mark?: ReactNode;
+  /** A small badge beside the label in the list. */
+  readonly badge?: ReactNode;
+  /** A muted second line under the label in the list. */
+  readonly detail?: string;
 }
 
 export interface SelectProps {
@@ -26,6 +36,10 @@ export interface SelectProps {
   readonly disabled?: boolean;
   readonly autoFocus?: boolean;
   readonly className?: string;
+  /** Classes for the open list. A list with its own classes is no longer held to the button's width. */
+  readonly listClassName?: string;
+  /** Opens the list, with focus on the button, each time this number goes up. For a shortcut that names the select. */
+  readonly openRequest?: number;
   readonly ref?: Ref<HTMLButtonElement>;
   readonly 'aria-label'?: string;
   readonly 'aria-labelledby'?: string;
@@ -38,7 +52,7 @@ export interface SelectProps {
  * active option is named by `aria-activedescendant`, so Escape, Tab and the arrow keys all leave focus where the person
  * was. The list is a child of the component, so it is safe inside a modal `dialog`.
  */
-export function Select({ options, value, onValueChange, id, name, placeholder = 'Choose', disabled = false, autoFocus, className, ref, ...aria }: SelectProps) {
+export function Select({ options, value, onValueChange, id, name, placeholder = 'Choose', disabled = false, autoFocus, className, listClassName, openRequest = 0, ref, ...aria }: SelectProps) {
   const made = useId();
   const field = useFieldControl();
   const own = id ?? field.id ?? made;
@@ -50,7 +64,7 @@ export function Select({ options, value, onValueChange, id, name, placeholder = 
   const run = useRef({ text: '', at: 0 });
   const selected = options.findIndex((option) => option.value === value);
   const close = useCallback(() => setOpen(false), []);
-  useTopLayerPopover(open, trigger, list, close, true);
+  useTopLayerPopover(open, trigger, list, close, listClassName === undefined);
 
   useEffect(() => {
     if (open) list.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' });
@@ -60,6 +74,14 @@ export function Select({ options, value, onValueChange, id, name, placeholder = 
     setActive(at);
     setOpen(true);
   }
+
+  const asked = useRef(openRequest);
+  useEffect(() => {
+    if (openRequest === asked.current) return;
+    asked.current = openRequest;
+    trigger.current?.focus();
+    begin(selected === -1 ? (moveActive(options, -1, 'Home') ?? -1) : selected);
+  });
 
   function choose(at: number): void {
     const option = options[at];
@@ -122,20 +144,27 @@ export function Select({ options, value, onValueChange, id, name, placeholder = 
       onKeyDown={keyOf}
       onBlur={blurred}
       className={cn(FIELD_BOX, 'flex h-8 cursor-pointer items-center justify-between gap-2 text-left', className)}>
-      <span className={cn('truncate', selected === -1 && 'text-subtle')}>{selected === -1 ? placeholder : options[selected]!.label}</span>
+      {selected !== -1 && (options[selected]!.icon !== undefined || options[selected]!.mark !== undefined)
+        ? <span className="flex min-w-0 items-center gap-2">{options[selected]!.icon}<span className="truncate">{options[selected]!.short ?? options[selected]!.label}</span>{options[selected]!.mark}</span>
+        : <span className={cn('truncate', selected === -1 && 'text-subtle')}>{selected === -1 ? placeholder : options[selected]!.short ?? options[selected]!.label}</span>}
       <ChevronDown {...ICON} className={cn('shrink-0 text-muted transition-transform', open && 'rotate-180')} />
     </button>
     <div ref={list} id={listId} role="listbox" popover="manual" tabIndex={-1} data-ui="select-list"
       aria-label={aria['aria-label']} aria-labelledby={aria['aria-labelledby']}
       onMouseDown={(event) => event.preventDefault()}
-      className="fixed inset-auto m-0 box-border max-h-70 animate-pop overflow-y-auto rounded-lg border border-line bg-surface p-1 font-sans text-ink shadow-pop">
+      className={cn('fixed inset-auto m-0 box-border max-h-70 animate-pop overflow-y-auto rounded-lg border border-line bg-surface p-1 font-sans text-ink shadow-pop', listClassName)}>
       {options.map((option, at) => <div key={option.value} id={`${listId}-${at}`} role="option" data-value={option.value}
         aria-selected={at === selected} aria-disabled={option.disabled === true || undefined} data-active={at === active}
         onPointerMove={() => { if (option.disabled !== true && at !== active) setActive(at); }}
         onClick={() => choose(at)}
-        className={cn('flex h-8 cursor-pointer items-center justify-between gap-2 rounded-md px-2 text-base max-[801px]:min-h-11',
+        className={cn('flex min-h-8 cursor-pointer items-center justify-between gap-2 rounded-md px-2 text-base max-[801px]:min-h-11',
+          option.detail !== undefined && 'py-1',
           at === active && 'bg-surface-2', at === selected && 'font-medium', option.disabled === true && 'cursor-not-allowed opacity-50')}>
-        <span className="truncate">{option.label}</span>
+        {option.icon === undefined && option.badge === undefined && option.detail === undefined ? <span className="truncate">{option.label}</span>
+          : <span className="flex min-w-0 flex-col">
+            <span className="flex min-w-0 items-center gap-2">{option.icon}<span className="truncate">{option.label}</span>{option.badge}</span>
+            {option.detail === undefined ? null : <span className="truncate text-caption font-normal text-muted">{option.detail}</span>}
+          </span>}
         {at === selected ? <Check {...ICON} className="shrink-0 text-accent" /> : null}
       </div>)}
     </div>
