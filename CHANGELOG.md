@@ -40,6 +40,8 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 ### Breaking
 
 - **The first start after the upgrade rebuilds the saved views once.** The projection version moves from 71 to 73. Nothing is lost, and the rebuild runs once.
+- **Going back to 0.101.2 works until you hire into a multi-repository project.** 0.101.2 starts on a 0.102.0 journal that holds no such hire, including one with an agent working in its own copy, and also when it has to rebuild the saved views. It keeps your tickets, notes, priorities, agents and copies, and what you write there is read when you come forward again.
+- **After a multi-repository hire, 0.101.2 refuses to start on that data.** The daemon exits with status 1 before it answers or serves the Floor, changes nothing in the journal, and prints `journal required record kind 113 at 1:6426 is not understood`, where the segment and byte position are those of your journal. `dudes start` reports only that the daemon exited. Start 0.102.0 again and everything is intact.
 
 ## [0.101.2] - 2026-10-31
 
