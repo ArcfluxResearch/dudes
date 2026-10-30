@@ -23,8 +23,6 @@ fn refused(message: impl Into<String>) -> RpcError {
 /// through a test hook.
 pub(super) const HIRE_POLICY: RepositoryPolicy = RepositoryPolicy::OperatorTrustV1;
 
-const UNRECORDED_OPTIONS: &str = "A multi-repository hire cannot take MCP servers or an isolation setting yet. Nobody was hired.";
-
 /// The one engine and platform decision for a multi-repository hire. The hire path and the Floor
 /// offer both ask it, so the two cannot disagree. An unconfined hire needs what a single-repo hire
 /// into its own copy needs: Claude, on a platform that makes copies.
@@ -503,11 +501,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     ));
                 }
             }
-            Confinement::Unconfined => {
-                if !params.mcp_servers.is_empty() || params.isolation.is_some() {
-                    return Err(refused(UNRECORDED_OPTIONS));
-                }
-            }
+            Confinement::Unconfined => {}
         }
         self.hire_option_guards(&params)?;
         let (project, repositories) =
@@ -645,6 +639,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             max_turns: params.max_turns,
             max_budget: params.max_budget,
             model: params.model.clone(),
+            isolation: params.isolation,
+            mcp_servers: {
+                let mut names = params.mcp_servers.clone();
+                names.sort();
+                names.dedup();
+                names
+            },
             browser_onboarding: None,
             repositories: ScopedRepositories {
                 project: plan.project.clone(),

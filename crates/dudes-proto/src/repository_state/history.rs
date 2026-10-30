@@ -170,6 +170,9 @@ pub enum RepositoryStateError {
     Issue,
     /// The hire record kind does not match the confinement of its recorded policy.
     Policy,
+    /// The hire names MCP servers or an isolation setting its policy refuses, or the servers
+    /// are not sorted and unique.
+    Options,
 }
 
 impl std::fmt::Display for RepositoryStateError {
@@ -188,6 +191,7 @@ impl std::fmt::Display for RepositoryStateError {
             Self::Issue => "turn repository grant does not match",
             Self::Review => "repository review evidence does not match",
             Self::Policy => "hire record kind does not match its repository policy",
+            Self::Options => "hire record options do not match its repository policy",
         })
     }
 }
@@ -248,10 +252,16 @@ pub fn validate_shape(record: &Record) -> Result<(), RepositoryStateError> {
         }
         Record::AgentHiredWithRepositories(hire) => {
             validate_kind_policy(&hire.repositories, Confinement::Confined)?;
+            if hire.isolation.is_some() || !hire.mcp_servers.is_empty() {
+                return Err(RepositoryStateError::Options);
+            }
             validate_hire_shape(&hire.repositories)
         }
         Record::AgentHiredWithUnconfinedRepositories(hire) => {
             validate_kind_policy(&hire.repositories, Confinement::Unconfined)?;
+            if hire.mcp_servers.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(RepositoryStateError::Options);
+            }
             validate_hire_shape(&hire.repositories)?;
             crate::task::repository_section(
                 hire.repositories

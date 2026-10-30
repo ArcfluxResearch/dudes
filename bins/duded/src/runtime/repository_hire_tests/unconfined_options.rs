@@ -46,16 +46,12 @@ fn an_unconfined_hire_takes_the_options_of_a_single_repo_hire() {
     params.mcp_servers = vec![McpServerName::parse("a").unwrap()];
     admitted_options(&daemon, &params).unwrap();
 
-    let refused = daemon.repository_hire_plan(params.clone()).unwrap_err();
-    assert!(
-        refused.message.contains("cannot take MCP servers"),
-        "{refused:?}"
-    );
+    let plan = daemon.repository_hire_plan(params.clone()).unwrap();
+    assert_eq!(plan.params.mcp_servers, params.mcp_servers);
     params.mcp_servers.clear();
-    daemon.repository_hire_plan(params.clone()).unwrap();
     params.isolation = Some(IsolationMode::Bare);
-    let refused = daemon.repository_hire_plan(params).unwrap_err();
-    assert!(refused.message.contains("isolation setting"), "{refused:?}");
+    let plan = daemon.repository_hire_plan(params).unwrap();
+    assert_eq!(plan.params.isolation, Some(IsolationMode::Bare));
 }
 
 #[test]

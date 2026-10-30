@@ -340,6 +340,8 @@ impl Story {
             max_turns: None,
             max_budget: None,
             model: None,
+            isolation: None,
+            mcp_servers: Vec::new(),
             browser_onboarding: None,
             repositories: ScopedRepositories {
                 project: RecordedWorkspace {
