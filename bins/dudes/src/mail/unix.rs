@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dudes_proto::{MailAct, MailFrom, MailTo};
 use dudes_rpc::conditioned::payload_digest;
-use dudes_types::{AgentId, Escaped, MailId, ThreadId};
+use dudes_types::{AgentId, Escaped, Lsn, MailId, ThreadId};
 use rustix::fs::{AtFlags, Dir, Mode, OFlags, RenameFlags};
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +21,11 @@ const BODY_BYTES: u64 = 1_048_576;
 const INLINE_BYTES: u64 = 4_096;
 const SCAN_CAP: usize = 1_024;
 const INBOX_CAP: usize = 32;
+/// Entries the outbox may already hold before a new acknowledgement request is refused, so the
+/// daemon's bounded outbox scan always sees every request.
+const CONTROL_OUTBOX_CAP: usize = 64;
 const REPLY_PREFIX: &str = "Re: ";
+const CONTROL_SUFFIX: &str = ".control.json";
 
 #[derive(Serialize)]
 struct Request<'a> {
@@ -33,6 +37,14 @@ struct Request<'a> {
     subject: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     body: Option<&'a str>,
+}
+
+/// A request a scoped agent can only make through its own outbox. The daemon decodes it strictly.
+#[derive(Serialize)]
+#[serde(tag = "request", rename_all = "snake_case")]
+enum Control {
+    MailDone { marker: MailId },
+    ClosingAck { announcement: Lsn },
 }
 
 #[derive(Deserialize)]
@@ -461,8 +473,35 @@ impl Mailbox {
         sync: impl FnOnce(&File) -> io::Result<()>,
         rename: impl FnOnce(&File, &str, &File, &str) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.publish_named(&format!("{id}.json"), id, bytes, sync, rename)
+    }
+
+    fn queue_control(&self, control: &Control) -> io::Result<MailId> {
+        let bytes = serde_json::to_vec(control)?;
         let outbox = self.child("outbox")?;
-        let name = format!("{id}.json");
+        if names(&outbox)?.len() >= CONTROL_OUTBOX_CAP {
+            return Err(invalid("outbox is full; retry shortly"));
+        }
+        let id = fresh_id()?;
+        self.publish_named(
+            &format!("{id}{CONTROL_SUFFIX}"),
+            id,
+            &bytes,
+            File::sync_all,
+            rename,
+        )?;
+        Ok(id)
+    }
+
+    fn publish_named(
+        &self,
+        name: &str,
+        id: MailId,
+        bytes: &[u8],
+        sync: impl FnOnce(&File) -> io::Result<()>,
+        rename: impl FnOnce(&File, &str, &File, &str) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let outbox = self.child("outbox")?;
         let temporary = format!(".{id}.tmp");
         let file = open(
             &outbox,
@@ -482,11 +521,11 @@ impl Mailbox {
         if found != bytes || !same(&staged.file.metadata()?, &current.metadata()?) {
             return Err(invalid("outgoing staging bytes changed"));
         }
-        let _ = present(&outbox, OsStr::new(&name))?;
-        rename(&outbox, &temporary, &outbox, &name)?;
+        let _ = present(&outbox, OsStr::new(name))?;
+        rename(&outbox, &temporary, &outbox, name)?;
         outbox.sync_all()?;
         self.validate_child("outbox", &outbox)?;
-        verify_handoff(&outbox, &name, &staged.file, bytes)
+        verify_handoff(&outbox, name, &staged.file, bytes)
     }
 }
 
@@ -589,11 +628,27 @@ pub(super) fn run(
             }
             Ok(())
         }
+        MailCommand::Done(id) if scoped_file_mail => {
+            mailbox.queue_control(&Control::MailDone { marker: *id })?;
+            writeln!(
+                out,
+                "mail done request queued for {id}; the daemon records it shortly"
+            )
+        }
         MailCommand::Done(id) => {
             mailbox.done(*id)?;
             writeln!(out, "mail done {id}")
         }
     }
+}
+
+pub(super) fn closing_ack(announcement: Lsn, path: &Path, out: &mut dyn Write) -> io::Result<()> {
+    Mailbox::open(path)?.queue_control(&Control::ClosingAck { announcement })?;
+    writeln!(
+        out,
+        "closing acknowledgement queued for announcement {}; the daemon records it shortly",
+        announcement.0
+    )
 }
 
 #[cfg(test)]

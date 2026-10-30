@@ -74,7 +74,14 @@ pub fn closing_notice_for_commands(
     commands: dudes_proto::TaskCommandSet,
 ) -> String {
     if commands == dudes_proto::TaskCommandSet::ScopedFileMail {
-        return "Closing time. Save or park current work and record current state and concrete next steps. Start no new work. Then exit this turn normally. This multi-repo ticket cannot acknowledge closing; the supervisor retains the 360-second grace for an unfinished participant.".to_owned();
+        return format!(
+            "Closing time. Save or park current work and record current state and concrete next steps. \
+             Start no new work. While this process is still alive, run \
+             `dudes closing ack --announcement-lsn {}`. It only queues your acknowledgement for the \
+             daemon, so it prints that it is queued. Then exit this turn normally. Without a recorded \
+             acknowledgement the supervisor waits out the 360-second grace for an unfinished participant.",
+            announcement.0
+        );
     }
     format!(
         "Closing time. Save or park current work and record current state and concrete next steps. \

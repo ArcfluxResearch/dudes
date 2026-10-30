@@ -1916,6 +1916,65 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         })
     }
 
+    /// Journals one participant's closing acknowledgement through the serialized closing path.
+    fn closing_ack(
+        &mut self,
+        announcement: Lsn,
+        agent: AgentId,
+    ) -> std::result::Result<(), ClosingAckRefusal> {
+        let transient = |error| ClosingAckRefusal {
+            error,
+            transient: true,
+        };
+        self.refuse_retired(agent)
+            .map_err(|error| ClosingAckRefusal {
+                error,
+                transient: false,
+            })?;
+        self.require_journal_writes().map_err(transient)?;
+        self.pump_started(
+            &mut PumpReport::Discard,
+            PumpOrigin::Closing,
+            &[],
+            move |sup, _operation| {
+                sup.closing_ack(announcement, agent)?;
+                Ok(Handled::default())
+            },
+        )
+        .map_err(|failure| ClosingAckRefusal {
+            error: closing_pump_error(&failure),
+            transient: failure
+                .downcast_ref::<dudes_supervisor::closing::ClosingError>()
+                .is_none_or(|refusal| {
+                    matches!(
+                        refusal,
+                        dudes_supervisor::closing::ClosingError::LaunchPending
+                    )
+                }),
+        })
+    }
+
+    /// Answers the closing acknowledgements that agents wrote into their own outboxes. An answer
+    /// that may change on a later pass leaves its request in place.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn answer_outbox_closing_acks(&mut self, requests: Vec<crate::mailbox::ClosingAckRequest>) {
+        for request in requests {
+            let outcome = self.closing_ack(request.announcement, request.agent);
+            if let Err(refusal) = &outcome {
+                tracing::debug!(agent = %request.agent, error = %refusal.error.message, "closing acknowledgement refused");
+            }
+            if let Some(mailbox) = &self.ctx.mailbox {
+                mailbox.settle_closing_ack(
+                    &request,
+                    outcome
+                        .as_ref()
+                        .err()
+                        .is_none_or(|refusal| !refusal.transient),
+                );
+            }
+        }
+    }
+
     fn closing_request(
         &mut self,
         request: crate::closing::Request,
@@ -1936,18 +1995,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 announcement,
                 agent,
             } => {
-                self.refuse_retired(agent)?;
-                self.require_journal_writes()?;
-                self.pump_started(
-                    &mut PumpReport::Discard,
-                    PumpOrigin::Closing,
-                    &[],
-                    move |sup, _operation| {
-                        sup.closing_ack(announcement, agent)?;
-                        Ok(Handled::default())
-                    },
-                )
-                .map_err(|failure| closing_pump_error(&failure))?;
+                self.closing_ack(announcement, agent)
+                    .map_err(|refusal| refusal.error)?;
                 self.closing.responses += 1;
                 return Ok(Answer::Ack);
             }
@@ -2171,6 +2220,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             );
         }
         let fenced = mailbox.is_fenced();
+        let closing_acks = mailbox.take_closing_acks();
         self.ctx.mailbox = Some(mailbox);
         if fenced && !acknowledged.is_empty() {
             self.ctx.fence_journal();
@@ -2189,6 +2239,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             {
                 tracing::error!("mailbox acknowledgment continuation failed");
             }
+        }
+        if !fenced {
+            self.answer_outbox_closing_acks(closing_acks);
         }
     }
 
@@ -7487,6 +7540,17 @@ const AGENT_RETIRED: &str = "agent retired";
 enum PumpOrigin {
     Ordinary,
     Closing,
+}
+
+/// Why the closing path refused an acknowledgement, and whether a later pass may judge it
+/// differently.
+struct ClosingAckRefusal {
+    error: RpcError,
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux")),
+        allow(dead_code, reason = "only the Unix mailbox answers outbox requests")
+    )]
+    transient: bool,
 }
 
 fn closing_pump_error(failure: &anyhow::Error) -> RpcError {

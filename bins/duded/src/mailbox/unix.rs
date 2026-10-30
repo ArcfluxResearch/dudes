@@ -24,6 +24,10 @@ use super::{
 const MARKER_BYTES: u64 = 64 * 1024;
 const OUTBOX_BYTES: u64 = 1024 * 1024;
 const OUTBOX_SCAN: usize = 32;
+/// A multi-repository agent's outbox also holds its acknowledgement requests. The command-line
+/// tool refuses to queue one at 64 entries, so this bound always sees them all.
+const SCOPED_OUTBOX_SCAN: usize = 128;
+const CONTROL_SUFFIX: &str = ".control.json";
 const INLINE_BYTES: usize = 4096;
 /// Raw entries one canonical-name search may read beyond the ones the journal accounts for.
 const SCAN_CAP: usize = 1024;
@@ -993,6 +997,52 @@ fn referenced(item: &Item) -> io::Result<Option<(&Path, u64, &str)>> {
     }
 }
 
+/// What an agent may ask of the daemon through its own outbox. The agent is the outbox's owner,
+/// never a field of the request, so an unknown field is a refusal.
+#[derive(Deserialize)]
+#[serde(tag = "request", rename_all = "snake_case", deny_unknown_fields)]
+enum Control {
+    MailDone { marker: MailId },
+    ClosingAck { announcement: Lsn },
+}
+
+/// A closing acknowledgement read from `agent`'s outbox, until the daemon answers it.
+#[derive(Debug)]
+pub(crate) struct ClosingAckRequest {
+    pub(crate) agent: AgentId,
+    pub(crate) announcement: Lsn,
+    name: OsString,
+    bytes: Vec<u8>,
+}
+
+fn refusal(error: &io::Error) -> Option<&Refusal> {
+    error.get_ref()?.downcast_ref()
+}
+
+fn control_name(name: &OsStr) -> Option<MailId> {
+    let name = name.to_str()?;
+    let id = name.strip_suffix(CONTROL_SUFFIX)?.parse::<MailId>().ok()?;
+    (name == format!("{id}{CONTROL_SUFFIX}")).then_some(id)
+}
+
+/// How the daemon answered a request in an outbox.
+enum Answer {
+    Consumed,
+    Retry,
+}
+
+/// A well-formed request the daemon refused because it asks for something this agent cannot have.
+#[derive(Debug)]
+struct Refusal(&'static str);
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Refusal {}
+
 impl Mailbox {
     pub(super) fn unix_unread_observation(&self, agent: AgentId) -> super::UnreadObservation {
         let selected: Vec<_> = self
@@ -1542,6 +1592,161 @@ impl Mailbox {
         Ok(prepared)
     }
 
+    /// The outbox entries in this pass's order, or nothing when the outbox holds more than a scan
+    /// may read.
+    fn outbox_names(&self, sender: &Tree) -> Option<Vec<OsString>> {
+        let cap = if self.scoped_agents.contains(&sender.id) {
+            SCOPED_OUTBOX_SCAN
+        } else {
+            OUTBOX_SCAN
+        };
+        let Ok(Some(mut names)) = snapshot(&sender.outbox, cap) else {
+            self.diagnostic(sender.id, "outbox", MailboxProblem::ScanOverflow);
+            return None;
+        };
+        sender.order(&mut names);
+        Some(names)
+    }
+
+    /// Answers the requests a multi-repository agent queued in its own outbox, leaving the
+    /// ordinary outgoing mail in `names`.
+    fn answer_controls(
+        &mut self,
+        sender: &Tree,
+        names: &mut Vec<OsString>,
+        started: &mut bool,
+    ) -> ControlFlow<()> {
+        if !self.scoped_agents.contains(&sender.id) {
+            return ControlFlow::Continue(());
+        }
+        let (controls, rest): (Vec<_>, Vec<_>) = std::mem::take(names)
+            .into_iter()
+            .partition(|name| control_name(name).is_some());
+        *names = rest;
+        for name in controls {
+            if !sender.budget.item(started) {
+                break;
+            }
+            self.control(sender, &name)?;
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// Answers one request from `sender`'s own outbox. A refused request changes nothing and is
+    /// removed. A request that could not be judged stays for the next pass.
+    fn control(&mut self, sender: &Tree, name: &OsStr) -> ControlFlow<()> {
+        let label = name.to_string_lossy();
+        let (file, bytes) = match read_file(&sender.outbox, name, MARKER_BYTES) {
+            Ok(read) => read,
+            Err(error) => {
+                return self.defer(sender.id, &label, &error, MailboxProblem::OutboxCorruption);
+            }
+        };
+        let Ok(request) = serde_json::from_slice::<Control>(&bytes) else {
+            self.diagnostic(sender.id, &label, MailboxProblem::OutboxCorruption);
+            return ControlFlow::Continue(());
+        };
+        let answer = match request {
+            Control::MailDone { marker } => match self.move_done(sender, marker) {
+                Ok(()) => Answer::Consumed,
+                Err(error) if refusal(&error).is_some() => {
+                    self.diagnostic(sender.id, &label, MailboxProblem::UnmatchedAcknowledgement);
+                    Answer::Consumed
+                }
+                Err(error) => {
+                    self.defer(sender.id, &label, &error, MailboxProblem::AmbiguousMarker)?;
+                    Answer::Retry
+                }
+            },
+            Control::ClosingAck { announcement } => {
+                self.closing_acks.push(ClosingAckRequest {
+                    agent: sender.id,
+                    announcement,
+                    name: name.to_owned(),
+                    bytes,
+                });
+                return ControlFlow::Continue(());
+            }
+        };
+        if matches!(answer, Answer::Consumed) {
+            let _ = remove(&sender.outbox, name, &file, validate_file);
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// The checked move of one marker from the agent's own inbox into its `.done`, exactly the
+    /// move the command-line tool makes for an agent that may write its inbox. The next visit of
+    /// `observe` records the acknowledgement.
+    fn move_done(&self, tree: &Tree, id: MailId) -> io::Result<()> {
+        let refused = |why: &'static str| io::Error::other(Refusal(why));
+        let row = self
+            .rows
+            .get(&id)
+            .filter(|row| {
+                row.item.to == (MailTo::Agent { agent: tree.id })
+                    && !row.bounce
+                    && !matches!(row.state, MailState::Bounced { .. })
+            })
+            .ok_or_else(|| refused("mail is not addressed to this agent"))?;
+        let name = format!("{id}.json");
+        if !named_canonical(&tree.inbox, OsStr::new(&name))? {
+            return Err(refused("mail is not in this agent's inbox"));
+        }
+        let (file, bytes) = read_file(&tree.inbox, OsStr::new(&name), MARKER_BYTES)?;
+        if serde_json::from_slice::<Item>(&bytes).ok().as_ref() != Some(&row.item) {
+            return Err(refused("mail marker differs from the record"));
+        }
+        let done = snapshot(&tree.done, INBOX_CAP)?
+            .ok_or_else(|| io::Error::other(Defer::ScanOverflow(tree.done.label.clone())))?;
+        if deferred_marker_present(&tree.done, &done, &name) {
+            return Err(refused("mail is already acknowledged"));
+        }
+        tree.validate()?;
+        Self::complete_body(tree, &row.item)?;
+        validate_file(&tree.inbox, OsStr::new(&name), &file)?;
+        {
+            let _mutation = tree.inbox.mutation()?;
+            rustix::fs::renameat_with(
+                &tree.inbox,
+                name.as_str(),
+                &tree.done,
+                name.as_str(),
+                RenameFlags::NOREPLACE,
+            )?;
+        }
+        tree.done.sync()?;
+        tree.inbox.sync()?;
+        tree.validate()?;
+        verify_named_bytes(&tree.done, &name, &file, &bytes)
+    }
+
+    /// Hands the closing acknowledgements read in the last pass to the daemon, once.
+    pub(crate) fn take_closing_acks(&mut self) -> Vec<ClosingAckRequest> {
+        std::mem::take(&mut self.closing_acks)
+    }
+
+    /// Removes an answered request from the outbox it came from. A request the daemon could not
+    /// judge yet stays, and is read again on the next pass.
+    pub(crate) fn settle_closing_ack(&self, request: &ClosingAckRequest, answered: bool) {
+        if !answered {
+            return;
+        }
+        let budget = Rc::default();
+        let Ok(tree) = Tree::open(
+            &self.root,
+            request.agent,
+            self.opening(&budget, request.agent, false),
+        ) else {
+            return;
+        };
+        if let Ok((file, bytes)) = read_file(&tree.outbox, &request.name, MARKER_BYTES)
+            && bytes == request.bytes
+            && tree.validate().is_ok()
+        {
+            let _ = remove(&tree.outbox, &request.name, &file, validate_file);
+        }
+    }
+
     fn ingest(
         &mut self,
         sender: &Tree,
@@ -1560,12 +1765,11 @@ impl Mailbox {
         append: &mut impl FnMut(&Record, Option<Timestamp>) -> anyhow::Result<(Lsn, Entry)>,
         mut before_append: impl FnMut(&OsStr) -> io::Result<()>,
     ) -> ControlFlow<()> {
-        let Ok(Some(mut names)) = snapshot(&sender.outbox, OUTBOX_SCAN) else {
-            self.diagnostic(sender.id, "outbox", MailboxProblem::ScanOverflow);
+        let Some(mut names) = self.outbox_names(sender) else {
             return ControlFlow::Continue(());
         };
-        sender.order(&mut names);
         let mut started = false;
+        self.answer_controls(sender, &mut names, &mut started)?;
         for name in names {
             let label = name.to_string_lossy();
             let Some(outbox) = canonical(&name) else {
@@ -2019,6 +2223,192 @@ mod tests {
                 .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
                 .count()
         }
+    }
+
+    fn control(h: &Harness, agent: AgentId, n: u128, value: &serde_json::Value) -> PathBuf {
+        let path = h.path(
+            agent,
+            "outbox",
+            &format!("{}.control.json", Harness::mail(n)),
+        );
+        std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        path
+    }
+
+    fn inbox_ids(h: &Harness, agent: AgentId) -> Vec<MailId> {
+        let mut ids: Vec<_> = std::fs::read_dir(h.path(agent, "inbox", ""))
+            .unwrap()
+            .filter_map(|entry| canonical(&entry.ok()?.file_name()))
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn a_scoped_agent_drains_the_receipt_window_by_acknowledging_through_its_outbox() {
+        let mut h = Harness::new(3);
+        let recipient = Harness::id(3);
+        h.mailbox.scoped_agents.insert(recipient);
+        for n in 0..20 {
+            h.send(Harness::id(1), recipient, Harness::mail(n), "first");
+            h.send(Harness::id(2), recipient, Harness::mail(100 + n), "second");
+        }
+        h.settle();
+        assert_eq!(inbox_ids(&h, recipient).len(), INBOX_CAP);
+        let mut request = 0;
+        let mut requested = BTreeSet::new();
+        for _ in 0..60 {
+            for id in inbox_ids(&h, recipient) {
+                if !requested.insert(id) {
+                    continue;
+                }
+                request += 1;
+                control(
+                    &h,
+                    recipient,
+                    request,
+                    &json!({"request":"mail_done","marker":id}),
+                );
+            }
+            h.pass();
+            if h.records
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record,
+                        Record::MailState {
+                            state: MailState::Acked,
+                            ..
+                        }
+                    )
+                })
+                .count()
+                == 40
+            {
+                break;
+            }
+        }
+        h.settle();
+        let acked = h
+            .records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record,
+                    Record::MailState {
+                        state: MailState::Acked,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(acked, 40);
+        assert!(inbox_ids(&h, recipient).is_empty());
+        assert!(
+            std::fs::read_dir(h.path(recipient, "outbox", ""))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_outbox_request_never_acknowledges_another_agents_mail_or_names_an_agent() {
+        let mut h = Harness::new(3);
+        let (mine, theirs) = (Harness::id(2), Harness::id(3));
+        h.mailbox.scoped_agents.extend([mine, theirs]);
+        h.send(Harness::id(1), mine, Harness::mail(1), "mine");
+        h.send(Harness::id(1), theirs, Harness::mail(2), "theirs");
+        h.settle();
+        let (own, foreign) = (inbox_ids(&h, mine)[0], inbox_ids(&h, theirs)[0]);
+        let before = h.records.clone();
+        control(
+            &h,
+            mine,
+            1,
+            &json!({"request":"mail_done","marker":foreign}),
+        );
+        let extra = control(
+            &h,
+            mine,
+            2,
+            &json!({"request":"mail_done","marker":own,"agent":mine}),
+        );
+        let closing = control(
+            &h,
+            mine,
+            3,
+            &json!({"request":"closing_ack","announcement":7,"agent":theirs}),
+        );
+        h.pass();
+        assert_eq!(inbox_ids(&h, mine), [own]);
+        assert_eq!(inbox_ids(&h, theirs), [foreign]);
+        assert_eq!(h.records, before);
+        assert!(h.mailbox.take_closing_acks().is_empty());
+        assert!(extra.exists() && closing.exists());
+        assert!(h.diagnosed(
+            mine,
+            &format!("{}.control.json", Harness::mail(2)),
+            MailboxProblem::OutboxCorruption
+        ));
+        assert!(
+            !h.path(
+                mine,
+                "outbox",
+                &format!("{}.control.json", Harness::mail(1))
+            )
+            .exists()
+        );
+    }
+
+    #[test]
+    fn a_closing_request_belongs_to_the_outbox_owner_and_only_a_scoped_hire_may_write_one() {
+        let mut h = Harness::new(2);
+        let (scoped, legacy) = (Harness::id(1), Harness::id(2));
+        h.mailbox.scoped_agents.insert(scoped);
+        control(
+            &h,
+            scoped,
+            1,
+            &json!({"request":"closing_ack","announcement":7}),
+        );
+        let ignored = control(
+            &h,
+            legacy,
+            2,
+            &json!({"request":"closing_ack","announcement":7}),
+        );
+        h.pass();
+        let requests = h.mailbox.take_closing_acks();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            (requests[0].agent, requests[0].announcement),
+            (scoped, Lsn(7))
+        );
+        assert!(ignored.exists());
+        assert!(h.diagnosed(
+            legacy,
+            &format!("{}.control.json", Harness::mail(2)),
+            MailboxProblem::OutboxCorruption
+        ));
+        h.mailbox.settle_closing_ack(&requests[0], false);
+        assert!(
+            h.path(
+                scoped,
+                "outbox",
+                &format!("{}.control.json", Harness::mail(1))
+            )
+            .exists()
+        );
+        h.mailbox.settle_closing_ack(&requests[0], true);
+        assert!(
+            !h.path(
+                scoped,
+                "outbox",
+                &format!("{}.control.json", Harness::mail(1))
+            )
+            .exists()
+        );
     }
 
     #[test]

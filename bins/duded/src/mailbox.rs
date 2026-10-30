@@ -167,6 +167,12 @@ pub(crate) struct Mailbox {
     live_agents: BTreeSet<AgentId>,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     outbox_agents: BTreeSet<AgentId>,
+    /// Recorded multi-repository hires. Only these may acknowledge through their own outbox.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    scoped_agents: BTreeSet<AgentId>,
+    /// Closing acknowledgements read from outboxes in the last pass, awaiting the daemon's answer.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    closing_acks: Vec<ClosingAckRequest>,
     // Keep the first admitted directory identity for this daemon run. Periodic setup must not
     // refresh a missing or replaced grant; restart admits the current private tree afresh.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -269,6 +275,8 @@ impl Mailbox {
             visits: BTreeMap::new(),
             live_agents: BTreeSet::new(),
             outbox_agents: BTreeSet::new(),
+            scoped_agents: BTreeSet::new(),
+            closing_acks: Vec::new(),
             outboxes: RefCell::default(),
             next: None,
             fenced: false,
@@ -318,6 +326,14 @@ impl Mailbox {
         Arc::clone(&self.report)
     }
 
+    /// Treats `agent` as a recorded multi-repository hire and names the directory holding its
+    /// outbox, for a test that has no scoped hire to replay.
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    pub(crate) fn scope_for_test(&mut self, agent: AgentId) -> PathBuf {
+        self.scoped_agents.insert(agent);
+        self.root.join("agents").join(agent.to_string())
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) fn contains(&self, id: MailId) -> bool {
         self.rows.contains_key(&id)
@@ -344,12 +360,14 @@ impl Mailbox {
                     dudes_types::Provider::Claude | dudes_types::Provider::Codex
                 ) {
                     self.outbox_agents.insert(hire.id);
+                    self.scoped_agents.insert(hire.id);
                 }
                 self.hired += 1;
             }
             Record::AgentRetired { id, .. } => {
                 self.live_agents.remove(id);
                 self.outbox_agents.remove(id);
+                self.scoped_agents.remove(id);
                 self.outboxes.borrow_mut().remove(id);
                 self.subject_contexts.remove(id);
             }
@@ -519,6 +537,7 @@ impl Mailbox {
         if self.fenced {
             return;
         }
+        self.closing_acks.clear();
         *self.observation.borrow_mut() = self
             .report
             .lock()
@@ -541,6 +560,8 @@ impl Mailbox {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) use unix::ClosingAckRequest;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod index;
@@ -566,6 +587,8 @@ mod wake_tests {
             visits: BTreeMap::new(),
             live_agents: BTreeSet::from([agent]),
             outbox_agents: BTreeSet::new(),
+            scoped_agents: BTreeSet::new(),
+            closing_acks: Vec::new(),
             outboxes: RefCell::default(),
             next: None,
             fenced: false,

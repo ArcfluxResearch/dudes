@@ -177,6 +177,11 @@ pub fn run(
         Command::Login(provider) => login(*provider, terminal.is_some(), env, out),
         Command::Uninstall(options) => uninstall_command(*options, terminal, env, out, err),
         Command::Upgrade(options) => upgrade_command(*options, env, out, err),
+        Command::ClosingAck { announcement_lsn } if env.scoped_file_mail() => {
+            crate::mail::closing_ack(*announcement_lsn, env, out)
+                .map(|()| exit::SUCCESS)
+                .map_err(local)
+        }
         Command::Mail(command) => crate::mail::run(command, env, out)
             .map(|()| exit::SUCCESS)
             .map_err(local),
@@ -199,15 +204,16 @@ fn unavailable_scoped_command(command: &Command, argv: &[OsString]) -> Option<St
     use args::{DevicesCommand, MailCommand};
 
     let words = match command {
-        Command::Mail(MailCommand::Send(_) | MailCommand::Read | MailCommand::List) => return None,
+        Command::Mail(
+            MailCommand::Send(_) | MailCommand::Read | MailCommand::List | MailCommand::Done(_),
+        )
+        | Command::ClosingAck { .. } => return None,
         Command::Workspace(
             WorkspaceCommand::CheckAdd(_) | WorkspaceCommand::CheckRemove { .. },
         ) => 3,
-        Command::Mail(MailCommand::Done(_))
-        | Command::Memory(_)
+        Command::Memory(_)
         | Command::Recovery(_)
         | Command::GoalReplace(_)
-        | Command::ClosingAck { .. }
         | Command::FloorOpen
         | Command::Workspace(_)
         | Command::Board(_)
