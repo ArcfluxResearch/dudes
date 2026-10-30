@@ -362,7 +362,7 @@ checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
 
 [[package]]
 name = "duded"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "dudes"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "chrono",
  "duded",
@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-config"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "dudes-proto",
  "dudes-types",
@@ -441,7 +441,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-hook"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "dudes-host",
  "dudes-proto",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-host"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "dudes-providers",
  "dudes-supervisor",
@@ -468,7 +468,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-journal"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "blake3",
  "crc",
@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-policy"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "dudes-proto",
  "dudes-types",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-proto"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "dudes-types",
  "jsonschema",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-providers"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "dudes-proto",
  "dudes-types",
@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-pty"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "dudes-proto",
  "dudes-providers",
@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-rpc"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "base64",
  "blake3",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-supervisor"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "aho-corasick",
  "blake3",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-types"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "regex",
  "schemars",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-win"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "tempfile",
  "windows-sys",
@@ -2109,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.101.2"
+version = "0.102.0"
 dependencies = [
  "anyhow",
  "dudes-journal",
