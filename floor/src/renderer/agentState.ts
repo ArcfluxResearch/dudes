@@ -3,7 +3,7 @@
 // What the agent panel's status band says. Its colour is the shared need state in `needs.ts`; the word and the
 // sentence say what that state means for this agent, from the same rules, so no part of the panel can disagree.
 
-import { automaticHoldOf, automaticHoldText } from './automaticHold.ts';
+import { automaticHoldOf, automaticHoldSummary } from './automaticHold.ts';
 import { activeCard } from './board.ts';
 import type { CardRow } from './board.ts';
 import { goalIdOf } from './goal/goal.ts';
@@ -46,7 +46,7 @@ export function agentStatusOf(row: AgentRow, cards: readonly CardRow[], fields: 
   if (row.halted === true) return status('Halted', HALT_NOTE);
   if (paused !== null) return status('Paused', paused.text, { kind: 'pause', state: paused.state });
   if (fields.question !== '') return status(NEED_LABEL[tone], 'Answer the waiting question');
-  if (hold !== null) return status('Held', automaticHoldText(hold, row.provider));
+  if (hold !== null) return status('Held', automaticHoldSummary(hold, row.provider));
   if (ticket?.status === 'blocked') return status(NEED_LABEL[tone], 'Current work is held');
   if (heldTickets.length > 0) return status(NEED_LABEL[tone], 'Held work needs review');
   if (ticket?.status === 'review') return status(NEED_LABEL[tone], 'Finished work is ready for you');

@@ -84,7 +84,7 @@ test('each state reads as one badge word and at most one short sentence, never t
     ['halted from the command line', { halted: true }, [], ['Halted', 'A halt from the command line stands on this agent. The Floor cannot lift it; only the local operator can.']],
     ['held after repeated fast failures', { automatic_hold: heldFast }, [], ['Held', 'Repeated fast failures. Check the CLI before resuming.']],
     ['held because the launch failed', { automatic_hold: { kind: 'launch_failed', reason: 'The configured program is missing.' } }, [],
-      ['Held', 'Launch failed. The configured program is missing.']],
+      ['Held', 'Launch failed. The configured program is missing. Press Resume to try again.']],
     ['held because the launch was refused', { automatic_hold: { kind: 'launch_refused', reason: 'No account.' } }, [], ['Held', 'Launch refused. No account.']],
     ['held because its worktree is gone', { automatic_hold: { kind: 'worktree_missing', worktree: 'a'.repeat(32) } }, [],
       ['Held', "This agent's worktree is missing. Restore it or retire the agent, then resume."]],
