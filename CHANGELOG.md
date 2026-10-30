@@ -36,8 +36,8 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ### Breaking
 
-- **The first start after the upgrade rebuilds the saved views once.** Dudes rebuilds its views from the journal. Nothing is lost. (#269, #296)
-- **Going back to 0.100.0 refuses a journal that holds a copy hire made on 0.101.0.** (to be measured)**
+- **The first start after the upgrade rebuilds the saved views once.** Dudes rebuilds the board and repository views from the journal. Nothing is lost. (#269, #296)
+- **Going back to 0.100.0 works until you hire an agent into its own copy on 0.101.0.** Every such hire now records a new kind of entry that 0.100.0 cannot read. 0.100.0 then refuses to start, names the entry (`journal required record kind 112 at 1:467 is not understood`), exits with status 1 and leaves the journal as it was, so a later 0.101.0 start picks up where you left off. Without a hire like that, 0.100.0 starts normally, keeps your tickets and priorities, and takes new writes that 0.101.0 reads when you come forward. (#296)
 
 ## [0.100.0] - 2026-10-28
 
