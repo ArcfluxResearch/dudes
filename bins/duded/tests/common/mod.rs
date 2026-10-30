@@ -2215,6 +2215,18 @@ pub(crate) fn end_turn_with_native_payload(
     host: &SharedHost,
     input: dudes_supervisor::Input,
 ) {
+    let key = reap_native_child(fixture, host, input);
+    host.await_native_acknowledged(&key);
+    assert!(host.native_settlement_written(&key));
+}
+
+/// Ends a managed child the way a real reap does and returns once the daemon recorded the end,
+/// without waiting for the host to be told.
+pub(crate) fn reap_native_child(
+    fixture: &Fixture,
+    host: &SharedHost,
+    input: dudes_supervisor::Input,
+) -> AdoptionKey {
     let dudes_supervisor::Input::ChildExited { turn, .. } = &input else {
         panic!("expected an exact mock child completion payload")
     };
@@ -2241,8 +2253,7 @@ pub(crate) fn end_turn_with_native_payload(
     fixture.await_record("exact managed end after mock reap", |record| {
         matches!(record, Record::TurnEnded { turn: owned, .. } if *owned == turn).then_some(())
     });
-    host.await_native_acknowledged(&key);
-    assert!(host.native_settlement_written(&key));
+    key
 }
 
 /// Block until `path` holds a parsable number, and return it.

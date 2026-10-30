@@ -33,6 +33,8 @@ pub(super) struct Setup {
     pty_opened: Arc<std::sync::Mutex<Vec<dudes_providers::launch::LaunchSpec>>>,
     /// A PTY host that opens, keys and closes its sessions like the real one, when a test needs it.
     native_ptys: Option<common::SharedPtyHost>,
+    /// Lets a test end a managed child the way a real reap does, so the host lists no unknown child.
+    pub(super) own_children: bool,
 }
 
 impl Setup {
@@ -114,6 +116,7 @@ impl Setup {
             host: common::SharedHost::new(),
             pty_opened: Arc::default(),
             native_ptys: None,
+            own_children: false,
         }
     }
 
@@ -148,6 +151,9 @@ impl Setup {
             Arc::new(common::TestClock::new()),
             Witness::default(),
         );
+        if self.own_children {
+            self.host.bind_child_ends(Arc::clone(&seams.children));
+        }
         seams.adapters = dudes_providers::registry::Adapters::new([
             Box::new(dudes_providers::claude::ClaudeAdapter::new(claude))
                 as Box<dyn dudes_providers::adapter::Adapter>,

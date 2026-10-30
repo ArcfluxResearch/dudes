@@ -977,3 +977,105 @@ fn issued(setup: &Setup) -> usize {
         .filter(|record| format!("{:?}", record.kind()).contains("Issued"))
         .count()
 }
+
+fn finish_the_round(
+    setup: &Setup,
+    running: &common::Running,
+    socket: &mut Socket,
+    card: CardId,
+) -> TicketReadResult {
+    let turn = setup
+        .fixture
+        .await_record("the ticket turn", |record| match record {
+            Record::TurnSpawned { turn, .. } => Some(*turn),
+            _ => None,
+        });
+    common::reap_native_child(
+        &setup.fixture,
+        &setup.host,
+        dudes_supervisor::Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
+            final_reply: None,
+            elapsed_ms: None,
+            turn,
+            exit: dudes_proto::ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: std::collections::BTreeMap::new(),
+            outcome: dudes_proto::TurnOutcome::Completed,
+            last_message: None,
+        },
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let detail = read(socket, setup, card);
+        let settled = matches!(
+            detail.card.status,
+            dudes_types::CardStatus::Review | dudes_types::CardStatus::Blocked
+        ) && detail
+            .ticket
+            .instruction_review
+            .as_ref()
+            .is_none_or(|review| !review.pending_comparison);
+        if settled || std::time::Instant::now() > deadline {
+            return detail;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn accept(socket: &mut Socket, setup: &Setup, detail: &TicketReadResult) -> Response {
+    let watermark = detail
+        .ticket
+        .instruction_review
+        .as_ref()
+        .map(|review| review.watermark);
+    call(
+        socket,
+        setup,
+        Method::TicketAccept,
+        json!({
+            "card": detail.card.id,
+            "expected_seq": detail.card.seq,
+            "review_watermark": watermark,
+        }),
+    )
+}
+
+#[test]
+fn an_unconfined_ticket_that_changes_nothing_reaches_ready_and_accepts() {
+    let mut setup = setup();
+    setup.host = common::SharedHost::with_native_evidence(setup.fixture.journal_dir());
+    setup.own_children = true;
+    let profile = setup.fixture.runtime.path().join("profile");
+    std::fs::create_dir_all(profile.join(".claude")).unwrap();
+    std::fs::write(profile.join(".claude/CLAUDE.md"), "profile instructions").unwrap();
+    setup
+        .settings
+        .daemon_env
+        .push(dudes_providers::launch::EnvVar::new(
+            "HOME",
+            profile.to_str().unwrap(),
+        ));
+    let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
+    let agent = hires.hire(params).unwrap().agent;
+    let mut socket = Client::connect(setup.settings.socket()).unwrap();
+    let card = assigned_unconfined_ticket(&setup, agent, &mut socket);
+    let detail = finish_the_round(&setup, &running, &mut socket, card);
+    assert_eq!(detail.card.status, dudes_types::CardStatus::Review);
+    let review = detail.ticket.instruction_review.as_ref();
+    assert!(
+        review.is_none_or(|review| !review.coverage_unknown && review.changed_paths.is_empty()),
+        "{review:?}"
+    );
+    let accepted = accept(&mut socket, &setup, &detail);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert_eq!(
+        read(&mut socket, &setup, card).card.status,
+        dudes_types::CardStatus::Done
+    );
+    drop(socket);
+    running.stop(crate::ExitCause::Ended);
+}
