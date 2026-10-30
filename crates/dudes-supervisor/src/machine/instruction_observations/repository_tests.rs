@@ -28,10 +28,6 @@ fn append(harness: &mut Harness, record: Record) -> Lsn {
     })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one replayed catalog, hire and ticket prefix supplies the lifecycle controls"
-)]
 fn fixture() -> (Harness, AgentId, GoalId, RepositoryTurnGrant) {
     fixture_for(RepositoryPolicy::WorkingTreeV1)
 }

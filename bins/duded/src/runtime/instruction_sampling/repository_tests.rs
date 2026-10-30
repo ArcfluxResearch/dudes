@@ -809,6 +809,10 @@ fn an_added_copy_is_sampled_for_its_skills_and_never_for_its_memory_files() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one physical attempt covers the baseline, the edit, the comparison and the refused completion"
+)]
 fn a_skill_changed_in_a_secondary_copy_during_a_ticket_round_blocks_done_until_reviewed() {
     let (setup, mut daemon, agent) = fixture_with(true);
     let declared = full_declaration(&daemon, agent);
@@ -967,7 +971,7 @@ fn an_edit_in_a_non_ticket_turn_is_recorded_and_is_preexisting_at_the_next_ticke
             _ => Vec::new(),
         })
         .collect();
-    assert_eq!(changed, [skill.clone()]);
+    assert_eq!(changed, std::slice::from_ref(&skill));
 
     let mut daemon = setup.boot_unconfined();
     daemon.started().unwrap();

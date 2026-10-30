@@ -924,6 +924,65 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         );
     }
 
+    /// The hire binding and members a settlement without a recorded starting sample names, when
+    /// the owner's hire is a multi-repository one.
+    fn missing_boundary_members(
+        &self,
+        owner: InstructionObservationOwner,
+        ticket: Option<InstructionTicketAssociation>,
+    ) -> Option<(
+        dudes_proto::repository_instruction::RepositoryInstructionBinding,
+        Vec<dudes_proto::repository::RepoId>,
+    )> {
+        use dudes_proto::repository::HireRepositories;
+        use dudes_proto::repository_instruction::RepositoryInstructionBinding;
+        let ids = |hire: &dudes_proto::repository::ScopedHireRepositories| {
+            hire.repositories
+                .entries()
+                .iter()
+                .map(|member| member.repo_id.clone())
+                .collect()
+        };
+        match owner {
+            InstructionObservationOwner::Managed { turn, .. } => {
+                let scope = self.world.turns.get(&turn)?.repositories.as_ref()?;
+                let grant = scope.grant()?;
+                let HireRepositories::Scoped(hire) = scope.hire() else {
+                    return None;
+                };
+                Some((
+                    RepositoryInstructionBinding {
+                        hired_lsn: scope.hired_lsn(),
+                        ticket_start_lsn: grant.ticket.as_ref().map(|round| round.start_lsn),
+                    },
+                    ids(hire),
+                ))
+            }
+            InstructionObservationOwner::AttachedProcess { agent, .. }
+            | InstructionObservationOwner::AttachedTurn { agent, .. } => {
+                let row = self.world.agents.get(&agent)?;
+                let HireRepositories::Scoped(hire) = &row.repositories else {
+                    return None;
+                };
+                let round_start = ticket.and_then(|ticket| {
+                    self.world
+                        .active_repository_round(agent)
+                        .ok()
+                        .flatten()
+                        .filter(|round| round.card == ticket.card && round.goal == ticket.goal)
+                        .map(|round| round.start_lsn)
+                });
+                Some((
+                    RepositoryInstructionBinding {
+                        hired_lsn: row.mcp.hire_lsn,
+                        ticket_start_lsn: round_start,
+                    },
+                    ids(hire),
+                ))
+            }
+        }
+    }
+
     pub(super) fn instruction_control_record(
         &self,
         owner: InstructionObservationOwner,
@@ -942,80 +1001,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 ),
             _ => None,
         };
-        let attached_round_start = match owner {
-            InstructionObservationOwner::AttachedProcess { agent, .. }
-            | InstructionObservationOwner::AttachedTurn { agent, .. } => {
-                ticket.and_then(|ticket| {
-                    self.world
-                        .active_repository_round(agent)
-                        .ok()
-                        .flatten()
-                        .filter(|round| round.card == ticket.card && round.goal == ticket.goal)
-                        .map(|round| round.start_lsn)
-                })
-            }
-            InstructionObservationOwner::Managed { .. } => None,
+        let repository = match start {
+            Some(start) => Some((
+                start.binding,
+                start
+                    .members
+                    .iter()
+                    .map(|member| member.repo_id.clone())
+                    .collect::<Vec<_>>(),
+            )),
+            None if matches!(baseline, InstructionBaselineRef::Started { .. }) => None,
+            None => self.missing_boundary_members(owner, ticket),
         };
-        let repository = start
-            .map(|start| {
-                (
-                    start.binding,
-                    start
-                        .members
-                        .iter()
-                        .map(|member| member.repo_id.clone())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .or_else(|| {
-                if matches!(baseline, InstructionBaselineRef::Started { .. }) {
-                    return None;
-                }
-                match owner {
-                    InstructionObservationOwner::Managed { turn, .. } => {
-                        let scope = self.world.turns.get(&turn)?.repositories.as_ref()?;
-                        let grant = scope.grant()?;
-                        let dudes_proto::repository::HireRepositories::Scoped(hire) = scope.hire()
-                        else {
-                            return None;
-                        };
-                        Some((
-                            dudes_proto::repository_instruction::RepositoryInstructionBinding {
-                                hired_lsn: scope.hired_lsn(),
-                                ticket_start_lsn: grant
-                                    .ticket
-                                    .as_ref()
-                                    .map(|round| round.start_lsn),
-                            },
-                            hire.repositories
-                                .entries()
-                                .iter()
-                                .map(|member| member.repo_id.clone())
-                                .collect(),
-                        ))
-                    }
-                    InstructionObservationOwner::AttachedProcess { agent, .. }
-                    | InstructionObservationOwner::AttachedTurn { agent, .. } => {
-                        let row = self.world.agents.get(&agent)?;
-                        let dudes_proto::repository::HireRepositories::Scoped(hire) =
-                            &row.repositories
-                        else {
-                            return None;
-                        };
-                        Some((
-                            dudes_proto::repository_instruction::RepositoryInstructionBinding {
-                                hired_lsn: row.mcp.hire_lsn,
-                                ticket_start_lsn: attached_round_start,
-                            },
-                            hire.repositories
-                                .entries()
-                                .iter()
-                                .map(|member| member.repo_id.clone())
-                                .collect(),
-                        ))
-                    }
-                }
-            });
         if let Some((binding, members)) = repository {
             let ticket = ticket.filter(|_| binding.ticket_start_lsn.is_some());
             Record::InstructionObservationBatchFinished(

@@ -52,6 +52,30 @@ fn attached_scope(world: &dudes_supervisor::World, agent: AgentId) -> AttachedSc
         })
 }
 
+/// An unknown settlement that names one coverage gap and holds no sample.
+fn unknown_settlement(
+    agent: AgentId,
+    reason: dudes_proto::InstructionUnknownReason,
+    coverage: dudes_proto::InstructionGapKind,
+    end: Option<InstructionEndBoundary>,
+) -> InstructionSettlement {
+    let mut comparison = dudes_proto::InstructionComparison::default();
+    let _ = comparison.try_push_gap(dudes_proto::InstructionCoverageGap {
+        origin: dudes_proto::InstructionGapOrigin::Observed,
+        reason: coverage,
+        context: dudes_proto::InstructionPathContext::Unresolved,
+        agent: Some(agent),
+        path: None,
+    });
+    InstructionSettlement::Unknown {
+        reason,
+        end,
+        sampled_at: None,
+        recovery: false,
+        comparison,
+    }
+}
+
 /// One unknown settlement for every member of an attached session's starting sample.
 fn unknown_finish(
     start: &RepositoryInstructionStart,
@@ -521,26 +545,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         };
         let baseline = InstructionBaselineRef::Started { lsn: started };
         let end_lsn = sup.world().instructions.attachment_end_lsn(attachment_lsn);
-        let gap = |reason| dudes_proto::InstructionCoverageGap {
-            origin: dudes_proto::InstructionGapOrigin::Observed,
-            reason,
-            context: dudes_proto::InstructionPathContext::Unresolved,
-            agent: Some(agent),
-            path: None,
-        };
-        let unknown = |reason, coverage, end| InstructionSettlement::Unknown {
-            reason,
-            end,
-            sampled_at: None,
-            recovery: false,
-            comparison: {
-                let mut comparison = dudes_proto::InstructionComparison::default();
-                let _ = comparison.try_push_gap(gap(coverage));
-                comparison
-            },
-        };
         if end_lsn.is_none() && keyless && unspawned {
-            let settlement = unknown(
+            let settlement = unknown_settlement(
+                agent,
                 dudes_proto::InstructionUnknownReason::UnrecordedLaunchBoundary,
                 dudes_proto::InstructionGapKind::UnrecordedLaunchBoundary,
                 None,
@@ -607,7 +614,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 start,
                 owner,
                 baseline,
-                &unknown(
+                &unknown_settlement(
+                    agent,
                     dudes_proto::InstructionUnknownReason::IncompleteCoverage,
                     dudes_proto::InstructionGapKind::EndingBoundaryMissing,
                     Some(end),

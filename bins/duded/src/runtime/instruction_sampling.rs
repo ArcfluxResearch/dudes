@@ -589,7 +589,7 @@ impl LegacySampleJob {
 type BoundarySample = (InstructionSnapshot, Option<InstructionTicketAssociation>);
 
 enum BoundaryReply {
-    Legacy(BoundarySample),
+    Legacy(Box<BoundarySample>),
     Repositories(Box<RepositoryInstructionStart>),
 }
 
@@ -804,7 +804,8 @@ impl InstructionSampler {
                                 SampleCompletion::Legacy { ticket, .. },
                                 SampleEndpoint::Legacy(snapshot),
                             ) => {
-                                let _ = reply.try_send(BoundaryReply::Legacy((snapshot, ticket)));
+                                let _ = reply
+                                    .try_send(BoundaryReply::Legacy(Box::new((snapshot, ticket))));
                             }
                             (
                                 SampleCompletion::Repositories { .. },
@@ -881,7 +882,7 @@ impl InstructionSampler {
             && let Ok(BoundaryReply::Legacy(result)) =
                 endpoint.recv_timeout(deadline.saturating_duration_since(Instant::now()))
         {
-            return result;
+            return *result;
         }
         let SampleEndpoint::Legacy(snapshot) = progress.deadline((self.now)()) else {
             unreachable!("legacy boundary")

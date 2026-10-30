@@ -270,6 +270,25 @@ fn a_stop_in_an_unconfined_attached_session_settles_every_copy_with_a_record_the
     );
 }
 
+fn unsampled_member(name: &str, agent: AgentId) -> RepositoryInstructionSnapshot {
+    RepositoryInstructionSnapshot {
+        repo_id: RepoId::parse(name).unwrap(),
+        root: None,
+        snapshot: InstructionSnapshot {
+            sampled_at: Timestamp::UNIX_EPOCH,
+            source: InstructionSnapshotSource::Fresh,
+            execution_folder: None,
+            participants: Vec::new(),
+            inputs: Vec::new(),
+            inventoried: Vec::new(),
+            gaps: vec![gap(InstructionGapKind::PathUnresolved, agent)],
+            usage: InstructionSampleUsage::default(),
+            pid_namespace: None,
+            boot: None,
+        },
+    }
+}
+
 #[test]
 fn a_restart_settles_a_closed_unconfined_attached_session_as_unknown_for_every_copy() {
     use dudes_proto::rpc::pty::PtyId;
@@ -288,22 +307,6 @@ fn a_restart_settles_a_closed_unconfined_attached_session_as_unknown_for_every_c
         agent,
         attachment_lsn,
     };
-    let member = |name: &str| RepositoryInstructionSnapshot {
-        repo_id: RepoId::parse(name).unwrap(),
-        root: None,
-        snapshot: InstructionSnapshot {
-            sampled_at: Timestamp::UNIX_EPOCH,
-            source: InstructionSnapshotSource::Fresh,
-            execution_folder: None,
-            participants: Vec::new(),
-            inputs: Vec::new(),
-            inventoried: Vec::new(),
-            gaps: vec![gap(InstructionGapKind::PathUnresolved, agent)],
-            usage: InstructionSampleUsage::default(),
-            pid_namespace: None,
-            boot: None,
-        },
-    };
     let started = append(
         &mut harness,
         Record::InstructionObservationBatchStarted(RepositoryInstructionStart {
@@ -314,7 +317,7 @@ fn a_restart_settles_a_closed_unconfined_attached_session_as_unknown_for_every_c
             },
             owner,
             ticket: None,
-            members: NAMES.map(member).to_vec(),
+            members: NAMES.map(|name| unsampled_member(name, agent)).to_vec(),
         }),
     );
     let pty = PtyId(5);
