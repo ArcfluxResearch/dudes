@@ -202,6 +202,19 @@ fn abrupt_exit_arm() {
     let status = child.wait().expect("reap helper daemon");
     assert!(!status.success(), "the abrupt helper exit ran cleanly");
 
+    let restarted = UnconfirmedHost::new(false);
+    let daemon = boot(
+        &fixture.settings(),
+        seams(
+            &settings,
+            restarted.clone(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
+            Witness::default(),
+        ),
+    )
+    .expect("restart after abrupt uncertain exit");
+    // The kill can leave a torn tail that only a boot truncates, so the prefix is read after it.
     let prefix = fixture.records();
     assert_eq!(
         count(&prefix, |record| matches!(
@@ -221,19 +234,6 @@ fn abrupt_exit_arm() {
         count(&prefix, |record| matches!(record, Record::TurnEnded { .. })),
         0
     );
-
-    let restarted = UnconfirmedHost::new(false);
-    let daemon = boot(
-        &fixture.settings(),
-        seams(
-            &settings,
-            restarted.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
-            Witness::default(),
-        ),
-    )
-    .expect("restart after abrupt uncertain exit");
     let mut running = common::start(daemon);
     let (agent, turn) = prefix
         .iter()
