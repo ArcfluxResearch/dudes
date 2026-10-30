@@ -48,6 +48,17 @@ fn require_scoped_options(params: &HireParams, confinement: Confinement) -> anyh
     Ok(())
 }
 
+fn require_hire_options(
+    current: &crate::runtime::repository_admission::CurrentRepositories,
+    params: &HireParams,
+) -> anyhow::Result<()> {
+    #[cfg(test)]
+    if current.test_hire_policy.is_some() {
+        return require_scoped_options(params, Confinement::Confined);
+    }
+    require_scoped_options(params, current.hire_policy().confinement())
+}
+
 /// Refuse an unconfined hire whose task could not name every copy, before any lease exists. A
 /// copy's folder is `<data>/worktrees/<lease id>`, and every lease id has the same length.
 fn require_section_fits<'a>(
@@ -136,7 +147,7 @@ impl CurrentHireAdmission<'_> {
         world: &World,
         plan: &RepositoryHirePlan,
     ) -> anyhow::Result<()> {
-        require_scoped_options(&plan.params, HIRE_POLICY.confinement())?;
+        require_hire_options(self.current, &plan.params)?;
         let target = plan
             .params
             .project
@@ -149,7 +160,7 @@ impl CurrentHireAdmission<'_> {
                 && plan.repositories == repositories,
             "the project's configuration or original trust grants changed during the copy"
         );
-        self.require_repository_capability(HIRE_POLICY.confinement())
+        self.require_repository_capability(self.current.hire_policy().confinement())
     }
 
     pub(super) fn require_scoped_hire_authority(
@@ -245,7 +256,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .into_iter()
             .map(|provider| {
                 let refusal = if admission
-                    .require_repository_capability(HIRE_POLICY.confinement())
+                    .require_repository_capability(
+                        self.ctx.current_repositories.hire_policy().confinement(),
+                    )
                     .is_err()
                 {
                     Some("Multi-repository hiring is not enabled yet.")
@@ -454,7 +467,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "a project hire requires trusted own copies of every repository, without from",
             ));
         }
-        require_scoped_options(&params, HIRE_POLICY.confinement())
+        require_hire_options(&self.ctx.current_repositories, &params)
             .map_err(|error| refused(error.to_string()))?;
         if !params.mcp_servers.is_empty() {
             return Err(refused(
@@ -466,7 +479,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories)
                 .current_repository_hire_facts(self.sup.world(), target)
                 .map_err(|error| refused(error.to_string()))?;
-        match HIRE_POLICY.confinement() {
+        match self.ctx.current_repositories.hire_policy().confinement() {
             Confinement::Confined => {}
             Confinement::Unconfined => require_section_fits(
                 &self.sup.config().data_dir,
@@ -601,7 +614,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             repositories: ScopedRepositories {
                 project: plan.project.clone(),
                 catalog_lsn: plan.catalog_lsn,
-                policy: HIRE_POLICY,
+                policy: self.ctx.current_repositories.hire_policy(),
                 repositories: prepared.repositories.clone(),
             },
         };

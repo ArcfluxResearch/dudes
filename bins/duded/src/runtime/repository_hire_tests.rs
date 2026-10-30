@@ -107,6 +107,17 @@ impl Setup {
         &self,
         capability: bool,
     ) -> Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng> {
+        self.boot_with(
+            capability,
+            dudes_providers::claude::config::ClaudeConfig::default(),
+        )
+    }
+
+    fn boot_with(
+        &self,
+        capability: bool,
+        claude: dudes_providers::claude::config::ClaudeConfig,
+    ) -> Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng> {
         let mut seams = common::seams(
             &self.settings,
             self.host.clone(),
@@ -115,9 +126,8 @@ impl Setup {
             Witness::default(),
         );
         seams.adapters = dudes_providers::registry::Adapters::new([
-            Box::new(dudes_providers::claude::ClaudeAdapter::new(
-                dudes_providers::claude::config::ClaudeConfig::default(),
-            )) as Box<dyn dudes_providers::adapter::Adapter>,
+            Box::new(dudes_providers::claude::ClaudeAdapter::new(claude))
+                as Box<dyn dudes_providers::adapter::Adapter>,
             Box::new(dudes_providers::codex::CodexAdapter::new(
                 dudes_providers::codex::config::CodexConfig::default(),
             )),
@@ -127,6 +137,21 @@ impl Setup {
         ]);
         let mut daemon = crate::boot(&self.settings, seams).unwrap();
         daemon.ctx.current_repositories.test_hire_capability = capability;
+        daemon
+    }
+
+    fn boot_unconfined(
+        &self,
+    ) -> Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng> {
+        let mut daemon = self.boot_with(
+            true,
+            dudes_providers::claude::config::ClaudeConfig {
+                command: std::env::current_exe().unwrap().into_os_string(),
+                ..dudes_providers::claude::config::ClaudeConfig::default()
+            },
+        );
+        daemon.ctx.current_repositories.test_hire_policy =
+            Some(dudes_proto::repository::RepositoryPolicy::OperatorTrustV1);
         daemon
     }
 
@@ -1088,4 +1113,146 @@ fn a_hook_configured_nonprimary_origin_refuses_the_group_before_any_lease() {
     );
     assert_eq!(setup.runner.adds.load(Ordering::SeqCst), 0);
     setup.assert_cleaned(0);
+}
+
+#[test]
+fn a_copy_that_goes_missing_before_spawn_holds_the_unconfined_agent_without_a_process() {
+    use crate::floor_chat::{ChatOutcome, ChatRequest, ChatVerb};
+    let setup = Setup::new();
+    let mut daemon = setup.boot_unconfined();
+    let vanishing = Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+    let hook = vanishing.clone();
+    daemon.ctx.before_launch_copy_check = Some(Box::new(move || {
+        let copy = hook.lock().unwrap().take().unwrap();
+        std::fs::rename(&copy, copy.with_extension("moved")).unwrap();
+    }));
+    let (mut running, hires, params) = setup.start_from(daemon);
+    let agent = hires.hire(params).unwrap().agent;
+    let leases: Vec<_> = setup
+        .fixture
+        .records()
+        .iter()
+        .filter_map(Record::worktree_lease)
+        .map(|lease| (lease.worktree, lease.path.to_path_buf()))
+        .collect();
+    assert_eq!(leases.len(), 3);
+    *vanishing.lock().unwrap() = Some(leases[1].1.clone());
+    let sessions = crate::floor_session::FloorSessions::new(
+        "127.0.0.1:31337".parse().unwrap(),
+        Arc::new(common::TestClock::new()),
+    );
+    let session = sessions
+        .admitted_for_test("127.0.0.1:31337", "http://127.0.0.1:31337")
+        .0;
+    let body = serde_json::json!({
+        "request_id": "A".repeat(43),
+        "agent": agent.to_string(),
+        "text": "hello",
+    });
+    let request = ChatRequest::parse(ChatVerb::Send, &serde_json::to_vec(&body).unwrap()).unwrap();
+    assert!(matches!(
+        running.handle.chat(session, request).unwrap(),
+        ChatOutcome::Queued { .. }
+    ));
+    let worktree = setup
+        .fixture
+        .await_record("the missing copy hold", |record| match record {
+            Record::AgentHeld {
+                agent: held,
+                cause: dudes_proto::AutomaticHold::WorktreeMissing { worktree },
+                ..
+            } if *held == agent => Some(*worktree),
+            _ => None,
+        });
+    running.stop(ExitCause::Ended);
+    assert_eq!(worktree, leases[1].0);
+    assert!(setup.host.spawned().is_empty());
+    assert!(
+        !setup
+            .fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::TurnEnded { .. }))
+    );
+}
+
+#[test]
+fn an_unconfined_turn_launches_in_the_primary_copy_with_the_others_added() {
+    use crate::floor_chat::{ChatOutcome, ChatRequest, ChatVerb};
+    use dudes_supervisor::ManagedSpawn;
+    let setup = Setup::new();
+    let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
+    let agent = hires.hire(params).unwrap().agent;
+    let sessions = crate::floor_session::FloorSessions::new(
+        "127.0.0.1:31337".parse().unwrap(),
+        Arc::new(common::TestClock::new()),
+    );
+    let session = sessions
+        .admitted_for_test("127.0.0.1:31337", "http://127.0.0.1:31337")
+        .0;
+    let body = serde_json::json!({
+        "request_id": "A".repeat(43),
+        "agent": agent.to_string(),
+        "text": "hello",
+    });
+    let request = ChatRequest::parse(ChatVerb::Send, &serde_json::to_vec(&body).unwrap()).unwrap();
+    assert!(matches!(
+        running.handle.chat(session, request).unwrap(),
+        ChatOutcome::Queued { .. }
+    ));
+    let turn = setup
+        .fixture
+        .await_record("the spawn", |record| match record {
+            Record::TurnSpawned { turn, .. } => Some(*turn),
+            _ => None,
+        });
+    running.stop(ExitCause::Ended);
+
+    let mut world = dudes_supervisor::World::default();
+    for (lsn, entry) in setup.fixture.entries() {
+        world.apply(lsn, &entry);
+    }
+    let dudes_proto::repository::HireRepositories::Scoped(hire) =
+        &world.agents[&agent].repositories
+    else {
+        panic!("a repository hire");
+    };
+    let copies: Vec<_> = hire
+        .repositories
+        .primary_first()
+        .map(|entry| entry.value.recorded.execution.directory.clone())
+        .collect();
+    let spawned = setup.host.spawned();
+    assert_eq!(spawned.len(), 1);
+    assert_eq!(spawned[0].cwd, copies[0]);
+    let added: Vec<_> = spawned[0]
+        .argv
+        .windows(2)
+        .filter(|pair| pair[0] == "--add-dir")
+        .map(|pair| std::path::PathBuf::from(&pair[1]))
+        .collect();
+    assert_eq!(added[1..], copies[1..]);
+    assert_eq!(spawned[0].argv[spawned[0].argv.len() - 2], "--");
+
+    let composed = |cwd: &Path| ManagedSpawn::Composed {
+        spec: Box::new(dudes_providers::launch::LaunchSpec {
+            argv: vec!["claude".into()],
+            env: vec![],
+            cwd: cwd.to_path_buf(),
+            stdin: dudes_providers::launch::LaunchInput::Null,
+        }),
+        install: dudes_providers::adapter::ManagedInstall::default(),
+    };
+    assert_eq!(
+        super::browser_chat::managed_launch_cwd(&world, turn, &composed(&copies[0])).unwrap(),
+        copies[0]
+    );
+    assert!(super::browser_chat::managed_launch_cwd(&world, turn, &composed(&copies[1])).is_err());
+    let scoped = ManagedSpawn::Scoped {
+        task: "task".into(),
+        session: dudes_providers::adapter::TurnSession::Assigned,
+        selection: dudes_types::ModelSelection::provider_default(),
+        env: vec![],
+    };
+    assert!(super::browser_chat::managed_launch_cwd(&world, turn, &scoped).is_err());
 }

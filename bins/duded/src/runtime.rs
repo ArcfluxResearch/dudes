@@ -344,6 +344,42 @@ impl std::fmt::Display for HireAuthorityRefusal {
 
 impl std::error::Error for HireAuthorityRefusal {}
 
+/// The recorded worktree of a live agent's hire that is gone from disk or no longer the copy the
+/// hire leased, for the boot check and for the check before every launch.
+fn missing_worktree(
+    world: &dudes_supervisor::World,
+    row: &dudes_supervisor::world::AgentRow,
+) -> Option<dudes_types::WorktreeId> {
+    match &row.repositories {
+        dudes_proto::repository::HireRepositories::Legacy(repository) => {
+            let worktree = repository.worktree()?;
+            let tree = world.worktrees.get(&worktree)?;
+            (!crate::worktree::is_worktree(&tree.path, &tree.origin)).then_some(worktree)
+        }
+        dudes_proto::repository::HireRepositories::Scoped(scope) => scope
+            .repositories
+            .entries()
+            .iter()
+            .find(|entry| !crate::worktree::is_owned_repository(&entry.value.recorded))
+            .map(|entry| entry.value.recorded.worktree),
+    }
+}
+
+/// [`missing_worktree`] for the check before a launch, which only an unconfined hire gets: the
+/// legacy and confined launches keep failing as an unlaunched turn.
+fn missing_unconfined_copy(
+    world: &dudes_supervisor::World,
+    row: &dudes_supervisor::world::AgentRow,
+) -> Option<dudes_types::WorktreeId> {
+    matches!(
+        &row.repositories,
+        dudes_proto::repository::HireRepositories::Scoped(scope)
+            if scope.policy.confinement() == dudes_proto::repository::Confinement::Unconfined
+    )
+    .then(|| missing_worktree(world, row))
+    .flatten()
+}
+
 fn known_preappend_refusal(error: &anyhow::Error) -> bool {
     error.downcast_ref::<KnownNoEffect>().is_some()
         || error.downcast_ref::<HireAuthorityRefusal>().is_some()
@@ -1012,6 +1048,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     #[cfg(test)]
     pub(crate) before_recovery_dispatch: Option<Box<dyn FnOnce() + Send>>,
     #[cfg(test)]
+    pub(crate) before_launch_copy_check: Option<Box<dyn FnOnce() + Send>>,
+    #[cfg(test)]
     pub(crate) before_recovery_append: Option<RecoveryRecordHook>,
     #[cfg(test)]
     pub(crate) after_recovery_fsync: Option<RecoveryRecordHook>,
@@ -1358,21 +1396,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .iter()
             .filter(|(_, row)| !row.retired)
             .filter_map(|(agent, row)| {
-                let missing = match &row.repositories {
-                    dudes_proto::repository::HireRepositories::Legacy(repository) => {
-                        let worktree = repository.worktree()?;
-                        let tree = world.worktrees.get(&worktree)?;
-                        (!crate::worktree::is_worktree(&tree.path, &tree.origin))
-                            .then_some(worktree)
-                    }
-                    dudes_proto::repository::HireRepositories::Scoped(scope) => scope
-                        .repositories
-                        .entries()
-                        .iter()
-                        .find(|entry| !crate::worktree::is_owned_repository(&entry.value.recorded))
-                        .map(|entry| entry.value.recorded.worktree),
-                };
-                missing.map(|worktree| (*agent, worktree))
+                missing_worktree(world, row).map(|worktree| (*agent, worktree))
             })
             .collect()
     }

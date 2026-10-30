@@ -8,7 +8,7 @@ use dudes_supervisor::ManagedSpawn;
 use dudes_supervisor::machine::BrowserNoteCancelDisposition;
 use dudes_supervisor::world::BrowserNoteState;
 
-fn managed_launch_cwd<'a>(
+pub(super) fn managed_launch_cwd<'a>(
     world: &'a dudes_supervisor::World,
     turn: dudes_types::TurnId,
     launch: &'a ManagedSpawn,
@@ -359,6 +359,41 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
+    /// Queue the hold for an unconfined hire whose copy is gone, so the turn never reaches the host.
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "only a test hooks the moment before the check"
+        )
+    )]
+    fn hold_for_missing_copy(
+        &mut self,
+        world: &dudes_supervisor::World,
+        (agent, turn): (dudes_types::AgentId, dudes_types::TurnId),
+        dispatch_token: Option<dudes_supervisor::PersistToken>,
+        queue: &mut std::collections::VecDeque<Input>,
+    ) -> bool {
+        #[cfg(test)]
+        if let Some(before) = self.before_launch_copy_check.take() {
+            before();
+        }
+        let Some(worktree) = world
+            .agents
+            .get(&agent)
+            .and_then(|owner| super::missing_unconfined_copy(world, owner))
+        else {
+            return false;
+        };
+        queue.push_back(Input::LaunchWorktreeMissing {
+            agent,
+            turn,
+            worktree,
+            dispatch_token,
+        });
+        true
+    }
+
     pub(super) fn spawn_turn<R: Rng>(
         &mut self,
         turn: dudes_types::TurnId,
@@ -379,6 +414,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .get(&agent)
             .ok_or_else(|| anyhow::anyhow!("managed launch owner is unavailable"))?;
         let cwd = managed_launch_cwd(sup.world(), turn, launch)?;
+        if self.hold_for_missing_copy(sup.world(), (agent, turn), None, queue) {
+            return Ok(());
+        }
         let candidate = self.scoped_browser_candidate(sup, turn);
         if let Err(refusal) = self
             .admit_prior_attempt_with_candidate(sup, agent, Some(turn), candidate)
@@ -416,6 +454,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the admission checks run in the order the dispatch intent depends on"
+    )]
     pub(super) fn dispatch_browser_intent<R: Rng>(
         &mut self,
         effect: &dudes_supervisor::Effect,
@@ -457,6 +499,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .agents
             .get(agent)
             .ok_or_else(|| anyhow::anyhow!("browser dispatch owner is unavailable"))?;
+        if self.hold_for_missing_copy(sup.world(), (*agent, *turn), Some(*token), queue) {
+            return Ok(());
+        }
         if let Err(refusal) = self
             .admit_prior_attempt_with_candidate(sup, *agent, Some(*turn), candidate)
             .and_then(|()| {
