@@ -17,6 +17,7 @@ use crate::worktree::hire::{RepositoryHirePlan, WorktreeHires};
 pub(super) use common::repository_runner::Runner;
 
 mod browser_groups;
+mod unconfined_recovery;
 
 pub(super) struct Setup {
     pub(super) fixture: common::Fixture,

@@ -147,3 +147,180 @@ fn the_reader_refuses_a_hire_whose_kind_and_policy_disagree_and_a_wrong_header_k
         Err(Error::RepositoryFrame { .. })
     ));
 }
+
+mod interrupted_turn {
+    use super::*;
+    use dudes_proto::issue::ManagedIssuePayload;
+    use dudes_proto::recovery::{RecoveryBinding, RecoveryWork};
+    use dudes_proto::recovery_state::admission::RecoveryAuthority;
+    use dudes_proto::repository::{RepositoryTurnGrant, RepositoryTurnIssued};
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture records catalog, trust, hire, goal and interrupted issue"
+    )]
+    fn journal_with_interrupted_turn(
+        dir: &std::path::Path,
+    ) -> (Projections, dudes_journal::Writer, RecoveryBinding) {
+        let (mut writer, _) = open(
+            &dir.join("journal"),
+            JournalOptions {
+                fsync: Fsync::None,
+                checkpoint_every: 0,
+                ..JournalOptions::default()
+            },
+        )
+        .unwrap();
+        let mut store = Projections::open_with(&dir.join("state.redb"), Fsync::None).unwrap();
+        let (prefix, mut hire) = super::super::recovery::authority();
+        let catalog_lsn = writer.append(&prefix[0]).unwrap();
+        let mut trust = std::collections::BTreeMap::new();
+        for entry in prefix.into_iter().skip(1) {
+            let mut record = entry.record;
+            if let Record::RepositoryTrustSet {
+                catalog_lsn: at, ..
+            } = &mut record
+            {
+                *at = catalog_lsn;
+            }
+            let lsn = writer.append(&super::entry(record.clone())).unwrap();
+            if let Record::RepositoryTrustSet { repo_id, .. } = record {
+                trust.insert(repo_id, lsn);
+            }
+        }
+        hire.repositories.catalog_lsn = catalog_lsn;
+        let copies = hire
+            .repositories
+            .repositories
+            .entries()
+            .iter()
+            .map(|copy| {
+                let mut copy = copy.clone();
+                copy.value.trust_lsn = trust[&copy.repo_id];
+                copy
+            })
+            .collect();
+        hire.repositories.repositories =
+            RepositorySet::new(hire.repositories.repositories.primary_id().clone(), copies)
+                .unwrap();
+        let agent = hire.id;
+        hire.repositories.policy = RepositoryPolicy::OperatorTrustV1;
+        let hired_lsn = writer
+            .append(&super::entry(Record::AgentHiredWithUnconfinedRepositories(
+                Box::new(hire),
+            )))
+            .unwrap();
+        let Record::GoalSet { mut goal, .. } = samples::record(RecordKind::GoalSet) else {
+            unreachable!()
+        };
+        goal.text = "fix the service".into();
+        let goal_id = goal.id;
+        writer
+            .append(&super::entry(Record::GoalSet {
+                agent,
+                goal,
+                browser_onboarding: None,
+                browser_goal: None,
+                goal_replacement: None,
+            }))
+            .unwrap();
+        replay(&writer.reader(), &mut store).unwrap();
+        let row = store.agent(agent).unwrap().unwrap();
+        let dudes_proto::repository::HireRepositories::Scoped(scope) = &row.repositories else {
+            panic!("a project hire is scoped");
+        };
+        let grant = RepositoryTurnGrant::select(hired_lsn, scope, None).unwrap();
+        let mut payload = samples::record(RecordKind::TurnIssued)
+            .issue_payload()
+            .unwrap()
+            .to_owned();
+        let ManagedIssuePayload::Ordinary {
+            agent: owner,
+            goal,
+            turn,
+            model_selection,
+            task,
+            answers,
+            ..
+        } = &mut payload
+        else {
+            unreachable!()
+        };
+        *owner = agent;
+        *goal = goal_id;
+        *model_selection = Some(dudes_types::ModelSelection::named("recorded-model"));
+        *task = "original task".into();
+        answers.clear();
+        let work = RecoveryWork {
+            agent,
+            goal: goal_id,
+            turn: *turn,
+        };
+        let issue_lsn = writer
+            .checked_recovery(&mut store)
+            .unwrap()
+            .append(&super::entry(Record::TurnIssuedWithRepositories(Box::new(
+                RepositoryTurnIssued { grant, payload },
+            ))))
+            .unwrap();
+        let binding = RecoveryBinding {
+            work,
+            hired_lsn,
+            issue_lsn,
+            provider: row.provider,
+            worktree: row.repositories.primary_worktree(),
+            ticket: None,
+            model_selection: Some(dudes_types::ModelSelection::named("recorded-model")),
+        };
+        (store, writer, binding)
+    }
+
+    #[test]
+    fn an_interrupted_unconfined_turn_keeps_the_whole_hire_cold_and_warm() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut warm, mut writer, binding) = journal_with_interrupted_turn(dir.path());
+        let facts = writer
+            .checked_recovery(&mut warm)
+            .unwrap()
+            .facts(&binding)
+            .unwrap();
+        let RecoveryAuthority::Scoped { hire, grant } = &facts.authority else {
+            panic!("scoped authority")
+        };
+        assert_eq!(hire.policy, RepositoryPolicy::OperatorTrustV1);
+        assert_eq!(hire.repositories.entries().len(), 3);
+        assert_eq!(grant.repositories.entries().len(), 3);
+        assert_eq!(
+            grant.repositories.primary_id(),
+            hire.repositories.primary_id()
+        );
+        assert_eq!(
+            binding.worktree,
+            Some(hire.repositories.primary().recorded.worktree)
+        );
+
+        let mut cold = Projections::in_memory().unwrap();
+        replay(&writer.reader(), &mut cold).unwrap();
+        assert_eq!(
+            facts,
+            writer
+                .checked_recovery(&mut cold)
+                .unwrap()
+                .facts(&binding)
+                .unwrap()
+        );
+        assert_eq!(warm.export().unwrap(), cold.export().unwrap());
+
+        for lease in [None, Some(dudes_types::WorktreeId::from_bytes([99; 16]))] {
+            let mut other = binding.clone();
+            other.worktree = lease;
+            assert!(
+                writer
+                    .checked_recovery(&mut cold)
+                    .unwrap()
+                    .facts(&other)
+                    .is_err()
+            );
+        }
+    }
+}
