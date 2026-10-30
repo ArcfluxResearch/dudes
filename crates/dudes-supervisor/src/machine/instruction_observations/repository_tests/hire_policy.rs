@@ -12,6 +12,10 @@ struct Attached {
     card: CardId,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one replayed attach, sample and close chain supplies the attached round"
+)]
 fn attached_round(extra: Option<fn(AgentId) -> InstructionCoverageGap>) -> Attached {
     let (mut harness, agent, goal, grant) = fixture_for(RepositoryPolicy::OperatorTrustV1);
     let attachment_lsn = append(

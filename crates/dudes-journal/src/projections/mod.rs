@@ -62,8 +62,9 @@ use crate::writer::Fsync;
 /// is added**, or **when what a fold computes changes**; the store is then rebuilt from the
 /// journal.
 ///
-/// `73`: the instruction state keeps the policy each managed issue was granted, which decides
-/// the acceptance rule for hired-repository attempts. Earlier caches must replay to capture it.
+/// `73`: the instruction state keeps the policy each managed issue was granted and the policy
+/// each scoped hire recorded, which decide the acceptance rule for hired-repository attempts.
+/// Earlier caches must replay to capture them.
 ///
 /// `69`: hired copies and frozen turns retain the original trust pin. Earlier caches must
 /// replay the full journal to capture it from each hire's exact preceding grant.

@@ -1552,9 +1552,7 @@ impl InstructionState {
     fn fold_boundaries(&mut self, lsn: Lsn, record: &Record, folded: &mut InstructionFold) {
         self.observe_issue(lsn, record);
         if let Some(hire) = record.repository_hire() {
-            self.hires
-                .entry(lsn)
-                .or_insert(hire.repositories.policy);
+            self.hires.entry(lsn).or_insert(hire.repositories.policy);
         }
         if let Some(proof) = no_host_agent(record) {
             self.no_host_holds.insert(lsn, proof);
@@ -1782,7 +1780,10 @@ fn requires_review(attempt: &InstructionAttempt, confinement: Confinement) -> bo
                 !comparison.changes.is_empty() || !comparison.gaps.is_empty()
             } else {
                 !comparison.changes.is_empty()
-                    || comparison.gaps.iter().any(InstructionCoverageGap::is_observed)
+                    || comparison
+                        .gaps
+                        .iter()
+                        .any(InstructionCoverageGap::is_observed)
             }
         })
     {

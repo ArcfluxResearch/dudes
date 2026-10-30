@@ -685,8 +685,10 @@ fn an_observed_gap_in_a_hired_copy_holds_an_unconfined_round_but_a_declared_one_
     let state = &harness.supervisor.world().instructions;
     assert!(state.repository_turn_covered(turn));
     assert!(!state.pending_for_goal(goal));
-    let (harness, goal, turn) =
-        standing_gaps_round(RepositoryPolicy::WorkingTreeV1, Some(declared_owned_copy_gap));
+    let (harness, goal, turn) = standing_gaps_round(
+        RepositoryPolicy::WorkingTreeV1,
+        Some(declared_owned_copy_gap),
+    );
     let state = &harness.supervisor.world().instructions;
     assert!(!state.repository_turn_covered(turn));
     assert!(state.pending_for_goal(goal));

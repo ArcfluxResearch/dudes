@@ -929,3 +929,20 @@ fn exact_prior_run_pty_proof_settles_only_its_attachment_once() {
         assert_eq!(h.full.attempt(Lsn(5)), Some(&other));
     }
 }
+
+#[test]
+fn a_hire_policy_survives_the_keyed_cache() {
+    let Record::AgentHiredWithRepositories(mut hire) =
+        samples::record(RecordKind::AgentHiredWithRepositories)
+    else {
+        unreachable!()
+    };
+    hire.repositories.policy = crate::repository::RepositoryPolicy::OperatorTrustV1;
+    let mut h = Harness::default();
+    h.apply(1, hire.into_record(), None);
+    let state = InstructionCache::read_all(&h.memory, Lsn(1)).unwrap();
+    assert_eq!(
+        state.hires,
+        BTreeMap::from([(Lsn(1), crate::repository::RepositoryPolicy::OperatorTrustV1)])
+    );
+}

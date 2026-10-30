@@ -529,6 +529,10 @@ fn attempt_cells(lsn: Lsn, attempt: &InstructionAttempt) -> [Option<Cell>; 3] {
     ]
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flat list names every cell kind the state persists"
+)]
 fn cells(state: &InstructionState) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, InstructionCacheError> {
     let mut cells = BTreeMap::new();
     let mut add = |cell: Cell| -> Result<(), InstructionCacheError> {
