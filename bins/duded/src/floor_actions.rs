@@ -180,14 +180,7 @@ impl Profile {
                     .unwrap_or_else(|| repositories.primary_id())
                     .clone();
                 repositories.get(&repo)?;
-                reference.revision = crate::goal_replacement::digest(
-                    b"dudes.scoped-project-check.v1\0",
-                    [
-                        ("project".into(), self.id.clone()),
-                        ("repo".into(), repo.as_str().to_owned()),
-                        ("definition".into(), reference.revision.to_hex()),
-                    ],
-                );
+                reference = crate::ticket_index::scoped_check_reference(&self.id, &repo, reference);
                 Some(ResolvedProjectCheck::Scoped {
                     check,
                     reference,
