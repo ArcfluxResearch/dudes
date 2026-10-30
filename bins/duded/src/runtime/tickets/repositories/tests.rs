@@ -92,10 +92,10 @@ fn create_and_edit(socket: &mut Socket, setup: &Setup) -> (CardId, CardId, Ticke
         }),
     );
     let all_read = read(socket, setup, all.card);
-    assert_eq!(names(declaration(&all_read)), ["web", "api", "docs"]);
+    assert_eq!(names(declaration(&all_read)), ["api", "web", "docs"]);
     assert_eq!(
         declaration(&all_read).repositories.primary_id().as_str(),
-        "web"
+        "api"
     );
     assert_eq!(
         all_read
@@ -117,8 +117,8 @@ fn create_and_edit(socket: &mut Socket, setup: &Setup) -> (CardId, CardId, Ticke
     );
     let before_edit = read(socket, setup, subset.card);
     let original = declaration(&before_edit).clone();
-    assert_eq!(names(&original), ["web", "api"]);
-    assert_eq!(original.repositories.primary_id().as_str(), "web");
+    assert_eq!(names(&original), ["api", "web"]);
+    assert_eq!(original.repositories.primary_id().as_str(), "api");
     let _: Value = ok(
         socket,
         setup,
@@ -649,4 +649,142 @@ fn repository_origin_drift_at_the_final_ticket_permit_appends_nothing() {
     );
     assert!(setup.host.spawned().is_empty());
     running.stop(crate::ExitCause::Ended);
+}
+
+#[test]
+fn a_subset_request_is_refused_while_the_capability_is_closed_and_a_full_one_reaches_it() {
+    let setup = setup();
+    let (mut running, _, _) = setup.start(false);
+    let mut socket = Client::connect(setup.settings.socket()).unwrap();
+    refused(
+        &mut socket,
+        &setup,
+        Method::TicketCreate,
+        json!({"title": "Two of three", "repos": ["api", "web"]}),
+        "covers every repository",
+    );
+    for repos in [json!(["docs", "web", "api"]), json!(null)] {
+        let mut params = json!({"title": "All three"});
+        if !repos.is_null() {
+            params["repos"] = repos;
+        }
+        refused(
+            &mut socket,
+            &setup,
+            Method::TicketCreate,
+            params,
+            "no verified provider capability",
+        );
+    }
+    drop(socket);
+    running.stop(crate::ExitCause::Ended);
+}
+
+#[test]
+fn a_full_request_in_any_order_declares_the_primary_first_and_the_rest_in_catalog_order() {
+    let setup = setup();
+    let (mut running, _, _) = setup.start(true);
+    let mut socket = Client::connect(setup.settings.socket()).unwrap();
+    for repos in [None, Some(json!(["docs", "web", "api"]))] {
+        let mut params = json!({"title": "All three"});
+        if let Some(repos) = repos {
+            params["repos"] = repos;
+        }
+        let created: TicketCreateResult = ok(&mut socket, &setup, Method::TicketCreate, params);
+        let read = read(&mut socket, &setup, created.card);
+        assert_eq!(names(declaration(&read)), ["api", "web", "docs"]);
+        assert_eq!(declaration(&read).repositories.primary_id().as_str(), "api");
+    }
+    drop(socket);
+    running.stop(crate::ExitCause::Ended);
+}
+
+#[test]
+fn an_unconfined_hire_refuses_a_narrower_declaration_at_assignment_and_at_start() {
+    let setup = setup();
+    let (mut running, hires, params) = setup.start(true);
+    let agent = hires.hire(params).unwrap().agent;
+    let mut socket = Client::connect(setup.settings.socket()).unwrap();
+    let mut cards = Vec::new();
+    for repos in [None, Some(json!(["api", "web"]))] {
+        let mut params = json!({"title": "Cover", "check_repo": "api"});
+        if let Some(repos) = repos {
+            params["repos"] = repos;
+        }
+        let created: TicketCreateResult = ok(&mut socket, &setup, Method::TicketCreate, params);
+        cards.push(created.card);
+    }
+    drop(socket);
+    running.stop(crate::ExitCause::Ended);
+
+    let daemon = setup.boot(true);
+    let mut world = daemon.sup.world().clone();
+    let row = world.agents.get_mut(&agent).unwrap();
+    let dudes_proto::repository::HireRepositories::Scoped(hire) = &mut row.repositories else {
+        panic!("scoped hire")
+    };
+    hire.policy = dudes_proto::repository::RepositoryPolicy::OperatorTrustV1;
+    let check_root = hire
+        .repositories
+        .get(&RepoId::parse("api").unwrap())
+        .unwrap()
+        .recorded
+        .execution
+        .clone();
+    let hired_lsn = row.mcp.hire_lsn;
+    let admission = crate::runtime::repository_admission::CurrentHireAdmission::new(
+        &daemon.ctx.enrollment,
+        &daemon.ctx.current_repositories,
+    );
+    for (card, narrower) in [(cards[0], false), (cards[1], true)] {
+        let (_, ticket) = daemon.ticket_row(card).unwrap();
+        let scope = ticket.repositories.declared().unwrap();
+        let assigned = Record::TicketAssigned {
+            card,
+            agent,
+            by: dudes_proto::Actor::System,
+            message: None,
+            expected_seq: dudes_types::Seq::ZERO,
+            priority: None,
+        };
+        let check = scope.declaration.clone();
+        let started = Record::TicketStartedWithRepositories(Box::new(
+            dudes_proto::repository::RepositoryTicketStarted {
+                card,
+                agent,
+                expected_seq: dudes_types::Seq::ZERO,
+                round: 1,
+                goal: dudes_proto::Goal {
+                    id: dudes_types::GoalId::from_parts(8, 1),
+                    text: "Cover".into(),
+                    predicate: ticket.done_when.predicate.clone(),
+                    baseline: None,
+                    completion_check: None,
+                    budget: dudes_proto::GoalBudget {
+                        usd: None,
+                        tokens: None,
+                    },
+                    hop_cap: 4,
+                },
+                repositories: dudes_proto::repository::TicketStartRepositories {
+                    hired_lsn,
+                    declaration: check,
+                    check: ticket.done_when.clone(),
+                    check_repo: scope.check_repo.clone(),
+                    check_root: check_root.clone(),
+                },
+            },
+        ));
+        for record in [&assigned, &started] {
+            let message = admission
+                .require_ticket_append(&world, record, Some(&ticket))
+                .unwrap_err()
+                .to_string();
+            if narrower {
+                assert!(message.contains("covers every repository"), "{message}");
+            } else {
+                assert!(message.contains("requires a confined hire"), "{message}");
+            }
+        }
+    }
 }
