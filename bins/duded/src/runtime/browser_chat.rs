@@ -20,6 +20,22 @@ fn managed_launch_cwd<'a>(
         .ok_or_else(|| std::io::Error::other("managed repository authority is unavailable"))?;
     match launch {
         ManagedSpawn::Composed { spec, .. } if authority.singleton().is_some() => Ok(&spec.cwd),
+        ManagedSpawn::Composed { spec, .. } => {
+            let grant = authority.grant().ok_or_else(|| {
+                std::io::Error::other("managed launch authority differs from its issue")
+            })?;
+            match grant.policy.confinement() {
+                dudes_proto::repository::Confinement::Unconfined
+                    if spec.cwd == grant.repositories.primary().execution.directory =>
+                {
+                    Ok(&spec.cwd)
+                }
+                dudes_proto::repository::Confinement::Unconfined
+                | dudes_proto::repository::Confinement::Confined => Err(std::io::Error::other(
+                    "managed launch authority differs from its issue",
+                )),
+            }
+        }
         ManagedSpawn::Scoped { .. } => {
             let grant = authority.grant().ok_or_else(|| {
                 std::io::Error::other("scoped repository authority is unavailable")
@@ -29,13 +45,10 @@ fn managed_launch_cwd<'a>(
                     Ok(grant.repositories.primary().execution.directory.as_path())
                 }
                 dudes_proto::repository::Confinement::Unconfined => Err(std::io::Error::other(
-                    "unconfined repository hires cannot launch yet",
+                    "an unconfined repository hire launches through the ordinary path",
                 )),
             }
         }
-        ManagedSpawn::Composed { .. } => Err(std::io::Error::other(
-            "managed launch authority differs from its issue",
-        )),
     }
 }
 
@@ -539,10 +552,29 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .as_ref()
             .filter(|authority| authority.matches_hire(owner.mcp.hire_lsn, &owner.repositories))
             .ok_or_else(|| std::io::Error::other("managed repository authority is unavailable"))?;
-        let repository = authority
-            .singleton()
-            .ok_or_else(|| std::io::Error::other("managed repository authority is unsupported"))?;
-        if spec.cwd != repository.cwd() {
+        let expected = match (authority.singleton(), authority.grant(), authority.hire()) {
+            (Some(repository), _, _) => repository.cwd(),
+            (None, Some(grant), dudes_proto::repository::HireRepositories::Scoped(hire))
+                if grant.policy.confinement()
+                    == dudes_proto::repository::Confinement::Unconfined =>
+            {
+                if !hire
+                    .repositories
+                    .entries()
+                    .iter()
+                    .all(|entry| crate::worktree::is_owned_repository(&entry.value.recorded))
+                {
+                    return Err(std::io::Error::other("a hired repository copy is missing"));
+                }
+                grant.repositories.primary().execution.directory.as_path()
+            }
+            _ => {
+                return Err(std::io::Error::other(
+                    "managed repository authority is unsupported",
+                ));
+            }
+        };
+        if spec.cwd != expected {
             return Err(std::io::Error::other(
                 "managed launch differs from its recorded repository",
             ));

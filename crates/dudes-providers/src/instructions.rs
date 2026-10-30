@@ -1149,6 +1149,7 @@ mod tests {
 
     fn ctx(env: &[EnvVar], trusted: bool) -> AgentCtx<'_> {
         AgentCtx {
+            extra_dirs: &[],
             agent: AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
             cwd: Path::new("project/selected-worktree"),
             agent_dir: Path::new("state/agents/owner"),
@@ -1907,6 +1908,7 @@ mod tests {
 
         let supplied = [EnvVar::new("CLAUDE_CONFIG_DIR", "profiles/claude")];
         let context = AgentCtx {
+            extra_dirs: &[],
             cwd: Path::new(&oversized),
             agent_dir: Path::new(&oversized),
             ..ctx(&supplied, true)

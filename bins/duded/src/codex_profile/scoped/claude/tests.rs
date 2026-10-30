@@ -35,6 +35,7 @@ fn fixture(resume: bool) -> Fixture {
     f.launch = adapter
         .managed_scoped(
             &AgentCtx {
+                extra_dirs: &[],
                 agent: AgentId::from_parts(1, 1),
                 cwd: &inventory.cwd,
                 agent_dir: &agent,

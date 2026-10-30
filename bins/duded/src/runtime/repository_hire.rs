@@ -48,6 +48,21 @@ fn require_scoped_options(params: &HireParams, confinement: Confinement) -> anyh
     Ok(())
 }
 
+/// Refuse an unconfined hire whose task could not name every copy, before any lease exists. A
+/// copy's folder is `<data>/worktrees/<lease id>`, and every lease id has the same length.
+fn require_section_fits<'a>(
+    data_dir: &std::path::Path,
+    ids: impl IntoIterator<Item = &'a RepoId>,
+) -> Result<(), dudes_proto::task::RepositorySectionError> {
+    let root = data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| data_dir.to_path_buf())
+        .join("worktrees");
+    let planned = root.join("0".repeat(32));
+    dudes_proto::task::repository_section(ids.into_iter().map(|id| (id, planned.as_path())))
+        .map(drop)
+}
+
 #[derive(Clone)]
 pub(crate) struct RepositoryLeaseAppend {
     pub(super) plan: RepositoryHirePlan,
@@ -143,12 +158,6 @@ impl CurrentHireAdmission<'_> {
         scope: &ScopedRepositories,
     ) -> anyhow::Result<()> {
         let confinement = scope.policy.confinement();
-        match confinement {
-            Confinement::Confined => {}
-            Confinement::Unconfined => {
-                anyhow::bail!("unconfined repository hires are not enabled yet")
-            }
-        }
         let target = ProjectHireTarget {
             project_id: scope.project.id.clone(),
             expected_revision: scope.catalog_lsn,
@@ -457,6 +466,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories)
                 .current_repository_hire_facts(self.sup.world(), target)
                 .map_err(|error| refused(error.to_string()))?;
+        match HIRE_POLICY.confinement() {
+            Confinement::Confined => {}
+            Confinement::Unconfined => require_section_fits(
+                &self.sup.config().data_dir,
+                repositories.entries().iter().map(|entry| &entry.repo_id),
+            )
+            .map_err(|error| refused(error.to_string()))?,
+        }
         for entry in repositories.entries() {
             self.refuse_overlap(&entry.value.origin.directory, None)?;
         }
@@ -655,14 +672,13 @@ mod confinement_tests {
     }
 
     #[test]
-    fn the_capability_gate_stays_closed_for_an_unconfined_policy() {
+    fn the_capability_gate_is_closed_for_both_policies_until_a_test_opens_it() {
         let enrollment = crate::floor_actions::Enrollment::default();
         let mut current = CurrentRepositories::default();
-        current.test_hire_capability = true;
         let admission = CurrentHireAdmission::new(&enrollment, &current);
         admission
             .require_repository_capability(Confinement::Confined)
-            .unwrap();
+            .unwrap_err();
         let error = admission
             .require_repository_capability(Confinement::Unconfined)
             .unwrap_err();
@@ -670,10 +686,17 @@ mod confinement_tests {
             error.to_string(),
             "unconfined repository execution is not enabled yet"
         );
+        current.test_hire_capability = true;
+        let admission = CurrentHireAdmission::new(&enrollment, &current);
+        for confinement in [Confinement::Confined, Confinement::Unconfined] {
+            admission
+                .require_repository_capability(confinement)
+                .unwrap();
+        }
     }
 
     #[test]
-    fn an_unconfined_hire_is_refused_before_its_catalog_is_read() {
+    fn an_unconfined_hire_authority_is_checked_against_the_current_catalog() {
         let Record::AgentHiredWithUnconfinedRepositories(hire) =
             samples::record(RecordKind::AgentHiredWithUnconfinedRepositories)
         else {
@@ -685,9 +708,11 @@ mod confinement_tests {
         let error = CurrentHireAdmission::new(&enrollment, &current)
             .require_scoped_hire_authority(&World::default(), &hire.repositories)
             .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "unconfined repository hires are not enabled yet"
+        assert!(
+            error
+                .to_string()
+                .contains("select a project with an explicit repository list"),
+            "{error}"
         );
     }
 }

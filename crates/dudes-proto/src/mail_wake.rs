@@ -141,9 +141,14 @@ impl JsonSchema for MailWakeTask {
             )
         })
         .collect();
+        let unconfined = format!(
+            "{}\\[(?:[1-9]|[12][0-9]|3[0-2]) unread mail\\]{}$",
+            crate::task::schema_unconfined_identity_prefix(),
+            crate::task::schema_teaching_suffix(crate::task::TaskCommandSet::Legacy)
+        );
         schemars::json_schema!({"oneOf":[
             {"type":"string","enum":tasks},
-            {"type":"string","pattern":format!("(?:{}|{})", patterns[0], patterns[1])}
+            {"type":"string","pattern":format!("(?:{}|{}|{})", patterns[0], patterns[1], unconfined)}
         ]})
     }
 }

@@ -199,6 +199,9 @@ impl Adapter for PiAdapter {
         if let Some(offset) = task.find('\0') {
             return Err(LaunchError::TaskContainsNul { offset });
         }
+        if !ctx.extra_dirs.is_empty() {
+            return Err(LaunchError::ExtraDirectoriesUnsupported);
+        }
         let mut argv = vec![
             OsString::from(&self.config.command),
             "--mode".into(),
@@ -340,6 +343,7 @@ mod tests {
 
     fn ctx(env: &[EnvVar]) -> AgentCtx<'_> {
         AgentCtx {
+            extra_dirs: &[],
             agent: AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("a ulid"),
             cwd: Path::new("/repo"),
             agent_dir: Path::new(AGENT_DIR),
@@ -387,6 +391,7 @@ mod tests {
         );
         let servers = crate::mcp::fixture::servers(&["search", "memory"]);
         let context = AgentCtx {
+            extra_dirs: &[],
             mcp_servers: &servers,
             ..ctx(&[])
         };
@@ -454,6 +459,7 @@ mod tests {
         assert_eq!(
             PiAdapter::default().managed(
                 &AgentCtx {
+                    extra_dirs: &[],
                     mcp_servers: &servers,
                     ..ctx(&[])
                 },
@@ -503,6 +509,7 @@ mod tests {
         };
         http.url = "https://memory.example/mcp?quote=\"}\n".to_owned();
         let context = AgentCtx {
+            extra_dirs: &[],
             mcp_servers: &servers,
             ..ctx(&[])
         };

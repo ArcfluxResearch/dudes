@@ -92,6 +92,7 @@ struct Built {
     max_turns: Option<u32>,
     max_budget: Option<Usd>,
     mcp_servers: Vec<McpLaunch>,
+    extra_dirs: Vec<PathBuf>,
 }
 
 impl Built {
@@ -111,6 +112,7 @@ impl Built {
             max_turns,
             max_budget,
             mcp_servers,
+            extra_dirs,
         } = ctx;
         Self {
             agent: *agent,
@@ -122,6 +124,7 @@ impl Built {
             max_turns: *max_turns,
             max_budget: *max_budget,
             mcp_servers: mcp_servers.to_vec(),
+            extra_dirs: extra_dirs.to_vec(),
         }
     }
 }
@@ -576,6 +579,7 @@ fn every_field_of_the_launch_context_comes_from_the_agent_it_is_built_for() {
         max_turns: None,
         max_budget: None,
         mcp_servers: Vec::new(),
+        extra_dirs: Vec::new(),
     };
     let for_gamma = expected(gamma, "/repo/gamma", None);
 

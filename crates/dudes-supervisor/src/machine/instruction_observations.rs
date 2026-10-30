@@ -55,6 +55,7 @@ impl InstructionSource {
         selection: &ModelSelection,
     ) -> dudes_providers::instructions::InstructionDeclaration {
         let ctx = AgentCtx {
+            extra_dirs: &[],
             agent: self.agent,
             cwd,
             agent_dir: &self.agent_dir,
@@ -1908,6 +1909,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let adapter = self.adapters.get(row.provider)?;
         let agent_dir = self.agent_dir(agent);
         let ctx = AgentCtx {
+            extra_dirs: &[],
             agent,
             cwd,
             agent_dir: &agent_dir,

@@ -135,6 +135,7 @@ impl Fixture {
 
     fn ctx<'a>(&'a self, env: &'a [EnvVar]) -> AgentCtx<'a> {
         AgentCtx {
+            extra_dirs: &[],
             agent: AgentId::from_parts(1, 1),
             cwd: &self.hired.repositories.primary().execution.directory,
             agent_dir: self.private.outbox.parent().unwrap(),

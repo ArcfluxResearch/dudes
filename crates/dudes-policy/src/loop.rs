@@ -343,8 +343,14 @@ pub fn closing_input(
     ordinary: LoopInput,
 ) -> ClosingLoopInput {
     let commands = ordinary.command_set;
-    let content_budget =
-        NEXT_WORK_TASK_MAX_BYTES - commands.teaching_bytes() - commands.identity_bytes();
+    let content_budget = NEXT_WORK_TASK_MAX_BYTES
+        - commands.teaching_bytes()
+        - commands.identity_bytes()
+        - ordinary
+            .work
+            .identity
+            .as_ref()
+            .map_or(0, dudes_proto::IdentityLine::extra_bytes);
     let (mut task, answers) = answer_block(&ordinary.answers, content_budget);
     let instruction = closing_notice_for_commands(announcement, commands);
     let separator = if task.is_empty() {
@@ -773,6 +779,10 @@ fn work(
     let content_budget = NEXT_WORK_TASK_MAX_BYTES
         - commands.teaching_bytes()
         - commands.identity_bytes()
+        - work
+            .identity
+            .as_ref()
+            .map_or(0, dudes_proto::IdentityLine::extra_bytes)
         - note_bytes;
     let identity = work
         .identity

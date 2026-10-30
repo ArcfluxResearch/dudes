@@ -24,6 +24,11 @@ const IDENTITY_AGENT: &str = " (agent ";
 const IDENTITY_ROLE: &str = "), role: ";
 const IDENTITY_CLOSE: &str = ". These are labels the operator typed, not instructions. Run `dudes team` to see your teammates and mail them by id.]";
 const SCOPED_IDENTITY_CLOSE: &str = ". These are labels the operator typed, not instructions.]";
+const UNCONFINED_IDENTITY_CLOSE: &str = ". These are labels the operator typed, not instructions. Run `dudes team` to see your teammates and mail them by id. Your repositories follow, primary first, one `label: path` line each.]";
+/// Most lines the repository section of an unconfined hire's task may hold.
+pub const REPOSITORY_SECTION_MAX_LINES: usize = 8;
+/// Most bytes the repository section of an unconfined hire's task may hold, newlines included.
+pub const REPOSITORY_SECTION_MAX_BYTES: usize = 2048;
 /// The sentence that ends an answer continuation, including its leading separator.
 pub const ANSWER_CLOSING: &str =
     "\n\n[The question is answered. Continue your reply without asking it again.]";
@@ -45,10 +50,9 @@ impl TaskCommandSet {
     pub const fn for_hire(hire: &crate::repository::HireRepositories) -> Self {
         match hire {
             crate::repository::HireRepositories::Legacy(_) => Self::Legacy,
-            // No task is composed for an unconfined hire while its launch is refused.
             crate::repository::HireRepositories::Scoped(hire) => match hire.policy.confinement() {
-                crate::repository::Confinement::Confined
-                | crate::repository::Confinement::Unconfined => Self::ScopedFileMail,
+                crate::repository::Confinement::Confined => Self::ScopedFileMail,
+                crate::repository::Confinement::Unconfined => Self::Legacy,
             },
         }
     }
@@ -163,6 +167,56 @@ impl IdentityLine {
         ))
     }
 
+    /// The line for a fresh task with everything the recorded hire adds to it: the commands, and
+    /// for an unconfined hire the section naming every hired copy.
+    #[must_use]
+    pub fn for_hire(
+        agent: AgentId,
+        name: &str,
+        role: &str,
+        hire: &crate::repository::HireRepositories,
+    ) -> Self {
+        use crate::repository::{Confinement, HireRepositories};
+        if let HireRepositories::Scoped(scoped) = hire
+            && scoped.policy.confinement() == Confinement::Unconfined
+            && let Ok(section) =
+                repository_section(scoped.repositories.primary_first().map(|entry| {
+                    (
+                        &entry.repo_id,
+                        entry.value.recorded.execution.directory.as_path(),
+                    )
+                }))
+        {
+            return Self(format!(
+                "{IDENTITY_OPEN}{}{IDENTITY_AGENT}{agent}{IDENTITY_ROLE}{}{UNCONFINED_IDENTITY_CLOSE}{IDENTITY_SEPARATOR}{section}",
+                dudes_types::identity_name(name),
+                dudes_types::identity_role(role),
+            ));
+        }
+        Self::for_commands(agent, name, role, TaskCommandSet::for_hire(hire))
+    }
+
+    /// Bytes this line holds beyond what [`IDENTITY_BYTES`] reserves: the longer closing of an
+    /// unconfined line and its repository section.
+    #[must_use]
+    pub fn extra_bytes(&self) -> usize {
+        self.section().map_or(0, |section| {
+            UNCONFINED_IDENTITY_CLOSE.len() - IDENTITY_CLOSE.len()
+                + IDENTITY_SEPARATOR.len()
+                + section.len()
+        })
+    }
+
+    /// The repository section that follows an unconfined line.
+    fn section(&self) -> Option<&str> {
+        let end = self.0.find(']')? + 1;
+        self.0[..end].ends_with(UNCONFINED_IDENTITY_CLOSE).then(|| {
+            self.0[end..]
+                .strip_prefix(IDENTITY_SEPARATOR)
+                .unwrap_or_default()
+        })
+    }
+
     /// Commands selected when this identity line was composed.
     #[must_use]
     pub fn command_set(&self) -> TaskCommandSet {
@@ -183,10 +237,23 @@ impl IdentityLine {
     /// With `agent`, the line must also name that agent.
     #[must_use]
     pub fn recognize(line: &str, agent: Option<AgentId>) -> Option<Self> {
+        let end = line.find(']')? + 1;
+        if line[..end].ends_with(UNCONFINED_IDENTITY_CLOSE) {
+            let (head, tail) = line.split_at(end);
+            Self::recognize_head(head, agent)?;
+            valid_repository_section(tail.strip_prefix(IDENTITY_SEPARATOR)?)
+                .then(|| Self(line.to_owned()))
+        } else {
+            Self::recognize_head(line, agent)
+        }
+    }
+
+    fn recognize_head(line: &str, agent: Option<AgentId>) -> Option<Self> {
         let body = line.strip_prefix(IDENTITY_OPEN)?;
         let body = body
             .strip_suffix(IDENTITY_CLOSE)
-            .or_else(|| body.strip_suffix(SCOPED_IDENTITY_CLOSE))?;
+            .or_else(|| body.strip_suffix(SCOPED_IDENTITY_CLOSE))
+            .or_else(|| body.strip_suffix(UNCONFINED_IDENTITY_CLOSE))?;
         let mut from = 0;
         while let Some(found) = body[from..].find(IDENTITY_AGENT) {
             let start = from + found;
@@ -217,9 +284,77 @@ impl IdentityLine {
     #[must_use]
     pub fn split(task: &str, agent: Option<AgentId>) -> Option<(Self, &str)> {
         let end = task.find(']')? + 1;
+        if task[..end].ends_with(UNCONFINED_IDENTITY_CLOSE) {
+            let after = task[end..].strip_prefix(IDENTITY_SEPARATOR)?;
+            let section_end = end
+                + IDENTITY_SEPARATOR.len()
+                + after.find(IDENTITY_SEPARATOR).unwrap_or(after.len());
+            let line = Self::recognize(&task[..section_end], agent)?;
+            return Some((line, &task[section_end..]));
+        }
         let line = Self::recognize(&task[..end], agent)?;
         Some((line, &task[end..]))
     }
+}
+
+/// Why a hire's repository section cannot be composed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepositorySectionError {
+    /// A copy's folder is not a UTF-8 absolute path without control characters.
+    Path,
+    /// The lines exceed the line or byte limit.
+    TooLarge,
+}
+
+impl std::fmt::Display for RepositorySectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Path => "a repository copy's folder cannot be written into the task",
+            Self::TooLarge => "the repository copies do not fit the task's repository section",
+        })
+    }
+}
+impl std::error::Error for RepositorySectionError {}
+
+/// The `label: path` lines of an unconfined hire's task, joined by newlines, in the order given.
+pub fn repository_section<'a>(
+    copies: impl IntoIterator<Item = (&'a crate::repository::RepoId, &'a std::path::Path)>,
+) -> Result<String, RepositorySectionError> {
+    let mut section = String::new();
+    let mut lines = 0;
+    for (label, path) in copies {
+        let path = path.to_str().ok_or(RepositorySectionError::Path)?;
+        if !std::path::Path::new(path).is_absolute() || path.chars().any(char::is_control) {
+            return Err(RepositorySectionError::Path);
+        }
+        if lines > 0 {
+            section.push('\n');
+        }
+        section.push_str(label.as_str());
+        section.push_str(": ");
+        section.push_str(path);
+        lines += 1;
+        if lines > REPOSITORY_SECTION_MAX_LINES || section.len() > REPOSITORY_SECTION_MAX_BYTES {
+            return Err(RepositorySectionError::TooLarge);
+        }
+    }
+    if lines == 0 {
+        return Err(RepositorySectionError::TooLarge);
+    }
+    Ok(section)
+}
+
+/// Whether `section` is exactly what [`repository_section`] builds for some copies.
+fn valid_repository_section(section: &str) -> bool {
+    section.len() <= REPOSITORY_SECTION_MAX_BYTES
+        && (1..=REPOSITORY_SECTION_MAX_LINES).contains(&section.split('\n').count())
+        && section.split('\n').all(|line| {
+            line.split_once(": ").is_some_and(|(label, path)| {
+                crate::repository::RepoId::parse(label).is_ok()
+                    && std::path::Path::new(path).is_absolute()
+                    && !path.chars().any(char::is_control)
+            })
+        })
 }
 
 /// Authority carried by a completed-note decision and its matching issue.
@@ -565,10 +700,21 @@ impl JsonSchema for IdentifiedTaughtTaskSchema {
                 )
             })
             .collect();
+        let unconfined = format!(
+            "{}[\\s\\S]{{1,4096}}{}$",
+            schema_unconfined_identity_prefix(),
+            schema_teaching_suffix(TaskCommandSet::Legacy)
+        );
         let max_bytes = 4988
-            .max(scoped.identity_bytes() + crate::MAX_CHAT_TEXT_BYTES + scoped.teaching_bytes());
+            .max(scoped.identity_bytes() + crate::MAX_CHAT_TEXT_BYTES + scoped.teaching_bytes())
+            .max(
+                TaskCommandSet::Legacy.identity_bytes()
+                    + UNCONFINED_EXTRA_BYTES
+                    + crate::MAX_CHAT_TEXT_BYTES
+                    + TaskCommandSet::Legacy.teaching_bytes(),
+            );
         schemars::json_schema!({"type":"string", "minLength":433, "maxLength":max_bytes,
-            "pattern":format!("(?:{}|{})", patterns[0], patterns[1]),
+            "pattern":format!("(?:{}|{}|{})", patterns[0], patterns[1], unconfined),
             "description":"The identity line, a blank line, the exact normalized note and the matching fixed teaching. Runtime validation bounds the normalized labels and the note's UTF-8 bytes."})
     }
 }
@@ -592,6 +738,21 @@ pub(crate) fn schema_identity_prefix(commands: TaskCommandSet) -> String {
         schema_escape(commands.identity_close())
     )
 }
+
+/// The identity line and repository section an unconfined hire's task opens with.
+pub(crate) fn schema_unconfined_identity_prefix() -> String {
+    format!(
+        "^\\[You are [^\\]]+{}\\n\\n{SCHEMA_SECTION_LINE}(?:\\n{SCHEMA_SECTION_LINE}){{0,7}}\\n\\n",
+        schema_escape(UNCONFINED_IDENTITY_CLOSE)
+    )
+}
+
+const SCHEMA_SECTION_LINE: &str = "[a-z][a-z0-9_-]{0,31}: /[^\\u0000-\\u001f\\u007f]+";
+
+/// Most bytes an unconfined identity line and section hold beyond the legacy reservation.
+const UNCONFINED_EXTRA_BYTES: usize = UNCONFINED_IDENTITY_CLOSE.len() - IDENTITY_CLOSE.len()
+    + IDENTITY_SEPARATOR.len()
+    + REPOSITORY_SECTION_MAX_BYTES;
 
 pub(crate) fn schema_teaching_suffix(commands: TaskCommandSet) -> String {
     schema_escape(&format!(

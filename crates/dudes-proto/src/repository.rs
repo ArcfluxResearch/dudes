@@ -101,6 +101,18 @@ impl<T> RepositorySet<T> {
             .map(|entry| &entry.value)
     }
 
+    /// Members with the primary first, the others in recorded order.
+    pub fn primary_first(&self) -> impl Iterator<Item = &RepositoryEntry<T>> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.repo_id == self.primary)
+            .chain(
+                self.entries
+                    .iter()
+                    .filter(|entry| entry.repo_id != self.primary),
+            )
+    }
+
     /// The primary member, whose presence construction and deserialization enforce.
     #[must_use]
     pub fn primary(&self) -> &T {
@@ -736,9 +748,6 @@ impl RepositoryTurnGrant {
         if hired_lsn == Lsn::ZERO {
             return Err(Error::Issue);
         }
-        if hire.policy.require_confined().is_err() {
-            return Err(Error::Policy);
-        }
         let repositories = match ticket {
             None => hire.recorded().repositories,
             Some(round) => {
@@ -950,16 +959,13 @@ mod tests {
             };
             let granted =
                 RepositoryTurnGrant::select(Lsn::from_parts(1, 1).unwrap(), &scoped, None);
-            match confinement {
-                Confinement::Confined => assert_eq!(granted.unwrap().policy, policy),
-                Confinement::Unconfined => assert_eq!(
-                    granted,
-                    Err(crate::repository_state::history::RepositoryStateError::Policy)
-                ),
-            }
+            assert_eq!(granted.unwrap().policy, policy);
             assert_eq!(
                 crate::task::TaskCommandSet::for_hire(&HireRepositories::Scoped(scoped)),
-                crate::task::TaskCommandSet::ScopedFileMail
+                match confinement {
+                    Confinement::Confined => crate::task::TaskCommandSet::ScopedFileMail,
+                    Confinement::Unconfined => crate::task::TaskCommandSet::Legacy,
+                }
             );
         }
     }

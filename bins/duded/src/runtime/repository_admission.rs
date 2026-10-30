@@ -214,18 +214,16 @@ impl<'a> CurrentHireAdmission<'a> {
         )
     )]
     pub(super) fn require_repository_capability(&self, confinement: Confinement) -> Result<()> {
+        #[cfg(test)]
+        if self.current.test_hire_capability {
+            return Ok(());
+        }
         match confinement {
-            Confinement::Confined => {
-                #[cfg(test)]
-                if self.current.test_hire_capability {
-                    return Ok(());
-                }
-                anyhow::bail!(
-                    "restricted repository execution has no verified provider capability yet"
-                );
-            }
+            Confinement::Confined => anyhow::bail!(
+                "restricted repository execution has no verified provider capability yet"
+            ),
             Confinement::Unconfined => {
-                anyhow::bail!("unconfined repository execution is not enabled yet");
+                anyhow::bail!("unconfined repository execution is not enabled yet")
             }
         }
     }

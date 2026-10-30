@@ -104,6 +104,7 @@ pub(crate) fn generated_handlers(agent: AgentId, agent_dir: &Path) -> Settings {
 pub(crate) fn handlers_for(agent: AgentId, agent_dir: &Path, hook_command: &Path) -> Settings {
     let adapter = ClaudeAdapter::default();
     let ctx = AgentCtx {
+        extra_dirs: &[],
         agent,
         cwd: agent_dir,
         agent_dir,

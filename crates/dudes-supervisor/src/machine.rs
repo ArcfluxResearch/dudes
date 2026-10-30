@@ -2597,6 +2597,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         };
         let agent_dir = self.agent_dir(agent);
         let ctx = AgentCtx {
+            extra_dirs: &[],
             agent,
             cwd: repository.cwd(),
             agent_dir: &agent_dir,
@@ -3161,8 +3162,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Err(refusal) => return ManagedLaunch::Refused(LaunchError::McpServer(refusal)),
         };
         let agent_dir = self.agent_dir(agent);
-        let repository = match repositories {
-            IssueRepositories::Legacy(repository) => repository,
+        let unconfined_dirs;
+        let (cwd, extra_dirs): (&std::path::Path, &[PathBuf]) = match repositories {
+            IssueRepositories::Legacy(repository) => (repository.cwd(), &[]),
             IssueRepositories::Scoped(grant) => match grant.policy.confinement() {
                 dudes_proto::repository::Confinement::Confined => {
                     if !mcp_servers.is_empty() || row.mcp.first_edit.is_some() {
@@ -3187,13 +3189,24 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     }));
                 }
                 dudes_proto::repository::Confinement::Unconfined => {
-                    return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
+                    let mut copies = grant.repositories.primary_first();
+                    let Some(primary) = copies.next() else {
+                        return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
+                    };
+                    unconfined_dirs = copies
+                        .map(|entry| entry.value.execution.directory.clone())
+                        .collect::<Vec<_>>();
+                    (
+                        primary.value.execution.directory.as_path(),
+                        unconfined_dirs.as_slice(),
+                    )
                 }
             },
         };
         let ctx = AgentCtx {
             agent,
-            cwd: repository.cwd(),
+            cwd,
+            extra_dirs,
             agent_dir: &agent_dir,
             daemon_env: &self.config.daemon_env,
             sandbox: row.sandbox,

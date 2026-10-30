@@ -161,6 +161,7 @@ impl Fixture {
         })
         .with_managed_home(profile.home.clone());
         let ctx = AgentCtx {
+            extra_dirs: &[],
             agent: AgentId::from_parts(1, 1),
             cwd: &grant.repositories.primary().execution.directory,
             agent_dir: &agent_dir,

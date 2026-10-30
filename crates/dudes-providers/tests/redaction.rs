@@ -105,6 +105,7 @@ fn a_formatted_launch_spec_prints_argv_and_env_names_but_no_env_value() {
 fn a_formatted_agent_ctx_prints_no_pre_scrub_daemon_env_value() {
     let env = daemon_env();
     let ctx = AgentCtx {
+        extra_dirs: &[],
         agent: AgentId::parse(AGENT).unwrap(),
         cwd: Path::new("/tmp/dudes-fixture"),
         agent_dir: Path::new("/tmp/dudes-data/agents/01ARZ3NDEKTSV4RRFFQ69G5FAV"),
@@ -149,6 +150,7 @@ fn the_value_is_redacted_wherever_an_env_var_is_printed() {
 
     let env = daemon_env();
     let ctx = AgentCtx {
+        extra_dirs: &[],
         agent: AgentId::parse(AGENT).unwrap(),
         cwd: Path::new("/tmp/dudes-fixture"),
         agent_dir: Path::new("/tmp/dudes-data/agents/01ARZ3NDEKTSV4RRFFQ69G5FAV"),

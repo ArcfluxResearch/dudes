@@ -208,12 +208,7 @@ impl AgentRow {
     /// now.
     #[must_use]
     pub fn identity_line(&self, agent: AgentId) -> dudes_proto::IdentityLine {
-        dudes_proto::IdentityLine::for_commands(
-            agent,
-            &self.name,
-            &self.role,
-            self.task_command_set(),
-        )
+        dudes_proto::IdentityLine::for_hire(agent, &self.name, &self.role, &self.repositories)
     }
 }
 

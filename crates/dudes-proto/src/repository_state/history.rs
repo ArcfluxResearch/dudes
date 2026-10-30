@@ -252,7 +252,15 @@ pub fn validate_shape(record: &Record) -> Result<(), RepositoryStateError> {
         }
         Record::AgentHiredWithUnconfinedRepositories(hire) => {
             validate_kind_policy(&hire.repositories, Confinement::Unconfined)?;
-            validate_hire_shape(&hire.repositories)
+            validate_hire_shape(&hire.repositories)?;
+            crate::task::repository_section(
+                hire.repositories
+                    .repositories
+                    .primary_first()
+                    .map(|entry| (&entry.repo_id, entry.value.execution.directory.as_path())),
+            )
+            .map(drop)
+            .map_err(|_| RepositoryStateError::Binding)
         }
         Record::TurnIssuedWithRepositories(issued) => {
             let grant = &issued.grant;

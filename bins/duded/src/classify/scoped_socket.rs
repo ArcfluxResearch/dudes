@@ -65,14 +65,14 @@ impl Authorizer for ScopedSocketAuthorizer {
         if let PeerProvenance::Agent(agent) = provenance
             && let Some(confinement) = self.hires.confinement(agent)
         {
-            return Err(Refusal::unauthorized(match confinement {
+            match confinement {
                 Confinement::Confined => {
-                    format!("{method} is not yet available in a multi-repo ticket")
+                    return Err(Refusal::unauthorized(format!(
+                        "{method} is not yet available in a multi-repo ticket"
+                    )));
                 }
-                Confinement::Unconfined => {
-                    format!("{method} is not yet available to an unconfined multi-repo hire")
-                }
-            }));
+                Confinement::Unconfined => {}
+            }
         }
         Ok(role)
     }
@@ -189,7 +189,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_unconfined_hire_is_refused_with_its_own_reason() {
+    fn the_socket_admits_an_unconfined_hires_agent_and_still_refuses_a_confined_one() {
+        let (mut world, confined, agent) = pending_hire();
+        world
+            .apply_checked(Lsn::from_parts(1, 256).unwrap(), &confined)
+            .unwrap();
+        let params = json!({"token": TOKEN});
+        let peer = PeerProvenance::Agent(agent);
+        let authorizer = ScopedSocketAuthorizer::new(classifier(agent), ScopedHires::new(&world));
+        assert!(
+            authorizer
+                .authorize(Presented::from_params(Some(&params)), peer, "agent.ask")
+                .is_err()
+        );
+
         let (mut world, _, agent) = pending_hire();
         let unconfined = entry(samples::record(
             RecordKind::AgentHiredWithUnconfinedRepositories,
@@ -198,19 +211,9 @@ pub(crate) mod tests {
             .apply_checked(Lsn::from_parts(1, 256).unwrap(), &unconfined)
             .unwrap();
         let authorizer = ScopedSocketAuthorizer::new(classifier(agent), ScopedHires::new(&world));
-        let params = json!({"token": TOKEN});
-        let refusal = authorizer
-            .authorize(
-                Presented::from_params(Some(&params)),
-                PeerProvenance::Agent(agent),
-                "agent.ask",
-            )
-            .unwrap_err();
-        assert!(
-            refusal
-                .to_string()
-                .contains("agent.ask is not yet available to an unconfined multi-repo hire"),
-            "{refusal}"
+        assert_eq!(
+            authorizer.authorize(Presented::from_params(Some(&params)), peer, "agent.ask"),
+            Ok(PeerRole::Agent { agent })
         );
     }
 

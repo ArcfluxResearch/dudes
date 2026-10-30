@@ -306,6 +306,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             })
             .collect::<io::Result<Vec<_>>>()?;
         let ctx = AgentCtx {
+            extra_dirs: &[],
             agent: row.agent,
             cwd: &grant.repositories.primary().execution.directory,
             agent_dir: &agent_dir,
