@@ -14,7 +14,7 @@ import { restoreFocusAfterDialog } from '../src/renderer/focus.ts';
 import { fakePage, press } from './helpers/fake-page.mjs';
 import { ADA, GRACE, agent, cardId, subscribe, ticketCard, TWO_PROJECTS, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
 
-let server, store, ticket, detail, git, Control, browserControlDeps, TicketNoticeHost, StreamNotice, JournalStoppedBanner;
+let server, store, ticket, detail, git, browse, FirstTaskForm, Control, browserControlDeps, TicketNoticeHost, StreamNotice, JournalStoppedBanner;
 const seen = [];
 const storedDrafts = new Map();
 let reply;
@@ -26,8 +26,9 @@ before(async () => {
   ticket = await server.ssrLoadModule('/src/renderer/ticket/ticket.ts');
   detail = await server.ssrLoadModule('/src/renderer/ticket/detail.ts');
   git = await server.ssrLoadModule('/src/renderer/git/git.ts');
+  browse = await server.ssrLoadModule('/src/renderer/ticket/browseState.ts');
   ({ Control } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
-  ({ TicketNoticeHost } = await server.ssrLoadModule('/src/renderer/ticket/TicketBoard.tsx'));
+  ({ TicketNoticeHost, FirstTaskForm } = await server.ssrLoadModule('/src/renderer/ticket/TicketBoard.tsx'));
   ({ StreamNotice } = await server.ssrLoadModule('/src/renderer/StreamNotice.tsx'));
   ({ JournalStoppedBanner } = await server.ssrLoadModule('/src/renderer/JournalStoppedBanner.tsx'));
   ({ browserControlDeps } = await server.ssrLoadModule('/src/renderer/control/control.ts'));

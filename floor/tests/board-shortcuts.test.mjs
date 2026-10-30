@@ -61,6 +61,7 @@ test('the help sheet lists every shortcut and names the menu key for the platfor
   assert.deepEqual(shortcutRows(true).map((row) => `${row.keys.join(' ')}: ${row.label}`), [
     '/: Search tickets', 'c: New ticket', 'j ↓: Next ticket', 'k ↑: Previous ticket', 'Enter: Open the selected ticket',
     'Esc: Close the top layer', 'b: Show the Board', 'l: Show the List', '⌘K: Command menu', '?: Show this sheet',
+    '⌘↵: Create the ticket, in the New ticket dialog', 'p d a: Open Priority, Done when or Agent, in the New ticket dialog',
   ]);
   assert.deepEqual(shortcutRows(false).find((row) => row.label === 'Command menu').keys, ['Ctrl+K']);
 });

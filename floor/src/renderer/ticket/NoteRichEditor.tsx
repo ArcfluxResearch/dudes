@@ -15,6 +15,8 @@ import { nextNote } from './noteText.ts';
 
 export { opensRich } from './noteRich.ts';
 
+const BARE_EDITOR = 'min-h-16 max-h-60 border-transparent bg-transparent px-0 hover:border-transparent focus-visible:border-transparent focus-visible:outline-0';
+
 const EDITOR = cn(
   'box-border min-h-24 max-h-80 w-full overflow-y-auto rounded-md border border-line-strong bg-field px-3 py-2 font-sans text-base',
   'text-ink [overflow-wrap:anywhere] hover:border-muted focus-visible:border-focus',
@@ -44,12 +46,14 @@ const TOOLS: readonly Tool[] = [
  * Edits `original`, a note that opens in the editor. `onNote` gets the original string for as long as the document is
  * unchanged, so saving a note nobody touched never rewrites it, and the editor's own Markdown once it is.
  */
-export function RichNoteEditor({ id, original, onNote, onUnfit }: {
+export function RichNoteEditor({ id, original, onNote, onUnfit, bare = false }: {
   readonly id: string | undefined;
   readonly original: string;
   readonly onNote: (value: string) => void;
   /** Called when the editor built a document that does not match the note, so the page can fall back to the text box. */
   readonly onUnfit: () => void;
+  /** No box and no formatting bar until the note has focus. */
+  readonly bare?: boolean;
 }) {
   const baseline = useRef<string | null>(null);
   const [edited, setEdited] = useState(false);
@@ -60,7 +64,7 @@ export function RichNoteEditor({ id, original, onNote, onUnfit }: {
     contentType: 'markdown',
     injectCSS: false,
     editorProps: {
-      attributes: { ...(id === undefined ? {} : { id }), role: 'textbox', 'aria-multiline': 'true', 'aria-label': 'Note', class: EDITOR },
+      attributes: { ...(id === undefined ? {} : { id }), role: 'textbox', 'aria-multiline': 'true', 'aria-label': 'Note', class: bare ? cn(EDITOR, BARE_EDITOR) : EDITOR },
     },
     onCreate: ({ editor: created }) => {
       baseline.current = created.getMarkdown().trim();
@@ -76,7 +80,7 @@ export function RichNoteEditor({ id, original, onNote, onUnfit }: {
   });
   if (editor === null) return null;
   return <div className="flex flex-col gap-2">
-    <div role="toolbar" aria-label="Formatting" className="flex flex-wrap gap-1">
+    <div role="toolbar" aria-label="Formatting" className={cn('flex-wrap gap-1', bare ? 'order-last hidden group-focus-within/note:flex' : 'flex')}>
       {TOOLS.map((tool) => <Button key={tool.label} size="sm" variant={tool.active(editor) ? 'secondary' : 'ghost'}
         aria-pressed={tool.active(editor)} onClick={() => { tool.run(editor); }}>{tool.label}</Button>)}
     </div>
