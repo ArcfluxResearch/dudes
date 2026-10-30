@@ -1014,3 +1014,270 @@ test('unknown instruction coverage in an undeclared hired repository blocks Acce
       review_watermark: INSTRUCTION_WATERMARK, agent: ADA, message: 'Complete the docs instruction comparison.' }]]);
   } finally { await app.close(); }
 });
+
+const composerForm = (app) => app.page.host.querySelector('.ticket-composer').querySelector('form');
+const typeTitle = (app, value) => act(async () => propsOf(app.page.host.querySelector('[name="title"]')).onChange({ target: { value } }));
+const keyIn = (app, key, extra = {}) => act(async () => propsOf(composerForm(app)).onKeyDownCapture({
+  key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, nativeEvent: {}, target: app.page.document.body, currentTarget: composerForm(app),
+  preventDefault() {}, stopPropagation() {}, ...extra }));
+const created = () => seen.filter(([url]) => url === '/floor/ticket');
+const makes = (card = cardId(2)) => (url) => ({ status: 200, text: async () => JSON.stringify({ state: 'created', card, seq: 0, lsn: '4097' }) });
+
+test('Cmd+Enter or Ctrl+Enter creates the ticket from anywhere in the dialog, and only when Create is ready', async () => {
+  const app = await mount([]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    reply = makes();
+    await keyIn(app, 'Enter', { metaKey: true });
+    assert.equal(created().length, 0, 'an empty title is not created');
+    await typeTitle(app, 'Ship it from the keyboard');
+    let stopped = false;
+    await keyIn(app, 'Enter', { ctrlKey: true, stopPropagation() { stopped = true; } });
+    assert.equal(created().length, 1);
+    assert.equal(created()[0][1].title, 'Ship it from the keyboard');
+    assert.equal(stopped, true, 'the note editor never sees the shortcut');
+  } finally { await app.close(); }
+});
+
+test('Escape keeps the draft, the next open says so, and Discard clears it', async () => {
+  const app = await mount([]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(app.page.host.querySelector('.ticket-draft-kept'), null, 'a new draft is not news');
+    await typeTitle(app, 'Half written');
+    await act(async () => propsOf(app.page.host.querySelector('.ticket-dialog')).onCancel({ preventDefault() {} }));
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(app.page.host.querySelector('[name="title"]').value, 'Half written');
+    assert.match(textOf(app.page.host.querySelector('.ticket-draft-kept')), /Draft kept\./);
+    await act(async () => press(app.page.host.querySelector('.ticket-draft-discard')));
+    assert.equal(app.page.host.querySelector('[name="title"]').value, '');
+    assert.equal(app.page.host.querySelector('.ticket-draft-kept'), null);
+    assert.equal(storedDrafts.has('dudes.floor.new-ticket-draft'), false);
+  } finally { await app.close(); }
+});
+
+test('Create more keeps the chips, clears the text, says what was made and opens it on request', async () => {
+  const app = await mount([], { agents: [agent(), agent(GRACE, 'Grace')] });
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    await act(async () => press(app.page.host.querySelector('.ticket-create-more').querySelector('[role="switch"]')));
+    assert.equal(storedDrafts.get('dudes.floor.new-ticket-create-more'), 'true');
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="priority"]'), 'high'));
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="agent"]'), GRACE));
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="check"]'), 'second'));
+    await typeTitle(app, 'First of several');
+    await act(async () => propsOf(app.page.host.querySelector('[data-ticket-note]').querySelector('textarea')).onChange({ target: { value: 'Some details' } }));
+    reply = (url, body) => url.endsWith('/assign')
+      ? { status: 200, text: async () => JSON.stringify({ state: 'assigned', card: cardId(2), seq: 1, lsn: '4098', start: { state: 'started' } }) }
+      : makes()(url, body);
+    await act(async () => propsOf(composerForm(app)).onSubmit({ preventDefault() {} }));
+    const dialog = app.page.host.querySelector('.ticket-dialog');
+    assert.equal(dialog.getAttribute('data-composer'), 'true', 'the dialog stays on the composer');
+    assert.equal(app.page.host.querySelector('[name="title"]').value, '');
+    assert.equal(propsOf(app.page.host.querySelector('[data-ticket-note]').querySelector('textarea')).value, '');
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="priority"]')), 'high');
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="agent"]')), GRACE);
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="check"]')), 'second');
+    assert.deepEqual(JSON.parse(storedDrafts.get('dudes.floor.new-ticket-draft')), { title: '', note: '', project: 'service', check: 'second', agent: GRACE, priority: 'high' });
+    assert.match(textOf(app.page.host.querySelector('.ticket-made')), /Created: First of several/);
+    await app.render({ ...app.floor, cards: [{ ...ticketCard(2, 'doing', { claimed_by: GRACE }), seq: 1 }] });
+    await act(async () => press(app.page.host.querySelector('.ticket-made-open')));
+    assert.equal(app.page.host.querySelector('.ticket-dialog').querySelector('.ticket-panel').getAttribute('data-selected-card-id'), cardId(2));
+  } finally { await app.close(); }
+});
+
+test('the dialog opens on the Board filters when they are valid, and on a draft with text as it was', async () => {
+  const west = agent(GRACE, 'Grace', { workspace: { id: 'website', label: 'Website' } });
+  let app = await mount([], { agents: [agent(), west] });
+  try {
+    browse.setBrowse({ project: 'website', agent: GRACE });
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="project"]')), 'website');
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="agent"]')), GRACE);
+    await app.close();
+    browse.setBrowse({ project: 'gone', agent: 'nobody' });
+    app = await mount([], { agents: [agent(), west] });
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="project"]')), 'service', 'a filter that no longer exists is ignored');
+    await typeTitle(app, 'Typed in service');
+    await app.close();
+    browse.setBrowse({ project: 'website', agent: '' });
+    app = await mount([], { agents: [agent(), west] });
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(app.page.host.querySelector('[name="title"]').value, 'Typed in service');
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="project"]')), 'service', 'text already typed keeps its project');
+  } finally { browse.setBrowse({ project: '', agent: '' }); await app.close(); }
+});
+
+test('the last project used is the default, and the To do plus opens the dialog', async () => {
+  let app = await mount([]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-column-new')));
+    assert.equal(app.page.host.querySelector('.ticket-dialog').getAttribute('data-composer'), 'true');
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="project"]'), 'website'));
+    await typeTitle(app, 'In the website');
+    reply = makes();
+    await act(async () => propsOf(composerForm(app)).onSubmit({ preventDefault() {} }));
+    await app.close();
+    app = await mount([]);
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="project"]')), 'website');
+  } finally { await app.close(); }
+});
+
+test('priority is saved with the draft and read back', async () => {
+  let app = await mount([]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    await typeTitle(app, 'Needs a priority');
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="priority"]'), 'urgent'));
+    assert.equal(JSON.parse(storedDrafts.get('dudes.floor.new-ticket-draft')).priority, 'urgent');
+    await app.close();
+    app = await mount([]);
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="priority"]')), 'urgent');
+    reply = makes();
+    await act(async () => propsOf(composerForm(app)).onSubmit({ preventDefault() {} }));
+    assert.equal(created()[0][1].priority, 'urgent');
+  } finally { await app.close(); }
+});
+
+test('a title over 256 bytes is refused in a sentence before Create, and a count shows from 200 bytes', async () => {
+  const app = await mount([]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    await typeTitle(app, 'a'.repeat(199));
+    assert.equal(app.page.host.querySelector('.ticket-title-count'), null);
+    await typeTitle(app, 'a'.repeat(210));
+    assert.match(textOf(app.page.host.querySelector('.ticket-title-count')), /210 of 256 bytes/);
+    await typeTitle(app, '界'.repeat(100));
+    assert.equal(textOf(app.page.host.querySelector('.ticket-title-count')), 'The title is 300 bytes and the limit is 256. Shorten it.');
+    assert.equal(app.page.host.querySelector('.ticket-create').disabled, true);
+    assert.equal(textOf(app.page.host.querySelector('.ticket-create-reason')), 'The title is 300 bytes and the limit is 256. Shorten it.');
+    await keyIn(app, 'Enter', { metaKey: true });
+    assert.equal(created().length, 0);
+  } finally { await app.close(); }
+});
+
+test('pasting several lines into an empty title fills the note too, and one Cmd+Z restores the plain paste', async () => {
+  const app = await mount([]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    let prevented = 0;
+    const title = () => propsOf(app.page.host.querySelector('[name="title"]'));
+    const paste = (text) => act(async () => title().onPaste({ clipboardData: { getData: () => text }, preventDefault() { prevented += 1; } }));
+    await paste('Only one line');
+    assert.equal(prevented, 0, 'one line pastes as usual');
+    await paste('Fix the login page\n\nIt loops after sign-in.\nSteps: sign in twice.');
+    assert.equal(prevented, 1);
+    assert.equal(app.page.host.querySelector('[name="title"]').value, 'Fix the login page');
+    assert.equal(propsOf(app.page.host.querySelector('[data-ticket-note]').querySelector('textarea')).value, 'It loops after sign-in.\nSteps: sign in twice.');
+    await paste('Pasted over a title');
+    assert.equal(prevented, 1, 'a title that is not empty is never split');
+    await act(async () => title().onKeyDown({ key: 'z', metaKey: true, ctrlKey: false, shiftKey: false, altKey: false, preventDefault() {} }));
+    assert.equal(app.page.host.querySelector('[name="title"]').value, 'Fix the login page It loops after sign-in. Steps: sign in twice.');
+    assert.equal(propsOf(app.page.host.querySelector('[data-ticket-note]').querySelector('textarea')).value, '');
+    let again = false;
+    await act(async () => title().onKeyDown({ key: 'z', metaKey: true, ctrlKey: false, shiftKey: false, altKey: false, preventDefault() { again = true; } }));
+    assert.equal(again, false, 'the undo is used once');
+  } finally { await app.close(); }
+});
+
+test('P, D and A open the chips when no text field has focus, and never while one is typed in', async () => {
+  const app = await mount([]);
+  const prototype = Object.getPrototypeOf(app.page.host);
+  Object.assign(prototype, { showPopover() {}, hidePopover() {}, scrollIntoView() {} });
+  app.page.document.documentElement = { clientHeight: 800, clientWidth: 1000 };
+  Object.assign(app.page.document.defaultView, { addEventListener() {}, removeEventListener() {} });
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    const open = (field) => app.page.host.querySelector(`[data-field="${field}"]`).getAttribute('aria-expanded');
+    const field = app.page.host.querySelector('[name="title"]');
+    await keyIn(app, 'p', { target: Object.assign(field, { tagName: 'INPUT' }) });
+    assert.equal(open('priority'), 'false');
+    await keyIn(app, 'p');
+    assert.equal(open('priority'), 'true');
+    await act(async () => propsOf(app.page.host.querySelector('[data-field="priority"]')).onKeyDown({
+      key: 'Escape', altKey: false, ctrlKey: false, metaKey: false, preventDefault() {}, stopPropagation() {} }));
+    await keyIn(app, 'd');
+    assert.equal(open('check'), 'true');
+    await keyIn(app, 'D', { shiftKey: true });
+    await keyIn(app, 'a', { metaKey: true });
+    assert.equal(open('agent'), 'false');
+    await keyIn(app, 'a');
+    assert.equal(open('agent'), 'true');
+  } finally {
+    for (const name of ['showPopover', 'hidePopover', 'scrollIntoView']) delete prototype[name];
+    await app.close();
+  }
+});
+
+test('a similar open ticket is shown after a pause, and opening it takes two presses and keeps the draft', async () => {
+  const app = await mount([ticketCard(1, 'todo', { title: 'Fix the login page' }, { project: 'service' }),
+    ticketCard(3, 'done', { title: 'Fix the login page again' }, { project: 'service' })]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    await typeTitle(app, 'login page broken');
+    assert.equal(app.page.host.querySelector('.ticket-similar'), null, 'not before the pause');
+    await act(async () => { await new Promise((done) => setTimeout(done, 260)); });
+    const list = app.page.host.querySelector('.ticket-similar');
+    assert.equal(textOf(list), 'Similar open ticket: Fix the login page · To doOpen');
+    await act(async () => press(app.page.host.querySelector('.ticket-similar-open')));
+    assert.equal(app.page.host.querySelector('.ticket-dialog').getAttribute('data-composer'), 'true', 'one press only asks');
+    assert.match(textOf(app.page.host.querySelector('.ticket-similar')), /Leave draft and open/);
+    await act(async () => press(app.page.host.querySelector('.ticket-similar-open')));
+    assert.equal(app.page.host.querySelector('.ticket-dialog').querySelector('.ticket-panel').getAttribute('data-selected-card-id'), cardId(1));
+    assert.equal(JSON.parse(storedDrafts.get('dudes.floor.new-ticket-draft')).title, 'login page broken');
+  } finally { await app.close(); }
+});
+
+test('the outcome line and the agent chip follow the choices, and a full queue shows before Create', async () => {
+  const full = Array.from({ length: 8 }, (_, at) => ticketCard(at + 10, 'claimed', { claimed_by: GRACE }, { position: at + 1, project: 'service' }));
+  const app = await mount(full, { agents: [agent(), agent(GRACE, 'Grace')] });
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    const outcome = () => textOf(app.page.host.querySelector('.ticket-outcome'));
+    assert.equal(outcome(), 'Goes to To do, 1st by priority. The Done when check may already be true.');
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="agent"]'), ADA));
+    assert.equal(outcome(), 'Ada starts it now, in the shared folder. The Done when check may already be true.');
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="check"]'), 'second'));
+    assert.equal(outcome(), 'Ada starts it now, in the shared folder.');
+    assert.match(textOf(app.page.host.querySelector('[data-field="agent"]')), /Agent: Ada/);
+    const grace = app.page.host.querySelector('#' + app.page.host.querySelector('[data-field="agent"]').getAttribute('aria-controls')).querySelector(`[data-value="${GRACE}"]`);
+    assert.equal(grace.getAttribute('aria-disabled'), 'true');
+    assert.match(textOf(grace), /GraceQueue full \(8 of 8\) · Shared folder/);
+  } finally { await app.close(); }
+});
+
+test('a failed create keeps the draft and every chip, and the daemon\'s words show', async () => {
+  const app = await mount([]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    await typeTitle(app, 'Will be refused');
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="priority"]'), 'low'));
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="agent"]'), ADA));
+    reply = () => ({ status: 409, text: async () => JSON.stringify({ state: 'refused', reason: 'limit_reached' }) });
+    await act(async () => propsOf(composerForm(app)).onSubmit({ preventDefault() {} }));
+    assert.equal(app.page.host.querySelector('[name="title"]').value, 'Will be refused');
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="priority"]')), 'low');
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="agent"]')), ADA);
+    assert.match(textOf(app.page.host.querySelector('.ticket-notice')), /Too many tickets for now/);
+  } finally { await app.close(); }
+});
+
+test('the first task refuses a first line over 256 bytes in a sentence, before Start', async () => {
+  subscribe(store, { agents: [agent()] });
+  const page = pageForTickets();
+  const root = createRoot(page.host);
+  try {
+    const floor = store.getFloorState();
+    const agents = [{ id: ADA, name: 'Ada', check: { id: 'default', revision: 'a'.repeat(64), label: 'default passes' } }];
+    await act(async () => root.render(createElement(FirstTaskForm, { floor, agents })));
+    const write = (value) => act(async () => propsOf(page.host.querySelector('textarea')).onChange({ target: { value } }));
+    await write('Add a dark mode switch');
+    assert.equal(page.host.querySelector('.first-task-start').disabled, false);
+    await write('界'.repeat(100));
+    assert.equal(page.host.querySelector('.first-task-start').disabled, true);
+    assert.match(textOf(page.host), /The title is 300 bytes and the limit is 256\. Shorten it\./);
+  } finally { await act(async () => root.unmount()); page.restore(); }
+});
