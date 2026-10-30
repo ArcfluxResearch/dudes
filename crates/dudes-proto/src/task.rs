@@ -169,31 +169,39 @@ impl IdentityLine {
 
     /// The line for a fresh task with everything the recorded hire adds to it: the commands, and
     /// for an unconfined hire the section naming every hired copy.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// An unconfined hire whose section cannot be composed; it never falls back to a line without
+    /// the section.
     pub fn for_hire(
         agent: AgentId,
         name: &str,
         role: &str,
         hire: &crate::repository::HireRepositories,
-    ) -> Self {
+    ) -> Result<Self, RepositorySectionError> {
         use crate::repository::{Confinement, HireRepositories};
         if let HireRepositories::Scoped(scoped) = hire
             && scoped.policy.confinement() == Confinement::Unconfined
-            && let Ok(section) =
-                repository_section(scoped.repositories.primary_first().map(|entry| {
-                    (
-                        &entry.repo_id,
-                        entry.value.recorded.execution.directory.as_path(),
-                    )
-                }))
         {
-            return Self(format!(
+            let section = repository_section(scoped.repositories.primary_first().map(|entry| {
+                (
+                    &entry.repo_id,
+                    entry.value.recorded.execution.directory.as_path(),
+                )
+            }))?;
+            return Ok(Self(format!(
                 "{IDENTITY_OPEN}{}{IDENTITY_AGENT}{agent}{IDENTITY_ROLE}{}{UNCONFINED_IDENTITY_CLOSE}{IDENTITY_SEPARATOR}{section}",
                 dudes_types::identity_name(name),
                 dudes_types::identity_role(role),
-            ));
+            )));
         }
-        Self::for_commands(agent, name, role, TaskCommandSet::for_hire(hire))
+        Ok(Self::for_commands(
+            agent,
+            name,
+            role,
+            TaskCommandSet::for_hire(hire),
+        ))
     }
 
     /// Bytes this line holds beyond what [`IDENTITY_BYTES`] reserves: the longer closing of an
@@ -220,7 +228,7 @@ impl IdentityLine {
     /// Commands selected when this identity line was composed.
     #[must_use]
     pub fn command_set(&self) -> TaskCommandSet {
-        if self.0.ends_with(SCOPED_IDENTITY_CLOSE) {
+        if self.section().is_none() && self.0.ends_with(SCOPED_IDENTITY_CLOSE) {
             TaskCommandSet::ScopedFileMail
         } else {
             TaskCommandSet::Legacy
@@ -346,11 +354,13 @@ pub fn repository_section<'a>(
 
 /// Whether `section` is exactly what [`repository_section`] builds for some copies.
 fn valid_repository_section(section: &str) -> bool {
+    let mut labels = std::collections::BTreeSet::new();
     section.len() <= REPOSITORY_SECTION_MAX_BYTES
         && (1..=REPOSITORY_SECTION_MAX_LINES).contains(&section.split('\n').count())
         && section.split('\n').all(|line| {
             line.split_once(": ").is_some_and(|(label, path)| {
                 crate::repository::RepoId::parse(label).is_ok()
+                    && labels.insert(label)
                     && std::path::Path::new(path).is_absolute()
                     && !path.chars().any(char::is_control)
             })

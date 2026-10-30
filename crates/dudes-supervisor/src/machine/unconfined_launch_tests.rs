@@ -104,3 +104,22 @@ fn a_confined_grant_still_takes_the_scoped_launch() {
     };
     assert!(matches!(prepared.spawn, ManagedSpawn::Scoped { .. }));
 }
+
+#[test]
+fn a_grant_that_leaves_a_hired_copy_out_is_refused() {
+    let (harness, agent, mut grant) = fixture(RepositoryPolicy::OperatorTrustV1);
+    let kept: Vec<_> = grant.repositories.entries()[..2].to_vec();
+    grant.repositories = RepositorySet::new(kept[0].repo_id.clone(), kept).unwrap();
+    let row = harness.supervisor.world().agents[&agent].clone();
+    assert!(matches!(
+        harness.supervisor.launch(
+            agent,
+            &row,
+            Some(&IssueRepositories::Scoped(Box::new(grant))),
+            "task",
+            &TurnSession::Assigned,
+            &ModelSelection::provider_default(),
+        ),
+        ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable)
+    ));
+}

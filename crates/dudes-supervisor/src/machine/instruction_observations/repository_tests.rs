@@ -755,7 +755,7 @@ fn fresh_scoped_ordinary_and_closing_work_use_the_recorded_hire_even_for_one_rep
         panic!("ordinary work")
     };
     assert_scoped_guidance(&task);
-    assert!(task.starts_with(row.identity_line(agent).as_str()));
+    assert!(task.starts_with(row.identity_line(agent).unwrap().as_str()));
     let closing = dudes_policy::closing_input(Lsn(50), agent, goal, input);
     let dudes_policy::ClosingDecided::Policy(dudes_policy::Decided {
         decision: LoopDecision::Continue { task },

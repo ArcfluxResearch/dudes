@@ -655,6 +655,18 @@ pub enum Input {
         /// The not-appended browser dispatch intent being refused, when applicable.
         dispatch_token: Option<PersistToken>,
     },
+    /// A repository copy of the agent's hire is missing or replaced, found before the host was
+    /// called; an issued task remains owed.
+    LaunchWorktreeMissing {
+        /// Owning agent.
+        agent: AgentId,
+        /// Issued managed work.
+        turn: TurnId,
+        /// The leased copy that is no longer there.
+        worktree: dudes_types::WorktreeId,
+        /// The not-appended browser dispatch intent being refused, when applicable.
+        dispatch_token: Option<PersistToken>,
+    },
     /// An Attached opening attempt failed after its starting observation was durable.
     InstructionAttachedOpenFailed {
         /// Captured physical starting observation, unaffected by a successor attachment.

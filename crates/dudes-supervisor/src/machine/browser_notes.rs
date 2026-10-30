@@ -611,7 +611,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             goal_id,
             completion_lsn,
             note,
-            row.identity_line(agent),
+            row.identity_line(agent)?,
             CompletedNoteState {
                 control: Control {
                     halted: row.halted,

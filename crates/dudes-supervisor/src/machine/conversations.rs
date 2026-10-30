@@ -84,7 +84,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             context_lsn: row.context_lsn,
             text: note.task.as_ref().unwrap_or(&note.text).clone(),
             answer: note.answer_to.is_some(),
-            identity: row.identity_line(agent),
+            identity: row.identity_line(agent)?,
             control: Control {
                 halted: row.halted,
                 paused: row.paused,
