@@ -122,7 +122,6 @@ impl CurrentHireAdmission<'_> {
         project: &str,
         selected: Option<&[RepoId]>,
     ) -> anyhow::Result<TicketDeclaration> {
-        self.require_repository_capability(self.current.hire_policy().confinement())?;
         let (_, observed) = self.current_project_repositories(world, project)?;
         let wanted = selected.map(|ids| ids.iter().collect::<BTreeSet<_>>());
         if let Some(ids) = selected {
@@ -142,6 +141,7 @@ impl CurrentHireAdmission<'_> {
                 IncompleteDeclaration
             );
         }
+        self.require_repository_capability(self.current.hire_policy().confinement())?;
         let primary = observed.repositories.primary_id();
         let entries: Vec<_> = observed
             .repositories
