@@ -82,6 +82,7 @@ export interface InstructionReview {
 }
 
 const REPO_ID = /^[a-z][a-z0-9_-]{0,31}$/;
+const LEASE_ID = /^[0-9a-f]{32}$/;
 const ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const UTF8 = new TextEncoder();
 function object(value: unknown): value is Record<string, unknown> {
@@ -125,7 +126,7 @@ export function decodeInstructionSummary(value: unknown): InstructionReviewSumma
 function context(value: unknown): InstructionContext | null {
   if (!object(value)) return null;
   if (value.kind === 'shared_project' || value.kind === 'unshared_project' || value.kind === 'unresolved') return Object.freeze({ kind: value.kind });
-  if (value.kind === 'owned_worktree' && typeof value.lease === 'string' && ID.test(value.lease)) {
+  if (value.kind === 'owned_worktree' && typeof value.lease === 'string' && LEASE_ID.test(value.lease)) {
     return Object.freeze({ kind: value.kind, lease: value.lease });
   }
   if (value.kind === 'shared_input' && ['profile', 'ancestor', 'import', 'explicit_file'].includes(value.source as string)) {

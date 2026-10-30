@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { decodeInstructionReview, instructionContextText } from '../src/renderer/ticket/instructions.ts';
 
+const LEASE = 'ae220aba8e440b35e1feae1c708ea101';
+
 function review(reason, context = { kind: 'unresolved' }) {
   return {
     watermark: { through_lsn: '1', set_digest: 'd'.repeat(64) },
@@ -46,7 +48,7 @@ test('repository instruction detail retains the hired member and its independent
   const value = { ...review('metadata_limit'), coverage_unknown: true, repository_gaps: [
     { ...review('read_failed').gaps[0], repo_id: 'docs' },
   ], changed_paths: [{ repo_id: 'docs', path: { encoding: 'utf8', value: '/docs/AGENTS.md' },
-    display: '/docs/AGENTS.md', display_truncated: false, context: { kind: 'owned_worktree', lease: '00000000000000000000000001' } }] };
+    display: '/docs/AGENTS.md', display_truncated: false, context: { kind: 'owned_worktree', lease: LEASE } }] };
   const decoded = decodeInstructionReview(value);
   assert.notEqual(decoded, null);
   assert.equal(decoded.coverage_unknown, true);
@@ -58,9 +60,21 @@ test('repository instruction detail retains the hired member and its independent
 test('clipped interval rows do not erase repository identity from retained instruction paths', () => {
   const value = { ...review('metadata_limit'), coverage_unknown: false, repository_gaps: [],
     changed_paths: [{ repo_id: 'docs', path: { encoding: 'utf8', value: '/docs/AGENTS.md' },
-      display: 'AGENTS.md', display_truncated: false, context: { kind: 'owned_worktree', lease: '00000000000000000000000001' } }] };
+      display: 'AGENTS.md', display_truncated: false, context: { kind: 'owned_worktree', lease: LEASE } }] };
   const decoded = decodeInstructionReview(value);
   assert.notEqual(decoded, null);
   assert.equal(decoded.changed_paths[0].repo_id, 'docs');
   assert.deepEqual(decoded.watermark, value.watermark);
+});
+
+test('a changed instruction path in an owned copy names a lease of 32 lowercase hex characters', () => {
+  const ownCopy = { ...review('metadata_limit'), gaps: [], changed_paths: [{ repo_id: null, path: { encoding: 'utf8', value: '/copy/.claude/skills/review/SKILL.md' },
+    display: '.claude/skills/review/SKILL.md', display_truncated: false, context: { kind: 'owned_worktree', lease: LEASE } }] };
+  const decoded = decodeInstructionReview(ownCopy);
+  assert.notEqual(decoded, null);
+  assert.deepEqual(decoded.changed_paths[0].context, { kind: 'owned_worktree', lease: LEASE });
+  for (const lease of [LEASE.toUpperCase(), LEASE.slice(1), `${LEASE}0`, '01M67707JZCHF9M3QZ44AB59Z7', 'g'.repeat(32), '']) {
+    const bad = { ...ownCopy, changed_paths: [{ ...ownCopy.changed_paths[0], context: { kind: 'owned_worktree', lease } }] };
+    assert.equal(decodeInstructionReview(bad), null, `lease ${lease}`);
+  }
 });

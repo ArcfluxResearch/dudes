@@ -475,6 +475,22 @@ test('a ticket still being worked on offers no Accept or Ask for changes, and ke
   assert.match(html, /<details><summary>Observation details<\/summary><p>These observations compare sampled endpoints/);
 });
 
+test('the instruction review lists a changed path in the agent\'s own copy and in a hired copy', async () => {
+  const lease = 'ae220aba8e440b35e1feae1c708ea101';
+  const path = (repo_id, name) => ({ repo_id, path: { encoding: 'utf8', value: `/copy/${name}` }, display: name,
+    display_truncated: false, context: { kind: 'owned_worktree', lease } });
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'blocked', { claimed_by: ADA }, { instruction_review: instructionSummary() })] });
+  const card = store.getFloorState().cards[0];
+  const { deps } = daemon(() => json(200, reply({ instruction_review: instructionReview({ gaps: [], coverage_unknown: true,
+    changed_paths: [path(null, 'own/AGENTS.md'), path('docs', '.claude/skills/review/SKILL.md')] }) })));
+  await detail.loadDetail(card, deps);
+  assert.equal(detail.getDetailState().phase, 'ready');
+  const html = panel();
+  assert.match(html, /own\/AGENTS\.md/);
+  assert.match(html, /\.claude\/skills\/review\/SKILL\.md/);
+  assert.doesNotMatch(html, /could not read/);
+});
+
 test('instruction actions require a completed read at the current sequence and exact watermark', async () => {
   subscribe(store, { cards: [ticketCard(1, 'blocked', {}, { instruction_review: instructionSummary() })] });
   const card = store.getFloorState().cards[0];
