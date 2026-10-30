@@ -224,7 +224,11 @@ fn native_boundary_written(
             return false;
         }
         let start_matches = entries.iter().any(|(lsn, entry)| *lsn == *started_lsn
-            && matches!(entry.record, Record::InstructionObservationStarted { owner: seen, .. } if seen == *owner));
+            && match &entry.record {
+                Record::InstructionObservationStarted { owner: seen, .. } => seen == owner,
+                Record::InstructionObservationBatchStarted(batch) => batch.owner == *owner,
+                _ => false,
+            });
         start_matches && entries.iter().any(|(lsn, entry)| *lsn == *spawn_lsn && match (&entry.record, owner, pty) {
             (Record::TurnSpawned { agent, turn, pid, start_time, boot, .. },
                 dudes_proto::InstructionObservationOwner::Managed { agent: owned, turn: owned_turn, .. }, None) => {

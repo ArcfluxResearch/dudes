@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::instruction::{InstructionComparison, InstructionSettlement, InstructionSnapshot};
-use crate::repository::RepoId;
+use crate::instruction::{
+    InstructionComparison, InstructionCoverageGap, InstructionSettlement, InstructionSnapshot,
+};
+use crate::repository::{Confinement, RepoId};
 use crate::repository_instruction::{
     RepositoryInstructionBinding, RepositoryInstructionComparison, RepositoryInstructionFinish,
     RepositoryInstructionStart,
@@ -177,9 +179,11 @@ impl super::InstructionAttempt {
             .flat_map(InstructionComparisonEvidence::comparisons)
     }
 
-    /// Scoped acceptance requires complete starting and ending coverage for a launched interval.
+    /// Confined acceptance requires complete starting and ending coverage for a launched interval.
+    /// Unconfined acceptance still requires every copy to be comparable, but tolerates the
+    /// standing engine limits a single-repository agent tolerates.
     #[must_use]
-    pub fn coverage_unknown(&self) -> bool {
+    pub fn coverage_unknown(&self, confinement: Confinement) -> bool {
         if self.repository_binding().is_none() {
             return false;
         }
@@ -198,7 +202,11 @@ impl super::InstructionAttempt {
                 let InstructionComparisonEvidence::Repositories(members) = comparison else {
                     return true;
                 };
-                self.starting_gaps().next().is_some()
+                let holds = |gap: &InstructionCoverageGap| match confinement {
+                    Confinement::Confined => true,
+                    Confinement::Unconfined => gap.holds(),
+                };
+                self.starting_gaps().any(|(_, gap)| holds(gap))
                     || !members
                         .iter()
                         .map(|member| &member.repo_id)
@@ -208,7 +216,7 @@ impl super::InstructionAttempt {
                     })
                     || self
                         .comparisons()
-                        .any(|(_, comparison)| !comparison.gaps.is_empty())
+                        .any(|(_, comparison)| comparison.gaps.iter().any(holds))
             }
             Some(InstructionSettlement::Unknown { .. }) | None => true,
         }

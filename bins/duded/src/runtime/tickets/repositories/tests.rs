@@ -980,9 +980,9 @@ fn issued(setup: &Setup) -> usize {
 
 fn finish_the_round(
     setup: &Setup,
-    running: &common::Running,
     socket: &mut Socket,
     card: CardId,
+    during: impl FnOnce(),
 ) -> TicketReadResult {
     let turn = setup
         .fixture
@@ -990,7 +990,8 @@ fn finish_the_round(
             Record::TurnSpawned { turn, .. } => Some(*turn),
             _ => None,
         });
-    common::reap_native_child(
+    during();
+    let key = common::reap_native_child(
         &setup.fixture,
         &setup.host,
         dudes_supervisor::Input::ChildExited {
@@ -1020,6 +1021,7 @@ fn finish_the_round(
             .as_ref()
             .is_none_or(|review| !review.pending_comparison);
         if settled || std::time::Instant::now() > deadline {
+            setup.host.await_native_acknowledged(&key);
             return detail;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1044,8 +1046,7 @@ fn accept(socket: &mut Socket, setup: &Setup, detail: &TicketReadResult) -> Resp
     )
 }
 
-#[test]
-fn an_unconfined_ticket_that_changes_nothing_reaches_ready_and_accepts() {
+fn native_setup() -> Setup {
     let mut setup = setup();
     setup.host = common::SharedHost::with_native_evidence(setup.fixture.journal_dir());
     setup.own_children = true;
@@ -1059,11 +1060,17 @@ fn an_unconfined_ticket_that_changes_nothing_reaches_ready_and_accepts() {
             "HOME",
             profile.to_str().unwrap(),
         ));
+    setup
+}
+
+#[test]
+fn an_unconfined_ticket_that_changes_nothing_reaches_ready_and_accepts() {
+    let setup = native_setup();
     let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
     let agent = hires.hire(params).unwrap().agent;
     let mut socket = Client::connect(setup.settings.socket()).unwrap();
     let card = assigned_unconfined_ticket(&setup, agent, &mut socket);
-    let detail = finish_the_round(&setup, &running, &mut socket, card);
+    let detail = finish_the_round(&setup, &mut socket, card, || {});
     assert_eq!(detail.card.status, dudes_types::CardStatus::Review);
     let review = detail.ticket.instruction_review.as_ref();
     assert!(
@@ -1079,3 +1086,5 @@ fn an_unconfined_ticket_that_changes_nothing_reaches_ready_and_accepts() {
     drop(socket);
     running.stop(crate::ExitCause::Ended);
 }
+
+mod accept;

@@ -22,6 +22,7 @@ use crate::instruction::{
     validate_instruction_record,
 };
 use crate::record::{Entry, Hex32, Record};
+use crate::repository::{Confinement, RepositoryPolicy};
 use crate::ticket::TicketReason;
 
 /// Terminal comparison evidence. Its original position survives duplicate delivery.
@@ -130,6 +131,8 @@ struct Issue {
     agent: AgentId,
     lsn: Lsn,
     scoped: bool,
+    /// The grant policy that was recorded with the issue, absent for an issue without repositories.
+    policy: Option<RepositoryPolicy>,
     instruction_complete: bool,
 }
 
@@ -597,7 +600,7 @@ impl InstructionState {
             self.note_turn(owner);
             if let InstructionObservationOwner::Managed { turn, .. } = owner {
                 let complete = self.attempts.get(&key).is_some_and(|attempt| {
-                    attempt.repository_binding().is_some() && !attempt.coverage_unknown()
+                    attempt.repository_binding().is_some() && !self.coverage_unknown(attempt)
                 });
                 if let Some(issue) = self.issues.get_mut(&turn) {
                     issue.instruction_complete = complete;
@@ -628,11 +631,32 @@ impl InstructionState {
                 TicketCoverageNote::absorb(&mut note, next);
             }
         }
-        if requires_review(attempt) {
+        if self.requires_review(attempt) {
             // A held interval keeps the limits already noted but withdraws any claim of no change.
             return Some((ticket.card, TicketCoverageNote::withdrawn(note, provider)));
         }
         note.map(|note| (ticket.card, note))
+    }
+
+    /// A hired-repository attempt keeps the strict rule unless its turn was issued under an
+    /// unconfined policy, which takes the acceptance rule of a single-repository agent. An attempt
+    /// whose issue or policy is unknown stays strict.
+    fn confinement(&self, attempt: &InstructionAttempt) -> Confinement {
+        let InstructionObservationOwner::Managed { turn, .. } = attempt.owner else {
+            return Confinement::Confined;
+        };
+        self.issues
+            .get(&turn)
+            .and_then(|issue| issue.policy)
+            .map_or(Confinement::Confined, RepositoryPolicy::confinement)
+    }
+
+    fn coverage_unknown(&self, attempt: &InstructionAttempt) -> bool {
+        attempt.coverage_unknown(self.confinement(attempt))
+    }
+
+    fn requires_review(&self, attempt: &InstructionAttempt) -> bool {
+        requires_review(attempt, self.confinement(attempt))
     }
 
     /// Every durable attempt in canonical position order, including reviewed uncertainty.
@@ -854,7 +878,7 @@ impl InstructionState {
             return;
         };
         if attempt.reviewed_lsn.is_none()
-            && (attempt.finished.is_none() || requires_review(attempt))
+            && (attempt.finished.is_none() || self.requires_review(attempt))
         {
             self.by_card.entry(ticket.card).or_default().insert(key);
             self.by_goal.entry(ticket.goal).or_default().insert(key);
@@ -881,7 +905,7 @@ impl InstructionState {
     pub fn pending_for_goal(&self, goal: GoalId) -> bool {
         self.by_goal.get(&goal).into_iter().flatten().any(|key| {
             self.attempts.get(key).is_some_and(|attempt| {
-                requires_review(attempt)
+                self.requires_review(attempt)
                     || (attempt.finished.is_none() && self.end_for(attempt.owner).is_some())
             })
         })
@@ -908,7 +932,7 @@ impl InstructionState {
             }) {
                 return Some(TicketReason::SharedInstructionsChanged);
             }
-            unknown |= requires_review(attempt);
+            unknown |= self.requires_review(attempt);
         }
         unknown.then_some(TicketReason::SharedInstructionsUnknown)
     }
@@ -980,7 +1004,7 @@ impl InstructionState {
             gaps: Vec::new(),
             coverage_unknown: self
                 .review_attempts(card)
-                .any(|(_, attempt)| attempt.coverage_unknown()),
+                .any(|(_, attempt)| self.coverage_unknown(attempt)),
             repository_gaps: Vec::new(),
         };
         for (_, attempt) in self.review_attempts(card) {
@@ -1112,7 +1136,7 @@ impl InstructionState {
         if matches!(action, InstructionReviewAction::Accept { .. })
             && self
                 .review_attempts(card)
-                .any(|(_, attempt)| attempt.coverage_unknown())
+                .any(|(_, attempt)| self.coverage_unknown(attempt))
         {
             return Err(InstructionStateError::PendingComparison);
         }
@@ -1506,6 +1530,10 @@ impl InstructionState {
                 scoped: record
                     .turn_issue()
                     .is_some_and(|issue| issue.repositories.is_some()),
+                policy: record
+                    .turn_issue()
+                    .and_then(|issue| issue.repositories)
+                    .map(|grant| grant.policy),
                 instruction_complete: false,
             });
             if let Some(&key) = self.current_turns.get(&turn)
@@ -1735,13 +1763,15 @@ fn owner_agent(owner: InstructionObservationOwner) -> AgentId {
     }
 }
 
-fn requires_review(attempt: &InstructionAttempt) -> bool {
-    if attempt.coverage_unknown() && attempt.finished.is_some()
+fn requires_review(attempt: &InstructionAttempt, confinement: Confinement) -> bool {
+    if attempt.coverage_unknown(confinement) && attempt.finished.is_some()
         || attempt.comparisons().any(|(_, comparison)| {
-            if attempt.repository_binding().is_some() {
+            if attempt.repository_binding().is_none() {
+                comparison.has_shared_changes() || comparison.has_shared_gaps()
+            } else if confinement == Confinement::Confined {
                 !comparison.changes.is_empty() || !comparison.gaps.is_empty()
             } else {
-                comparison.has_shared_changes() || comparison.has_shared_gaps()
+                !comparison.changes.is_empty() || comparison.has_shared_gaps()
             }
         })
     {
