@@ -84,7 +84,7 @@ use std::time::Duration;
 use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{
-    AdoptionKey, HostBoot, KillOutcome, Liveness, MAX_OWNED_TARGET_QUERY_ROWS,
+    AdoptionKey, ContainmentUnproven, HostBoot, KillOutcome, Liveness, MAX_OWNED_TARGET_QUERY_ROWS,
     NativeBoundaryAcknowledgement, NativeBoundaryReceipt, NativeGroupPresence, OwnedTargetEvidence,
     OwnedTargetState, OwnedTargets, OwnedTargetsStatus, ProbeAnswer, ProcessHost, SpawnResult,
     liveness,
@@ -322,6 +322,9 @@ pub struct RealHost {
     boot: BootIdentity,
     pid_namespace: Option<String>,
     children: BTreeMap<u32, Owned>,
+    /// How many rows were released with a boundary that does not prove complete coverage. Holds no
+    /// handle: it only keeps shutdown reporting the limitation after the rows are gone.
+    released_incomplete: usize,
     current_native_targets: Mutex<BTreeMap<u32, CurrentNativeTarget>>,
     /// The process relation this host maintains for its children, shared with the local door.
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -639,6 +642,7 @@ impl RealHost {
             boot,
             pid_namespace,
             children: BTreeMap::new(),
+            released_incomplete: 0,
             current_native_targets: Mutex::new(BTreeMap::new()),
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             peers,
@@ -1588,8 +1592,20 @@ mod spawn_failure_tests {
             0,
             "an acknowledged, reaped row is released, so shutdown has nothing left to examine"
         );
-        host.shutdown()
-            .expect("a released row leaves shutdown clean");
+        expect_unproven_after_release(&mut host, "acknowledgement did not prove full containment");
+    }
+
+    fn expect_unproven_after_release(host: &mut RealHost, label: &str) {
+        assert_eq!(host.owned(), 0, "{label}: the row is released");
+        for _ in 0..2 {
+            let error = host
+                .shutdown()
+                .expect_err("a released incomplete boundary must not read as contained");
+            assert!(
+                dudes_supervisor::host::ContainmentUnproven::is(&error),
+                "{label} returned {error}, not unproven containment"
+            );
+        }
     }
 
     #[test]
@@ -1600,17 +1616,27 @@ mod spawn_failure_tests {
             .native_absence_receipt
             .expect("an observed absence carries its receipt");
         assert_eq!(host.owned(), 1, "an unacknowledged row is held");
+        let row = std::sync::Arc::downgrade(&host.children[&key.pid].reap_confirmed);
+        assert!(row.upgrade().is_some(), "the row is held before release");
         assert_eq!(
             host.acknowledge_native_boundary_absence(&key, &receipt),
             NativeBoundaryAcknowledgement::Acknowledged
         );
         assert_eq!(host.owned(), 0, "an acknowledged, reaped row is released");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while row.upgrade().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "the released row's state is still referenced, so its grip and lifeline are too"
+            );
+            sleep(Duration::from_millis(5));
+        }
         assert_eq!(
             host.acknowledge_native_boundary_absence(&key, &receipt),
             NativeBoundaryAcknowledgement::RefusedUnobserved,
             "a second acknowledgement finds nothing to release"
         );
-        host.shutdown().expect("nothing is left to contain");
+        expect_unproven_after_release(&mut host, "a released finished child");
         assert!(matches!(
             host.kill(&key),
             dudes_supervisor::host::KillOutcome::Refused {
@@ -1646,12 +1672,30 @@ mod spawn_failure_tests {
             NativeBoundaryAcknowledgement::Acknowledged
         );
         assert_eq!(host.owned(), 0, "an acknowledged, reaped row is released");
+        expect_unproven_after_release(&mut host, "a released killed child");
         assert!(matches!(
             host.kill(&key),
             dudes_supervisor::host::KillOutcome::Refused {
                 liveness: Liveness::Gone
             }
         ));
+    }
+
+    #[test]
+    fn a_released_complete_boundary_leaves_shutdown_clean() {
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let key = completed_query_target(&mut host);
+        host.children.get_mut(&key.pid).unwrap().boundary = crate::kill::Boundary::Complete;
+        let receipt = observed_absence(&host, &key)
+            .native_absence_receipt
+            .expect("an observed absence carries its receipt");
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &receipt),
+            NativeBoundaryAcknowledgement::Acknowledged
+        );
+        assert_eq!(host.owned(), 0);
+        host.shutdown()
+            .expect("a complete boundary proves containment, so release adds nothing");
     }
 
     #[test]
@@ -3124,7 +3168,11 @@ impl ProcessHost for RealHost {
                 protocol.fail();
             }
         }
-        kill::shutdown(&mut self.children, self.boot.as_host_boot(), self.grace)
+        let result = kill::shutdown(&mut self.children, self.boot.as_host_boot(), self.grace);
+        match result {
+            Ok(()) if self.released_incomplete > 0 => Err(io::Error::other(ContainmentUnproven)),
+            other => other,
+        }
     }
 
     /// The same owner-only projection [`RealHost::write_install`] gives a managed install.
@@ -3271,7 +3319,11 @@ impl RealHost {
                 ) == OwnedTargetState::NativeBoundaryAbsent
         });
         if settled {
-            self.children.remove(&pid);
+            if let Some(owned) = self.children.remove(&pid)
+                && !owned.boundary.is_complete()
+            {
+                self.released_incomplete += 1;
+            }
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             self.peers.release(pid);
         }
