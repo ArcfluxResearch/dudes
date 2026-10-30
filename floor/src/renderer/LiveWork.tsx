@@ -41,12 +41,12 @@ export function SelectionBar({ floor, onClear, leaveFocusTo, showStatus = true }
   readonly showStatus?: boolean;
 }) {
   const close = (
-    <IconButton id="selection-clear" className="drawer-close absolute right-2 top-2" label="Close agent details" icon={<X {...ICON} />}
+    <IconButton id="selection-clear" className="drawer-close shrink-0" label="Close agent details" icon={<X {...ICON} />}
       title="Close (Escape)" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo} onClick={onClear} />
   );
   return showStatus ? (
-    <div className="selection-bar">
-      <p className="stream-state m-0 mb-[0.45rem] font-[700]" role="status">{streamStatus(floor)}</p>
+    <div className="selection-bar flex items-start justify-between gap-2">
+      <p className="stream-state m-0 font-[700]" role="status">{streamStatus(floor)}</p>
       {close}
     </div>
   ) : close;

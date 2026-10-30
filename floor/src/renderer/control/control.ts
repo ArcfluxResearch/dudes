@@ -95,6 +95,9 @@ export function controlGate(floor: FloorState, row: AgentRow | null): ControlGat
   });
 }
 
+/** The note for a halt that stands from the command line. */
+export const HALT_NOTE = 'A halt from the command line stands on this agent. The Floor cannot lift it; only the local operator can.';
+
 /** How the Floor words a standing pause. */
 export interface PauseWording {
   readonly state: 'pausing' | 'refusing' | 'paused';
@@ -102,10 +105,10 @@ export interface PauseWording {
 }
 
 const PAUSING: PauseWording = Object.freeze({
-  state: 'pausing', text: 'Pausing — the current turn runs to its end; no new turn will start',
+  state: 'pausing', text: 'Pausing after this turn. No new turn will start.',
 });
-const REFUSING: PauseWording = Object.freeze({ state: 'refusing', text: 'Paused — your prompts and tool calls are refused' });
-const PAUSED: PauseWording = Object.freeze({ state: 'paused', text: 'Paused' });
+const REFUSING: PauseWording = Object.freeze({ state: 'refusing', text: 'Your prompts and tool calls are refused.' });
+const PAUSED: PauseWording = Object.freeze({ state: 'paused', text: 'No new turn will start until you press Resume.' });
 
 /**
  * The words for a paused agent, read from its `paused`, `mode` and `status`
@@ -126,10 +129,10 @@ export interface StopWording {
 }
 
 const STOPPING: StopWording = Object.freeze({
-  state: 'stopping', text: 'Stopping — the turn’s process is being ended; no new turn will start',
+  state: 'stopping', text: 'Stopping this turn. No new turn will start.',
 });
 const STOPPED: StopWording = Object.freeze({
-  state: 'stopped', text: 'Stopped — no new turn will start until you press Resume',
+  state: 'stopped', text: 'No new turn will start until you press Resume.',
 });
 
 /** The words for an agent this page stopped, read from `halted`, `halted_by_floor` and `status` and nothing else. */

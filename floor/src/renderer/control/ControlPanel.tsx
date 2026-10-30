@@ -25,7 +25,7 @@ import {
 import type { AgentRow } from '../scene/cast.ts';
 import {
   PARTIAL_EDITS_NOTE, REFUSAL_REASONS, afterRefusal, blocksControls, browserControlDeps, checkControlStatus, checkable,
-  continuationOf, controlGate, getControlState, dismissReceipt, receiptDismissible, pauseWording, sentFrom, stopWording,
+  continuationOf, controlGate, getControlState, dismissReceipt, receiptDismissible, sentFrom,
   submitControl, subscribeToControl,
 } from './control.ts';
 import type { Continuation, ControlAttempt, ControlOutcome, ControlState, ControlVerb } from './control.ts';
@@ -54,7 +54,6 @@ function hintFor(verb: ControlVerb, row: AgentRow): string {
   return verb === 'pause' && row.mode === 'attached' ? ATTACHED_PAUSE_HINT : HINTS[verb];
 }
 
-const HALT_NOTE = 'A halt from the command line stands on this agent. The Floor cannot lift it; only the local operator can.';
 const UNSETTLED_NOTE = 'An earlier pause or resume is not settled yet. Its status is shown in the request receipt.';
 const REFUSED_NOTE = 'Dudes no longer accepts this page’s sign-in, so it can no longer pause or resume. Its status '
   + 'is shown in the request receipt.';
@@ -69,82 +68,91 @@ function heldBecause(control: ControlState): string {
   return UNSETTLED_NOTE;
 }
 
-/** Pause or Resume, and the wording of a standing pause, inside the selected agent's detail. */
-export function ControlStrip({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow }) {
-  const control = useSyncExternalStore(subscribeToControl, getControlState, getControlState);
-  return <ControlStripView control={control} floor={floor} row={row} session={floorSessionGeneration()} />;
+/** A problem or a wait on this agent's controls, said in the status band in place of its usual sentence. */
+export interface ControlNote {
+  readonly kind: 'problem' | 'held';
+  readonly text: string;
 }
 
-export function ControlStripView({ control, floor, row, session }: {
+export function controlNoteOf(control: ControlState, floor: FloorState, row: AgentRow, session: number): ControlNote | null {
+  const gate = controlGate(floor, row);
+  if (!gate.open) return null;
+  if (control.problem !== null && control.attempt === null) return { kind: 'problem', text: control.problem };
+  return blocksControls(control, gate, session) && !control.sending ? { kind: 'held', text: heldBecause(control) } : null;
+}
+
+/** The note the status band shows for the selected agent, from the stores this page holds now. */
+export function useControlNote(floor: FloorState, row: AgentRow | null): ControlNote | null {
+  const control = useSyncExternalStore(subscribeToControl, getControlState, getControlState);
+  return row === null ? null : controlNoteOf(control, floor, row, floorSessionGeneration());
+}
+
+/** Which buttons a part draws: Resume alone when the state calls for it first, or the rest of the controls. */
+export type ControlPart = 'primary' | 'rest';
+
+/** Pause, Resume and Stop this turn for the selected agent, drawn into the action bar. */
+export function ControlStrip({ floor, row, part, resumeFirst }: {
+  readonly floor: FloorState; readonly row: AgentRow; readonly part: ControlPart; readonly resumeFirst: boolean;
+}) {
+  const control = useSyncExternalStore(subscribeToControl, getControlState, getControlState);
+  return <ControlStripView control={control} floor={floor} row={row} session={floorSessionGeneration()} part={part} resumeFirst={resumeFirst} />;
+}
+
+export function ControlStripView({ control, floor, row, session, part, resumeFirst }: {
   readonly control: ControlState;
   readonly floor: FloorState;
   readonly row: AgentRow;
   /** Which session the page holds now: `floorSessionGeneration()`. */
   readonly session: number;
+  readonly part: ControlPart;
+  /** True when Resume leads the action bar, so the rest of the controls leave it out. */
+  readonly resumeFirst: boolean;
 }) {
-  const wording = pauseWording(row);
-  const stopped = stopWording(row);
   const gate = controlGate(floor, row);
-  if (wording === null && stopped === null && !gate.open) return null;
+  if (!gate.open) return null;
   const blocked = blocksControls(control, gate, session);
   const attempt = control.attempt;
   const pressedHere = attempt !== null && sentFrom(attempt, gate);
   const busy = control.sending && pressedHere;
   const focusOnLeave = pressedHere ? 'control-status-title' : AGENT_DETAIL_HEADING_ID;
-  const hint = gate.open && gate.offer !== 'none' ? hintFor(gate.offer, row) : undefined;
+  const hint = gate.offer !== 'none' ? hintFor(gate.offer, row) : undefined;
+  const resume = gate.offer === 'resume' && (part === 'primary') === resumeFirst;
+  // While it waits the slot is aria-disabled, never disabled: a disabled button drops the keyboard focus it holds. A
+  // held key's repeats are not presses, and neither is the second click of a double-click: the verb has flipped by
+  // then, and it would undo the first.
   return (
-    <div className="agent-detail-control contents" data-control-agent-id={gate.open ? gate.agent : undefined}
-      data-control-lsn={gate.open ? gate.controlLsn ?? '' : undefined}>
-      {wording === null ? null : (
-        <p className={cn('agent-detail-pause', PAUSED)} role="status" data-pause-state={wording.state}>{wording.text}</p>
+    <div className="agent-detail-control contents" data-control-agent-id={gate.agent} data-control-lsn={gate.controlLsn ?? ''}>
+      {!resume ? null : (
+        <Button key="resume" ref={handFocusOnLeave} size="sm" variant={resumeFirst ? 'primary' : 'secondary'} className="control-resume"
+          aria-disabled={blocked || undefined} loading={busy} data-focus-on-leave={focusOnLeave}
+          title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
+          onClick={(event) => { if (event.detail < 2) void submitControl('resume', gate, browserControlDeps); }}>
+          {busy ? 'Sending…' : 'Resume'}
+        </Button>
       )}
-      {stopped === null ? null : (
-        <p className={cn('agent-detail-pause', PAUSED)} role="status" data-stop-state={stopped.state}>{stopped.text}</p>
-      )}
-      {!gate.open ? null : (
+      {part !== 'rest' ? null : (
         <>
-          {/* While it waits the slot is aria-disabled, never disabled: a
-              disabled button drops the keyboard focus it holds. A held key's
-              repeats are not presses, and neither is the second click of a
-              double-click: the verb has flipped by then, and it would undo the
-              first. */}
-          {gate.offer === 'none' && !gate.stop ? null : (
-            <div className={cn('control-actions', ACTIONS)}>
-              {gate.offer !== 'pause' && gate.offer !== 'resume' ? null : gate.offer === 'pause' ? (
-                <Button key="pause" ref={handFocusOnLeave} className="control-pause"
-                  aria-disabled={blocked || undefined} loading={busy} data-focus-on-leave={focusOnLeave}
-                  title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
-                  onClick={(event) => { if (event.detail < 2) void submitControl('pause', gate, browserControlDeps); }}>
-                  {busy ? 'Sending…' : 'Pause'}
-                </Button>
-              ) : (
-                <Button key="resume" ref={handFocusOnLeave} variant="primary" className="control-resume"
-                  aria-disabled={blocked || undefined} loading={busy} data-focus-on-leave={focusOnLeave}
-                  title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
-                  onClick={(event) => { if (event.detail < 2) void submitControl('resume', gate, browserControlDeps); }}>
-                  {busy ? 'Sending…' : 'Resume'}
-                </Button>
-              )}
-              {gate.stop ? (
-                <Button key="halt" variant="danger" className="control-stop" ref={handFocusOnLeave}
-                  aria-disabled={blocked || undefined} loading={busy} data-focus-on-leave={focusOnLeave}
-                  title={HINTS.halt} aria-describedby="control-stop-note"
-                  onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
-                  onClick={(event) => { if (event.detail < 2) void submitControl('halt', gate, browserControlDeps); }}>
-                  {busy && attempt?.verb === 'halt' ? 'Sending…' : 'Stop this turn'}
-                </Button>
-              ) : null}
-            </div>
+          {gate.offer !== 'pause' ? null : (
+            <Button key="pause" ref={handFocusOnLeave} size="sm" className="control-pause"
+              aria-disabled={blocked || undefined} loading={busy} data-focus-on-leave={focusOnLeave}
+              title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
+              onClick={(event) => { if (event.detail < 2) void submitControl('pause', gate, browserControlDeps); }}>
+              {busy ? 'Sending…' : 'Pause'}
+            </Button>
           )}
+          {gate.stop ? (
+            <Button key="halt" size="sm" variant="danger" className="control-stop" ref={handFocusOnLeave}
+              aria-disabled={blocked || undefined} loading={busy} data-focus-on-leave={focusOnLeave}
+              title={HINTS.halt} aria-describedby="control-stop-note"
+              onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
+              onClick={(event) => { if (event.detail < 2) void submitControl('halt', gate, browserControlDeps); }}>
+              {busy && attempt?.verb === 'halt' ? 'Sending…' : 'Stop this turn'}
+            </Button>
+          ) : null}
           {gate.stop ? <p className={cn('control-stop-note sr-only', NOTE)} id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
-          {hint === undefined ? null : <span className="sr-only" id="control-hint">{hint}</span>}
-          {gate.halted && !gate.haltedByFloor ? <p className={cn('control-halt-note basis-full', NOTE)}>{HALT_NOTE}</p> : null}
-          {blocked && !control.sending ? <p className={cn('basis-full', NOTE)}>{heldBecause(control)}</p> : null}
-          {control.problem === null || attempt !== null ? null : (
-            <p className={cn('control-problem basis-full', MESSAGE_CLASS.error)} role="alert">{control.problem}</p>
-          )}
         </>
       )}
+      {hint === undefined || part !== 'rest' ? null : <span className="sr-only" id="control-hint">{hint}</span>}
     </div>
   );
 }
@@ -200,8 +208,6 @@ export function ControlStatusView({ control, floor, session, leaveFocusTo = 'cre
     </section>
   );
 }
-
-const PAUSED = 'm-0 basis-full rounded-md bg-warn-soft px-3 py-2 text-base font-medium text-ink';
 
 const KICKER: Readonly<Record<ControlVerb, string>> = Object.freeze({
   pause: 'Pause request', halt: 'Stop request', resume: 'Resume request',

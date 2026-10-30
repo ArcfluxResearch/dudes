@@ -337,7 +337,9 @@ test('Attach is offered for a Claude agent, and a Codex or Pi agent is told its 
   for (const provider of ['codex', 'pi']) assert.deepEqual(offer(provider), { kind: 'unavailable', reason: 'engine' });
   const floor = floorOf([row({ provider: 'codex' })]);
   const html = renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer: offer('codex') }));
-  assert.match(html, /<span class="agent-attach-note" id="terminal-hint">Opening this engine’s own terminal is not supported yet\.<\/span>/);
+  assert.match(html, /<span class="sr-only" id="terminal-hint">Opening this engine’s own terminal is not supported yet\.<\/span>/);
+  const note = renderToStaticMarkup(createElement(TerminalNote, { floor, row: row({ provider: 'codex' }) }));
+  assert.match(note, /<p class="agent-attach-note" aria-hidden="true">Opening this engine’s own terminal is not supported yet\.<\/p>/);
 });
 
 // --- what the views say ------------------------------------------------------------------
@@ -346,6 +348,7 @@ let server;
 let nextModel;
 let decodeDaemonReport;
 let TerminalAttachView;
+let TerminalNote;
 let AttachConfirmation;
 let TerminalPanelView;
 
@@ -357,7 +360,7 @@ before(async () => {
     appType: 'custom',
     logLevel: 'silent',
   });
-  ({ TerminalAttachView, TerminalPanelView, AttachConfirmation } = await server.ssrLoadModule('/src/renderer/terminal/TerminalPanel.tsx'));
+  ({ TerminalAttachView, TerminalNote, TerminalPanelView, AttachConfirmation } = await server.ssrLoadModule('/src/renderer/terminal/TerminalPanel.tsx'));
   ({ nextModel } = await server.ssrLoadModule('/src/renderer/model/model.ts'));
   ({ decodeDaemonReport } = await server.ssrLoadModule('/src/renderer/setup/daemon.ts'));
 });
