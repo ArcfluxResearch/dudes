@@ -82,6 +82,7 @@ test('a pinned model replaces next, says so, and offers no change', () => {
   const markup = html(running);
   assert.match(markup, /set in the configuration, so the next turn uses it/);
   assert.doesNotMatch(markup, /Change model/);
+  assert.doesNotMatch(markup, /lucide-chevron-down/, 'pinned text is not pressable and shows no chevron');
   assert.match(markup, /Remove my override/, 'clearing stays allowed under a pin when an override exists');
   assert.equal(model.modelAvailable(floor.getFloorState(), running), true);
   const bare = { ...running, model: undefined };
@@ -121,7 +122,12 @@ test('the change control needs the Floor control switch and a managed agent', ()
   assert.doesNotMatch(html({ ...base, status: 'attached' }), /Change model/);
   snapshot(base);
   assert.match(html(base), /Change model/);
+  const closed = html(base).match(/<button[^>]*title="Change model"[^>]*>.*?<\/button>/s)[0];
+  assert.match(closed, /<svg[^>]*lucide-chevron-down[^>]*aria-hidden="true"/);
+  assert.doesNotMatch(closed, /rotate-180/);
   model.beginModel(base);
+  const open = html(base).match(/<button[^>]*title="Close the model list"[^>]*>.*?<\/button>/s)[0];
+  assert.match(open, /rotate-180/);
   const markup = html(base);
   assert.match(markup, /Default model/);
   assert.match(markup, /opus/);

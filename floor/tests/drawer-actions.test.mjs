@@ -60,14 +60,15 @@ const actionsOf = (html) => /<header class="agent-detail-head">([\s\S]*?)<\/head
 const labelsOf = (html) => [...html.replace(/<svg[\s\S]*?<\/svg>/g, '').matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)]
   .map(([, label]) => label).filter((label) => label !== '');
 
-test('Pause stays in view, Retire sits in the More actions menu, and Attach sits by the model', () => {
+test('Pause stays in view, Retire sits in the More actions menu, and Attach ends the action bar above the model line', () => {
   const html = drawer();
   const block = actionsOf(html);
   assert.match(block, /<button(?=[^>]*aria-label="More actions")(?=[^>]*aria-haspopup="menu")[^>]*>/, 'no More actions menu button');
-  const menu = /<div[^>]*role="menu"[^>]*>([\s\S]*?)<\/div><\/div>/.exec(block)?.[1] ?? '';
+  const menu = /<div[^>]*role="menu"[^>]*>([\s\S]*?<\/button>)<\/div><button/.exec(block)?.[1] ?? '';
   assert.equal(labelsOf(block.replace(menu, ''))[0], 'Pause');
   assert.deepEqual(labelsOf(menu).filter((label) => label !== 'Edit look'), ['Retire agent']);
-  assert.ok(html.indexOf('class="terminal-attach"') > html.indexOf('class="agent-model'), 'Attach follows the model');
+  assert.ok(html.indexOf('class="terminal-attach"') > html.indexOf('class="control-pause"'), 'Attach follows Pause');
+  assert.ok(html.indexOf('class="terminal-attach"') < html.indexOf('class="agent-model'), 'the model line follows the action bar');
   assert.doesNotMatch(menu, /Open the real CLI/);
   assert.doesNotMatch(block, /trust this folder/);
 });
