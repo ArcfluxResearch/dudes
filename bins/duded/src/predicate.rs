@@ -357,6 +357,66 @@ pub fn refused(argv: &[String], error: &io::Error) -> (bool, Evidence) {
     )
 }
 
+/// Query every declared directory for the default change check under one timeout.
+/// An unavailable query leaves the aggregate unobserved.
+///
+/// # Errors
+/// Refuses an empty declaration, an unresolved program or a program inside any hired root.
+pub fn files_changed(
+    runner: &dyn PredicateRunner,
+    argv: &[String],
+    directories: &[std::path::PathBuf],
+    env: &[EnvVar],
+    path: Option<&OsStr>,
+    hired_roots: &[std::path::PathBuf],
+    timeout: Duration,
+) -> io::Result<Option<(bool, Evidence)>> {
+    if directories.is_empty() {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let started = std::time::Instant::now();
+    let mut changed = 0;
+    let mut complete = true;
+    let mut program = None;
+    for directory in directories {
+        let (resolved, spec) = spec_for_repositories(argv, directory, env, path, hired_roots)?;
+        if program.as_ref().is_some_and(|program| program != &resolved) {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        program = Some(resolved);
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        match runner.run(&spec, remaining) {
+            Ok(PredicateOutcome::Finished {
+                exit: Some(exit),
+                timed_out: false,
+                ..
+            }) if exit == 0 || exit == 1 => {
+                changed += usize::from(exit == 0);
+            }
+            Ok(PredicateOutcome::Swept) => return Ok(None),
+            Ok(_) | Err(_) => complete = false,
+        }
+    }
+    Ok(complete.then(|| {
+        let pass = changed > 0;
+        (
+            pass,
+            Evidence::Command {
+                argv: argv.to_vec(),
+                program,
+                exit: Some(i32::from(!pass)),
+                output_tail: format!(
+                    "Queried all {} declared repositories; {changed} contain uncommitted changes.",
+                    directories.len()
+                ),
+            },
+        )
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -603,6 +663,70 @@ mod tests {
         .unwrap();
         assert_eq!(launch.cwd, check_target.path());
         assert_eq!(launch.argv[1], OsString::from(script));
+    }
+
+    #[test]
+    fn a_fake_change_query_requires_known_results_for_every_declared_member() {
+        use std::collections::VecDeque;
+        use std::sync::Mutex;
+        struct Queries {
+            answers: Mutex<VecDeque<io::Result<PredicateOutcome>>>,
+            calls: Mutex<Vec<std::path::PathBuf>>,
+        }
+        impl PredicateRunner for Queries {
+            fn run(&self, spec: &LaunchSpec, _timeout: Duration) -> io::Result<PredicateOutcome> {
+                self.calls.lock().unwrap().push(spec.cwd.clone());
+                self.answers.lock().unwrap().pop_front().unwrap()
+            }
+            fn sweep(&self) {}
+        }
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let roots = [first.path().to_path_buf(), second.path().to_path_buf()];
+        let bin = tempfile::tempdir().unwrap();
+        let program = bin.path().join(CHECKER);
+        write_runnable(&program);
+        let argv = [program.to_str().unwrap().to_owned()];
+        for (codes, expected) in [
+            ([1, 1], Some(false)),
+            ([0, 1], Some(true)),
+            ([1, 0], Some(true)),
+            ([0, 128], None),
+            ([128, 0], None),
+            ([0, -1], None),
+        ] {
+            let runner = Queries {
+                answers: Mutex::new(
+                    codes
+                        .into_iter()
+                        .map(|exit| {
+                            if exit < 0 {
+                                Err(io::ErrorKind::Other.into())
+                            } else {
+                                Ok(PredicateOutcome::Finished {
+                                    exit: Some(exit),
+                                    output_tail: "fake predicate seam".into(),
+                                    timed_out: false,
+                                })
+                            }
+                        })
+                        .collect(),
+                ),
+                calls: Mutex::default(),
+            };
+            let result = files_changed(
+                &runner,
+                &argv,
+                &roots,
+                &[],
+                None,
+                &roots,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            assert_eq!(result.map(|(pass, _)| pass), expected, "{codes:?}");
+            assert_eq!(*runner.calls.lock().unwrap(), roots);
+        }
     }
 
     /// A program that does not resolve makes the run fail and never pass, and the evidence says so
