@@ -1159,6 +1159,38 @@ fn a_note_comes_from_standard_input_with_its_line_endings_made_lf() {
 }
 
 #[test]
+fn note_files_still_supply_legacy_ticket_add_and_edit_payloads() {
+    let world = world();
+    let path = world.fixture.state.path().join("ticket-note.md");
+    let file = path.to_str().unwrap();
+    std::fs::write(&path, b"\xef\xbb\xbf# Plan\r\n- one\r\n").unwrap();
+    let added = world.dudes([
+        "--json",
+        "ticket",
+        "add",
+        "--title",
+        "From a file",
+        "--note-file",
+        file,
+    ]);
+    assert_eq!(added.code(), 0, "{}", added.output());
+    let card = added.json::<TicketCreateResult>().card.to_string();
+    let shown = world.dudes(["--json", "ticket", "show", &card]);
+    assert_eq!(
+        shown.json::<TicketReadResult>().ticket.description,
+        "# Plan\n- one\n"
+    );
+    std::fs::write(&path, b"# Changed\r\n- two\r\n").unwrap();
+    let edited = world.dudes(["ticket", "edit", &card, "--note-file", file]);
+    assert_eq!(edited.code(), 0, "{}", edited.output());
+    let shown = world.dudes(["--json", "ticket", "show", &card]);
+    assert_eq!(
+        shown.json::<TicketReadResult>().ticket.description,
+        "# Changed\n- two\n"
+    );
+}
+
+#[test]
 fn repository_flags_reach_the_writer_without_changing_legacy_ticket_authority() {
     let world = world();
     let card = world.add("Legacy selection");

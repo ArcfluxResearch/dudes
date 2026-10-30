@@ -1743,5 +1743,8 @@ fn historical_orphan_starts_keep_the_same_rounds_without_a_declaration() {
 #[path = "repository_replay/scoped_issues.rs"]
 mod scoped_issues;
 
+#[path = "repository_replay/scoped_transport.rs"]
+mod scoped_transport;
+
 #[path = "repository_replay/review_batches.rs"]
 mod review_batches;

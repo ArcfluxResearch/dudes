@@ -521,7 +521,12 @@ fn fresh_id() -> io::Result<MailId> {
     Ok(MailId::from_parts(millis, u128::from_be_bytes(entropy)))
 }
 
-pub(super) fn run(command: &MailCommand, path: &Path, out: &mut dyn Write) -> io::Result<()> {
+pub(super) fn run(
+    command: &MailCommand,
+    path: &Path,
+    scoped_file_mail: bool,
+    out: &mut dyn Write,
+) -> io::Result<()> {
     let mailbox = Mailbox::open(path)?;
     match command {
         MailCommand::Send(send) => {
@@ -535,7 +540,7 @@ pub(super) fn run(command: &MailCommand, path: &Path, out: &mut dyn Write) -> io
             if items.is_empty() {
                 return writeln!(out, "no unread mail");
             }
-            let mut names_hint = matches!(command, MailCommand::Read);
+            let mut names_hint = matches!(command, MailCommand::Read) && !scoped_file_mail;
             for (item, body) in items {
                 let from = match item.from {
                     MailFrom::Agent { agent } if std::mem::take(&mut names_hint) => {
@@ -648,7 +653,7 @@ mod tests {
             .unwrap();
         }
         let mut output = Vec::new();
-        run(&MailCommand::Read, &path, &mut output).unwrap();
+        run(&MailCommand::Read, &path, false, &mut output).unwrap();
         let text = String::from_utf8(output).unwrap();
         assert_eq!(text.matches("Use `dudes team`").count(), 1);
         assert!(text.contains(&format!(
@@ -656,7 +661,7 @@ mod tests {
             AgentId::from_parts(1, 2)
         )));
         let mut output = Vec::new();
-        run(&MailCommand::List, &path, &mut output).unwrap();
+        run(&MailCommand::List, &path, false, &mut output).unwrap();
         assert!(
             !String::from_utf8(output)
                 .unwrap()

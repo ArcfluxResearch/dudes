@@ -355,6 +355,8 @@ pub enum TicketCommand {
         params: TicketCreateParams,
         /// The agent to give it to once it exists.
         give_to: Option<AgentRef>,
+        /// A note file to read after command admission.
+        note_file: Option<PathBuf>,
     },
     /// Change a waiting ticket's title, note or check.
     Edit {
@@ -364,6 +366,8 @@ pub enum TicketCommand {
         title: Option<String>,
         /// The new note; empty clears it.
         note: Option<String>,
+        /// A note file to read after command admission.
+        note_file: Option<PathBuf>,
         /// The id of the project's check to finish it by.
         done_when: Option<String>,
         /// Expected repository id of the configured completion check.
@@ -2041,26 +2045,8 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
             (_, other) => return Err(ArgError::UnknownFlag(other.to_owned())),
         }
     }
-    if let Some(path) = &note_file {
-        if note.is_some() {
-            return Err(ArgError::Conflicting("--note", "--note-file"));
-        }
-        if path == std::path::Path::new("-") {
-            use std::io::{IsTerminal as _, Write as _};
-            if std::io::stdin().is_terminal() {
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "Reading the note from standard input until end of file."
-                );
-            }
-        }
-        let text = read_note_file(path, stdin_file)?;
-        if text.is_empty() {
-            return Err(ArgError::NoteFile(
-                "the note is empty; use --note '' to clear the note".to_owned(),
-            ));
-        }
-        note = Some(text);
+    if note_file.is_some() && note.is_some() {
+        return Err(ArgError::Conflicting("--note", "--note-file"));
     }
     if takes_card {
         let card = required(card, "<card>")?;
@@ -2096,7 +2082,12 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
                 })
             }
             "edit" => {
-                if title.is_none() && note.is_none() && done_when.is_none() && priority.is_none() {
+                if title.is_none()
+                    && note.is_none()
+                    && note_file.is_none()
+                    && done_when.is_none()
+                    && priority.is_none()
+                {
                     return Err(ArgError::Requires(
                         "ticket edit",
                         "at least one of --title, --note, --note-file, --done-when or --priority",
@@ -2106,6 +2097,7 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
                     card,
                     title,
                     note,
+                    note_file,
                     done_when,
                     check_repo,
                     priority,
@@ -2152,8 +2144,44 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
                 priority,
             },
             give_to: agent,
+            note_file,
         }),
         _ => Ok(TicketCommand::List { status }),
+    }
+}
+
+impl TicketCommand {
+    pub(crate) fn materialize_note_file(&mut self) -> Result<(), ArgError> {
+        let (file, note) = match self {
+            Self::Add {
+                params, note_file, ..
+            } => (note_file, &mut params.description),
+            Self::Edit {
+                note, note_file, ..
+            } => (note_file, note),
+            _ => return Ok(()),
+        };
+        let Some(path) = file.as_deref() else {
+            return Ok(());
+        };
+        if path == std::path::Path::new("-") {
+            use std::io::{IsTerminal as _, Write as _};
+            if std::io::stdin().is_terminal() {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "Reading the note from standard input until end of file."
+                );
+            }
+        }
+        let text = read_note_file(path, stdin_file)?;
+        if text.is_empty() {
+            return Err(ArgError::NoteFile(
+                "the note is empty; use --note '' to clear the note".to_owned(),
+            ));
+        }
+        *note = Some(text);
+        *file = None;
+        Ok(())
     }
 }
 
@@ -5176,9 +5204,15 @@ mod devices_tests {
             argv.push("01ARZ3NDEKTSV4RRFFQ69G5FAV");
         }
         argv.extend(note_args);
-        match parse(&argv.iter().map(OsString::from).collect::<Vec<_>>())?.command {
-            Command::Ticket(TicketCommand::Add { params, .. }) => Ok(params.description),
-            Command::Ticket(TicketCommand::Edit { note, .. }) => Ok(note),
+        let Command::Ticket(mut command) =
+            parse(&argv.iter().map(OsString::from).collect::<Vec<_>>())?.command
+        else {
+            panic!("ticket command")
+        };
+        command.materialize_note_file()?;
+        match command {
+            TicketCommand::Add { params, .. } => Ok(params.description),
+            TicketCommand::Edit { note, .. } => Ok(note),
             other => panic!("{other:?}"),
         }
     }

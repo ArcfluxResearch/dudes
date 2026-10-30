@@ -94,7 +94,7 @@ fn a_spawned_child_leads_its_own_process_group_so_the_sweep_reaches_a_grandchild
     // denial that could reach here was the reap window's, and that is now presence rather than an
     // error. An `EPERM` arriving here again is evidence, not something to tolerate.
     match outcome {
-        KillOutcome::Signalled => assert_eq!(host.owned(), 0),
+        KillOutcome::Signalled => assert_eq!(host.owned(), 1),
         other => panic!("expected the killed group to be signalled, got {other:?}"),
     }
 

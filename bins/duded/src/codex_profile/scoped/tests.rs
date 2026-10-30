@@ -397,6 +397,49 @@ fn poisoned_private_environment_refuses_before_any_probe_or_install() {
 }
 
 #[test]
+fn only_exact_owned_file_mail_environment_is_retained() {
+    let f = Fixture::new(false);
+    validate_environment(&f.launch).unwrap();
+    for (name, wrong) in [
+        ("DUDES_MAILBOX", f.root.join("other-agent").into_os_string()),
+        ("DUDES_COMMAND_TRANSPORT", "socket".into()),
+    ] {
+        for change in 0..3 {
+            let mut launch = f.launch.clone();
+            let original = launch
+                .spec
+                .env
+                .iter()
+                .find(|var| var.name() == name)
+                .unwrap()
+                .clone();
+            launch.spec.env.retain(|var| var.name() != name);
+            match change {
+                0 => launch.spec.env.push(EnvVar::new(name, &wrong)),
+                1 => launch.spec.env.extend([original.clone(), original]),
+                _ => {}
+            }
+            assert!(
+                f.profile
+                    .prepare_scoped(launch, Fixture::attempt())
+                    .is_err()
+            );
+        }
+    }
+    for name in ["DUDES_TOKEN", "DUDES_SOCK", "DUDES_RUNTIME_DIR", "UNOWNED"] {
+        let mut launch = f.launch.clone();
+        launch.spec.env.push(EnvVar::new(name, "ambient"));
+        assert!(
+            f.profile
+                .prepare_scoped(launch, Fixture::attempt())
+                .is_err()
+        );
+    }
+    assert!(f.runner.calls.lock().unwrap().is_empty());
+    assert!(!f.profile.home.exists());
+}
+
+#[test]
 fn the_owned_child_checks_the_same_binding_before_enqueuing_its_one_task() {
     use dudes_providers::protocol::ProtocolAction;
     #[derive(Debug)]
