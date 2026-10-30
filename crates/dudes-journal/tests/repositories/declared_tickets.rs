@@ -590,10 +590,10 @@ fn each_declared_ticket_carrier_requires_its_exact_required_header() {
 }
 
 #[test]
-fn replay_refuses_an_unconfined_start_whose_declaration_is_narrower_than_the_hire() {
-    for (declared, reason) in [
-        (None, RepositoryStateError::Start),
-        (Some(&[1][..]), RepositoryStateError::Declaration),
+fn replay_takes_an_unconfined_start_over_the_full_hire_and_refuses_a_narrower_one() {
+    for (declared, refused) in [
+        (None, None),
+        (Some(&[1][..]), Some(RepositoryStateError::Declaration)),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
@@ -604,12 +604,15 @@ fn replay_refuses_an_unconfined_start_whose_declaration_is_narrower_than_the_hir
             Record::TicketStartedWithRepositories(Box::new(start)),
         );
         drop(writer);
-        assert!(
-            matches!(
-                Reader::open(&journal),
-                Err(Error::Repository { reason: got, .. }) if got == reason
+        match refused {
+            None => assert!(Reader::open(&journal).is_ok(), "{declared:?}"),
+            Some(reason) => assert!(
+                matches!(
+                    Reader::open(&journal),
+                    Err(Error::Repository { reason: got, .. }) if got == reason
+                ),
+                "{reason:?}"
             ),
-            "{reason:?}"
-        );
+        }
     }
 }

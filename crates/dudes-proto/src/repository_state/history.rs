@@ -684,9 +684,6 @@ fn validate_start(
     };
     hire.require_full_declaration(&scope.declaration)
         .map_err(|_| RepositoryStateError::Declaration)?;
-    if hire.policy.require_confined().is_err() {
-        return Err(RepositoryStateError::Start);
-    }
     if !ticket.queued
         || ticket.seq != start.expected_seq
         || ticket.status != CardStatus::Claimed

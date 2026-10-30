@@ -16,6 +16,8 @@ use dudes_proto::{
 };
 use dudes_types::{CardId, CardStatus, GitCommit, Seq, Timestamp};
 
+#[path = "repository_tests/attach.rs"]
+mod attach;
 #[path = "repository_tests/restart.rs"]
 mod restart;
 

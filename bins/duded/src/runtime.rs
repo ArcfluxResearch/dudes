@@ -380,6 +380,27 @@ fn missing_unconfined_copy(
     .flatten()
 }
 
+/// An attached session records the instructions it started with in the one folder it opens,
+/// and a multi-repository agent's record names every copy.
+pub(crate) const ATTACH_MULTI_REPOSITORY_REFUSAL: &str =
+    "Opening the real CLI is not available for a multi-repository agent yet.";
+
+/// The reason shown for a goal set outside a ticket on a multi-repository agent. The check of
+/// such a goal has no single folder to run in, so only a ticket gives the agent a goal for now.
+pub(crate) const GOAL_OUTSIDE_TICKET_REFUSAL: &str = "A goal outside a ticket is not available for a multi-repository agent yet. Give it a ticket instead.";
+
+fn refuse_goal_outside_a_ticket(
+    repositories: &dudes_proto::repository::HireRepositories,
+) -> Result<(), RpcError> {
+    match repositories.workplace() {
+        dudes_proto::repository::Workplace::Unconfined(_) => {
+            Err(error(ErrorCode::Refused, GOAL_OUTSIDE_TICKET_REFUSAL))
+        }
+        dudes_proto::repository::Workplace::Single(_)
+        | dudes_proto::repository::Workplace::Confined => Ok(()),
+    }
+}
+
 fn known_preappend_refusal(error: &anyhow::Error) -> bool {
     error.downcast_ref::<KnownNoEffect>().is_some()
         || error.downcast_ref::<HireAuthorityRefusal>().is_some()
@@ -3762,6 +3783,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         else {
             return refused(Refusal::AgentAbsent);
         };
+        refuse_goal_outside_a_ticket(&agent.repositories)?;
         if agent.halted {
             return refused(Refusal::AgentHalted);
         }
@@ -3872,6 +3894,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 format!("there is no live agent {}", params.agent),
             ));
         };
+        refuse_goal_outside_a_ticket(&row.repositories)?;
         // No evidence can complete a Claimed or Todo goal, so
         // a fresh one is refused before any append.
         if matches!(
@@ -4126,6 +4149,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         };
         if row.halted {
             return Some("agent_halted");
+        }
+        if refuse_goal_outside_a_ticket(&row.repositories).is_err() {
+            return Some("multi_repository");
         }
         if row.goal != Some(request.goal) {
             return Some("stale_goal");
@@ -4488,6 +4514,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let mut start = Some(start);
         let mut native_settlements = 0;
         let mut attached_queries = BTreeSet::new();
+        // Per pump, so a gap whose hold request was a no-op (fast-failure protection pending)
+        // is reported again on the next pump instead of staying silent.
+        let mut copy_gaps_reported = BTreeSet::new();
         let outcome = 'work: {
             loop {
                 if let Some(Input::PredicateEndedWithoutVerdict { goal }) = queue.front()
@@ -4529,9 +4558,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 {
                     break 'work Err(error);
                 }
-                self.sup.observe_repository_admission(
-                    self.ctx.repository_observation(self.sup.world()),
-                );
+                let (admission, gaps) = self.ctx.repository_observation_with_gaps(self.sup.world());
+                self.sup.observe_repository_admission(admission);
+                for (agent, worktree) in gaps {
+                    if copy_gaps_reported.insert(agent) {
+                        queue.push_back(Input::CopyMissing { agent, worktree });
+                    }
+                }
                 let Self {
                     sup, ctx, closing, ..
                 } = self;
@@ -5803,6 +5836,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         check_terminal_size(cols, rows)?;
         if self.ctx.holds_pty(agent) {
             return Err(refused("that agent already has an attached PTY"));
+        }
+        if self.sup.world().agents.get(&agent).is_some_and(|row| {
+            matches!(
+                row.repositories.workplace(),
+                dudes_proto::repository::Workplace::Unconfined(_)
+            )
+        }) {
+            return Err(refused(ATTACH_MULTI_REPOSITORY_REFUSAL));
         }
         if self
             .sup

@@ -543,6 +543,7 @@ test('each admission refusal explains why nothing was recorded', async () => {
       + 'Start a new task is available when Start new tasks is on in Settings and this agent’s project is enrolled.',
     predicate_claimed: 'This task checks whether a card is assigned, which cannot prove that work finished. Nothing changed.',
     predicate_todo: 'This task checks whether a card is To do, which cannot prove that work finished. Nothing changed.',
+    multi_repository: 'A goal outside a ticket is not available for a multi-repository agent yet. Give it a ticket instead.',
   };
   for (const [reason, text] of Object.entries(said)) {
     resetFloorStore();
@@ -738,7 +739,7 @@ test('the response map: every row, and anything off its row proves nothing', () 
     [202, JSON.stringify({ request_id: REQUEST_ID, state: 'pending', goal: G2 }), { kind: 'unknown' }],
     [409, '', { kind: 'conflict' }],
     ...['agent_absent', 'agent_halted', 'stale_goal', 'turn_open', 'predicate_claimed', 'predicate_todo',
-      'workspace_unavailable', 'profile_changed', 'goal_exhausted', 'check_running', 'check_limit', 'check_cannot_run',
+      'workspace_unavailable', 'profile_changed', 'goal_exhausted', 'multi_repository', 'check_running', 'check_limit', 'check_cannot_run',
       'check_already_passes', 'check_did_not_finish']
       .map((reason) => [409, JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason }), { kind: 'refused', reason }]),
     [409, JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason: 'check_passed' }), { kind: 'unknown' }],

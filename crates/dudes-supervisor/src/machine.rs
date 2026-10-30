@@ -1214,6 +1214,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         self.pending.clear();
         match input {
             Input::MissingWorktrees(agents) => self.set_missing_worktrees(agents),
+            Input::CopyMissing { agent, worktree } => {
+                self.hold_for_missing_worktree(agent, worktree);
+            }
             Input::Started => self.on_started(operation),
             Input::InstructionLaunchCleanupUnconfirmed { turn } => {
                 self.instruction_launch_cleanup_unconfirmed(turn);
@@ -2142,23 +2145,27 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// drained, so an agent that is resumed after its tree is restored is not held again.
     fn hold_missing_worktrees(&mut self) {
         for (agent, worktree) in std::mem::take(&mut self.missing_worktrees) {
-            let Some(row) = self.world.agents.get(&agent) else {
-                continue;
-            };
-            if row.retired || row.automatic_hold.is_some() || self.protection_pending(agent) {
-                continue;
-            }
-            if row
-                .repositories
-                .worktrees()
-                .any(|leased| leased == worktree)
-            {
-                self.hold_agent(
-                    agent,
-                    Provenance::Observed,
-                    dudes_proto::AutomaticHold::WorktreeMissing { worktree },
-                );
-            }
+            self.hold_for_missing_worktree(agent, worktree);
+        }
+    }
+
+    fn hold_for_missing_worktree(&mut self, agent: AgentId, worktree: WorktreeId) {
+        let Some(row) = self.world.agents.get(&agent) else {
+            return;
+        };
+        if row.retired || row.automatic_hold.is_some() || self.protection_pending(agent) {
+            return;
+        }
+        if row
+            .repositories
+            .worktrees()
+            .any(|leased| leased == worktree)
+        {
+            self.hold_agent(
+                agent,
+                Provenance::Observed,
+                dudes_proto::AutomaticHold::WorktreeMissing { worktree },
+            );
         }
     }
 
@@ -2614,14 +2621,25 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(adapter) = self.adapters.get(row.provider) else {
             return;
         };
-        let Some(repository) = row.repositories.singleton() else {
-            return;
+        let (cwd, extra_dirs): (&std::path::Path, Vec<PathBuf>) = match row.repositories.workplace()
+        {
+            dudes_proto::repository::Workplace::Single(repository) => {
+                (repository.cwd(), Vec::new())
+            }
+            dudes_proto::repository::Workplace::Unconfined(hire) => {
+                let mut copies = hire.execution_directories();
+                let Some(primary) = copies.next() else {
+                    return;
+                };
+                (primary, copies.map(Path::to_path_buf).collect())
+            }
+            dudes_proto::repository::Workplace::Confined => return,
         };
         let agent_dir = self.agent_dir(agent);
         let ctx = AgentCtx {
-            extra_dirs: &[],
+            extra_dirs: &extra_dirs,
             agent,
-            cwd: repository.cwd(),
+            cwd,
             agent_dir: &agent_dir,
             daemon_env: &self.config.daemon_env,
             sandbox: row.sandbox,

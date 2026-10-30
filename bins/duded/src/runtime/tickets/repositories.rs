@@ -90,9 +90,6 @@ impl CurrentHireAdmission<'_> {
                 let HireRepositories::Scoped(hire) = &row.repositories else {
                     anyhow::bail!("the ticket requires a scoped hire");
                 };
-                if hire.policy.require_confined().is_err() {
-                    anyhow::bail!("the ticket requires a confined hire");
-                }
                 ensure!(
                     row.mcp.hire_lsn == start.repositories.hired_lsn
                         && hire
@@ -218,9 +215,6 @@ impl CurrentHireAdmission<'_> {
             anyhow::bail!("the ticket requires a scoped hire");
         };
         recorded.require_full_declaration(declaration)?;
-        if recorded.policy.require_confined().is_err() {
-            anyhow::bail!("the ticket requires a confined hire");
-        }
         ensure!(
             recorded.project.id == declaration.project,
             "the agent belongs to another project"

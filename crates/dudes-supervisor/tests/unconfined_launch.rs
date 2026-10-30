@@ -244,3 +244,56 @@ fn a_hire_with_declared_servers_launches_them_as_a_single_repository_agent_does(
     );
     assert_eq!(launched[0].cwd, copy_of("service"));
 }
+
+#[test]
+fn a_missing_copy_reported_while_protection_is_pending_still_ends_in_a_hold() {
+    use dudes_proto::RecordKind;
+    let mut harness = Harness::new();
+    let (agent, _) = hire_into(&mut harness, RepositoryPolicy::OperatorTrustV1, &LABELS);
+    let worktree = harness.supervisor.world().agents[&agent]
+        .repositories
+        .worktrees()
+        .nth(1)
+        .expect("a second leased copy");
+    harness.unfsynced.insert(RecordKind::AgentHeld);
+    let before = harness.trace.len();
+    harness.drive(Input::LaunchAdmissionRefused {
+        agent,
+        turn: None,
+        refusal: dudes_supervisor::SharedFolderRefusal::CandidateFolderUnresolved,
+        dispatch_token: None,
+    });
+    let pending = harness.trace[before..]
+        .iter()
+        .find_map(|seen| match seen {
+            Seen::Persist { token, entry } if matches!(entry.record, Record::AgentHeld { .. }) => {
+                Some(*token)
+            }
+            _ => None,
+        })
+        .expect("protection's hold is parked");
+    harness.drive(Input::CopyMissing { agent, worktree });
+    assert!(
+        harness.supervisor.world().agents[&agent]
+            .automatic_hold
+            .is_none()
+    );
+    harness.acknowledge(pending);
+    assert!(
+        harness.supervisor.world().agents[&agent]
+            .automatic_hold
+            .is_some(),
+        "the agent is held once protection settles, never unheld and silent"
+    );
+    harness.drive(Input::CopyMissing { agent, worktree });
+    assert_eq!(
+        harness
+            .records()
+            .filter(
+                |record| matches!(record, Record::AgentHeld { agent: held, .. } if *held == agent)
+            )
+            .count(),
+        1,
+        "a hold already recorded is not repeated"
+    );
+}

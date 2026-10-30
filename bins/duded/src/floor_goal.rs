@@ -111,7 +111,7 @@ pub enum GoalOutcome {
     Refused {
         /// The request identity as the page sent it.
         request_id: String,
-        /// `agent_absent`, `agent_halted`, `stale_goal`, `turn_open`, `predicate_claimed`,
+        /// `agent_absent`, `agent_halted`, `multi_repository`, `stale_goal`, `turn_open`, `predicate_claimed`,
         /// `predicate_todo`, then `workspace_unavailable`, `profile_changed` and
         /// `goal_exhausted` for a change, or `goal_not_exhausted`, `workspace_unavailable` and
         /// `profile_changed` for a renewal, then `check_running`, `check_limit`,

@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use dudes_proto::repository::{HireRepositories, RepoId};
+use dudes_proto::repository::{Confinement, HireRepositories, RepoId};
 use dudes_proto::{GitState, GitView, RepositoryReadSelection};
 use dudes_supervisor::World;
 use dudes_types::{AgentId, Timestamp};
@@ -152,23 +152,24 @@ impl GitTarget {
                 _ => Some(Self::Refused(GitState::InvalidSelection)),
             },
             HireRepositories::Scoped(hire) => {
-                if hire.policy.require_confined().is_err() {
-                    return Some(Self::Refused(GitState::InvalidSelection));
-                }
                 let full_hire = hire.recorded();
-                let ids = match &request.repositories {
-                    None if hire.repositories.entries().len() == 1 => hire
-                        .repositories
-                        .entries()
-                        .iter()
-                        .map(|entry| entry.repo_id.clone())
-                        .collect::<Vec<_>>(),
-                    Some(RepositoryReadSelection::Hired) => hire
+                let confinement = hire.policy.confinement();
+                let hired: Vec<RepoId> = match confinement {
+                    Confinement::Confined => hire
                         .repositories
                         .entries()
                         .iter()
                         .map(|entry| entry.repo_id.clone())
                         .collect(),
+                    Confinement::Unconfined => hire
+                        .repositories
+                        .primary_first()
+                        .map(|entry| entry.repo_id.clone())
+                        .collect(),
+                };
+                let ids = match &request.repositories {
+                    None if hired.len() == 1 || confinement == Confinement::Unconfined => hired,
+                    Some(RepositoryReadSelection::Hired) => hired,
                     Some(RepositoryReadSelection::Repository { repo_id })
                         if hire.repositories.get(repo_id).is_some() =>
                     {
@@ -526,15 +527,15 @@ mod tests {
     const AGENT: &str = "01J00000000000000000000000";
 
     #[test]
-    fn an_unconfined_hire_is_refused_a_git_view_while_a_confined_one_is_read() {
+    fn an_unconfined_hire_is_given_a_git_view_like_a_confined_one() {
         let (mut world, confined, agent) = crate::classify::scoped_socket::tests::pending_hire();
         world
             .apply_checked(Lsn::from_parts(1, 256).unwrap(), &confined)
             .unwrap();
         let request = GitRequest::singleton(agent);
-        assert!(!matches!(
+        assert!(matches!(
             GitTarget::selected(&world, &request),
-            Some(GitTarget::Refused(_))
+            Some(GitTarget::Repositories { .. })
         ));
         let (mut world, _, _) = crate::classify::scoped_socket::tests::pending_hire();
         let unconfined = Entry {
@@ -548,7 +549,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             GitTarget::selected(&world, &request),
-            Some(GitTarget::Refused(GitState::InvalidSelection))
+            Some(GitTarget::Repositories { .. })
         ));
     }
 

@@ -164,7 +164,7 @@ fn payload<'de, T: Deserialize<'de>>(value: &'de Value, kind: &str) -> Result<T,
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use dudes_types::{AgentId, ModelSelection, SessionId};
 
@@ -291,6 +291,45 @@ mod tests {
                 .attached(&ctx, &minted, &ModelSelection::provider_default())
                 .is_none(),
             "a daemon-minted session is not vendor-confirmed and cannot be attached"
+        );
+    }
+
+    #[test]
+    fn attached_launch_adds_each_further_copy_with_a_flag_of_its_own() {
+        let adapter = ClaudeAdapter::new(config::ClaudeConfig::default());
+        let copies = [PathBuf::from("/work/api"), PathBuf::from("/work/docs")];
+        let ctx = AgentCtx {
+            extra_dirs: &copies,
+            agent: AgentId::parse(AGENT).expect("fixture agent id"),
+            cwd: Path::new("/work/web"),
+            agent_dir: Path::new(AGENT_DIR),
+            daemon_env: &[],
+            sandbox: None,
+            trusted: true,
+            max_turns: None,
+            max_budget: None,
+            mcp_servers: &[],
+        };
+        let adapter: &dyn Adapter = &adapter;
+        let session = TurnSession::Resume(SessionId::from(UUID));
+        let spec = adapter
+            .attached(&ctx, &session, &ModelSelection::named("sonnet"))
+            .expect("attachable");
+        assert_eq!(spec.cwd, Path::new("/work/web"));
+        assert_eq!(
+            spec.argv[3..],
+            [
+                OsString::from("--settings"),
+                Path::new(AGENT_DIR)
+                    .join("hooks/settings.json")
+                    .into_os_string(),
+                OsString::from("--add-dir"),
+                OsString::from("/work/api"),
+                OsString::from("--add-dir"),
+                OsString::from("/work/docs"),
+                OsString::from("--model"),
+                OsString::from("sonnet"),
+            ]
         );
     }
 

@@ -19,6 +19,7 @@ pub(super) use common::repository_runner::Runner;
 mod browser_groups;
 mod unconfined_options;
 mod unconfined_recovery;
+mod unconfined_sites;
 
 pub(super) struct Setup {
     pub(super) fixture: common::Fixture,
@@ -27,6 +28,7 @@ pub(super) struct Setup {
     runner: Arc<Runner>,
     git: Git,
     pub(super) host: common::SharedHost,
+    pty_opened: Arc<std::sync::Mutex<Vec<dudes_providers::launch::LaunchSpec>>>,
 }
 
 impl Setup {
@@ -102,6 +104,7 @@ impl Setup {
             runner,
             git,
             host: common::SharedHost::new(),
+            pty_opened: Arc::default(),
         }
     }
 
@@ -146,6 +149,7 @@ impl Setup {
                 dudes_providers::pi::config::PiConfig::default(),
             )),
         ]);
+        seams.pty_host = Box::new(unconfined_sites::RecordingPtyHost(self.pty_opened.clone()));
         let mut daemon = crate::boot_with_options(&self.settings, seams, options).unwrap();
         daemon.ctx.current_repositories.test_hire_capability = capability;
         daemon.ctx.current_repositories.test_hire_policy =
@@ -153,7 +157,7 @@ impl Setup {
         daemon
     }
 
-    fn boot_unconfined(
+    pub(super) fn boot_unconfined(
         &self,
     ) -> Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng> {
         self.boot_unconfined_with(
@@ -180,7 +184,7 @@ impl Setup {
         self.start_from(self.boot(capability))
     }
 
-    fn start_from(
+    pub(super) fn start_from(
         &self,
         daemon: Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng>,
     ) -> (common::Running, WorktreeHires, HireParams) {
@@ -222,6 +226,39 @@ impl Setup {
         let daemon = self.boot(true);
         let plan = daemon.repository_hire_plan(params).unwrap();
         (daemon, plan)
+    }
+
+    /// The agent's working folders as the journal records them, the primary copy first.
+    pub(super) fn copies_of(&self, agent: dudes_types::AgentId) -> Vec<std::path::PathBuf> {
+        let mut world = dudes_supervisor::World::default();
+        for (lsn, entry) in self.fixture.entries() {
+            world.apply(lsn, &entry);
+        }
+        let dudes_proto::repository::HireRepositories::Scoped(hire) =
+            &world.agents[&agent].repositories
+        else {
+            panic!("a repository hire");
+        };
+        hire.execution_directories()
+            .map(Path::to_path_buf)
+            .collect()
+    }
+
+    /// Whether a launch works in the primary copy and adds each other copy, nothing else.
+    pub(super) fn assert_primary_with_others_added(
+        &self,
+        spawn: &dudes_providers::launch::LaunchSpec,
+        agent: dudes_types::AgentId,
+    ) {
+        let copies = self.copies_of(agent);
+        assert_eq!(spawn.cwd, copies[0]);
+        let added: Vec<_> = spawn
+            .argv
+            .windows(2)
+            .filter(|pair| pair[0] == "--add-dir")
+            .map(|pair| std::path::PathBuf::from(&pair[1]))
+            .collect();
+        assert_eq!(added[1..], copies[1..]);
     }
 
     fn assert_cleaned(&self, count: usize) {
