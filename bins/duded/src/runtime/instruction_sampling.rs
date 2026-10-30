@@ -11,7 +11,7 @@ use dudes_proto::instruction::{
     NativeInstructionPath,
 };
 use dudes_proto::instruction_state::InstructionSnapshotEvidence;
-use dudes_proto::repository::{HireRepositories, RepositoryTurnGrant};
+use dudes_proto::repository::{Confinement, HireRepositories, RepositoryTurnGrant};
 use dudes_proto::repository_instruction::{
     INSTRUCTION_BATCH_VERSION, RepositoryInstructionBinding, RepositoryInstructionSnapshot,
     RepositoryInstructionStart,
@@ -41,6 +41,8 @@ pub(super) struct LegacySampleJob {
     pub(super) sources: Vec<InstructionSource>,
     pub(super) membership_unknown: bool,
     candidate_context_unknown: bool,
+    /// The owner's launch only adds this folder to its working copy.
+    added_copy: bool,
     pub(super) uncertain_folders: Vec<PathBuf>,
     pub(super) selection: ModelSelection,
     pub(super) baseline: Option<Box<InstructionSnapshot>>,
@@ -1099,7 +1101,11 @@ fn assemble(job: &LegacySampleJob, sampled_at: Timestamp) -> InstructionSnapshot
         daemon_composition: digest(b"dudes.native-instruction-composition.v1"),
     };
     for source in members.iter().take(MAX_INSTRUCTION_PARTICIPANTS) {
-        let declaration = source.declaration(&candidate, &job.selection);
+        let declaration = if job.added_copy && source.agent == job.agent {
+            source.added_copy_declaration(&candidate, &job.selection)
+        } else {
+            source.declaration(&candidate, &job.selection)
+        };
         let context = if let Some(lease) = source.lease {
             ProjectInstructionContext::OwnedWorktree(lease)
         } else if members.len() == 1 && !incomplete {
@@ -1374,6 +1380,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
             sources,
             membership_unknown: census.membership_unknown,
             candidate_context_unknown: census.candidate_context_unknown,
+            added_copy: false,
             uncertain_folders: census.uncertain_folders.into_iter().collect(),
             selection: selection.clone(),
             baseline: baseline.cloned().map(Box::new),
@@ -1514,6 +1521,8 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
                     sources: sources.clone(),
                     membership_unknown: census.membership_unknown,
                     candidate_context_unknown: false,
+                    added_copy: grant.policy.confinement() == Confinement::Unconfined
+                        && member.repo_id != *grant.repositories.primary_id(),
                     uncertain_folders: census.uncertain_folders.iter().cloned().collect(),
                     selection: selection.clone(),
                     baseline: baseline
@@ -1733,6 +1742,7 @@ mod tests {
             sources: Vec::new(),
             membership_unknown: false,
             candidate_context_unknown: false,
+            added_copy: false,
             uncertain_folders: Vec::new(),
             selection: ModelSelection::provider_default(),
             baseline: None,

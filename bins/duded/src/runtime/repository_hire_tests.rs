@@ -17,9 +17,10 @@ use crate::worktree::hire::{RepositoryHirePlan, WorktreeHires};
 pub(super) use common::repository_runner::Runner;
 
 mod browser_groups;
+mod unconfined_instructions;
 mod unconfined_options;
 mod unconfined_recovery;
-mod unconfined_sites;
+pub(in crate::runtime) mod unconfined_sites;
 
 pub(super) struct Setup {
     pub(super) fixture: common::Fixture,

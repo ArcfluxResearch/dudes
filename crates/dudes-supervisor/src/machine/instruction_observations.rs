@@ -54,6 +54,26 @@ impl InstructionSource {
         cwd: &Path,
         selection: &ModelSelection,
     ) -> dudes_providers::instructions::InstructionDeclaration {
+        self.declared(cwd, selection, false)
+    }
+
+    /// Declare a copy the launch only adds to the working copy, where just the engine's own
+    /// skills, commands and agents are loaded.
+    #[must_use]
+    pub fn added_copy_declaration(
+        &self,
+        cwd: &Path,
+        selection: &ModelSelection,
+    ) -> dudes_providers::instructions::InstructionDeclaration {
+        self.declared(cwd, selection, true)
+    }
+
+    fn declared(
+        &self,
+        cwd: &Path,
+        selection: &ModelSelection,
+        added_copy: bool,
+    ) -> dudes_providers::instructions::InstructionDeclaration {
         let ctx = AgentCtx {
             extra_dirs: &[],
             agent: self.agent,
@@ -66,9 +86,12 @@ impl InstructionSource {
             max_budget: self.max_budget,
             mcp_servers: &[],
         };
-        let mut declaration = self
-            .adapter
-            .instruction_manifest(&ctx, self.mode, selection);
+        let mut declaration = if added_copy {
+            self.adapter.added_copy_manifest(&ctx, self.mode, selection)
+        } else {
+            self.adapter
+                .instruction_manifest(&ctx, self.mode, selection)
+        };
         if self.clipped {
             declaration
                 .gaps
@@ -937,9 +960,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 let dudes_proto::repository::HireRepositories::Scoped(hire) = scope.hire() else {
                     return None;
                 };
-                if hire.policy.require_confined().is_err() {
-                    return None;
-                }
                 Some((
                     dudes_proto::repository_instruction::RepositoryInstructionBinding {
                         hired_lsn: scope.hired_lsn(),

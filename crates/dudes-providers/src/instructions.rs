@@ -746,6 +746,32 @@ pub(crate) fn claude_manifest(
     declaration
 }
 
+/// What Claude loads from a hired copy that is only added to the working copy: the names and
+/// bodies under its `.claude` skills, commands and agents folders. Its memory files, settings
+/// and MCP file do not load from an added directory, so they are not candidates here.
+pub(crate) fn claude_added_copy_manifest(
+    ctx: &AgentCtx<'_>,
+    mode: DeclarationMode,
+) -> InstructionDeclaration {
+    let mut declaration = InstructionDeclaration::new(mode, ctx);
+    if let Some(path) = declaration.path(ctx.cwd) {
+        let root = InstructionRoot::ExecutionDirectory(path);
+        for directory in [".claude/skills", ".claude/commands", ".claude/agents"] {
+            declaration.input(
+                root.clone(),
+                DiscoveryRule::MarkdownRules {
+                    directory: directory.into(),
+                    scope: RuleDirectoryScope::Root,
+                },
+                Activation::Active,
+                EvidenceRevision::ClaudeCurrentDocumentation,
+                ImportRule::None,
+            );
+        }
+    }
+    declaration
+}
+
 #[derive(Clone, Copy)]
 enum ExplicitSelector {
     File(ExplicitFilePurpose),
@@ -1188,6 +1214,50 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn an_added_claude_copy_declares_only_its_skill_command_and_agent_trees() {
+        let adapter = ClaudeAdapter::default();
+        let supplied = [EnvVar::new("CLAUDE_CONFIG_DIR", "profiles/claude")];
+        for (mode, declared) in [
+            (
+                Mode::Managed,
+                DeclarationMode::ClaudeManaged(IsolationMode::Default),
+            ),
+            (Mode::Attached, DeclarationMode::ClaudeAttached),
+        ] {
+            let added = adapter.added_copy_manifest(
+                &ctx(&supplied, true),
+                mode,
+                &ModelSelection::provider_default(),
+            );
+            assert_eq!(added.mode, declared);
+            assert_eq!(added.gaps, []);
+            let trees: Vec<_> = added
+                .inputs
+                .iter()
+                .map(|input| {
+                    assert_eq!(
+                        input.root,
+                        InstructionRoot::ExecutionDirectory("project/selected-worktree".into())
+                    );
+                    assert_eq!(input.activation, Activation::Active);
+                    assert_eq!(input.imports, ImportRule::None);
+                    match &input.rule {
+                        DiscoveryRule::MarkdownRules { directory, scope } => {
+                            assert_eq!(*scope, RuleDirectoryScope::Root);
+                            directory.clone()
+                        }
+                        other => panic!("{other:?}"),
+                    }
+                })
+                .collect();
+            assert_eq!(
+                trees,
+                names(&[".claude/skills", ".claude/commands", ".claude/agents"])
+            );
+        }
     }
 
     #[test]

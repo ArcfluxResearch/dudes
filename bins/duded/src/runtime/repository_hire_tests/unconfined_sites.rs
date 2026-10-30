@@ -79,7 +79,7 @@ fn session() -> crate::floor_session::SessionIdentity {
     .0
 }
 
-fn send_chat(running: &common::Running, agent: AgentId) {
+pub(in crate::runtime) fn send_chat(running: &common::Running, agent: AgentId) {
     let body = json!({
         "request_id": "A".repeat(43),
         "agent": agent.to_string(),
@@ -92,7 +92,7 @@ fn send_chat(running: &common::Running, agent: AgentId) {
     ));
 }
 
-fn world_of(setup: &Setup) -> dudes_supervisor::World {
+pub(super) fn world_of(setup: &Setup) -> dudes_supervisor::World {
     let mut world = dudes_supervisor::World::default();
     for (lsn, entry) in setup.fixture.entries() {
         world.apply(lsn, &entry);

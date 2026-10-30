@@ -265,6 +265,16 @@ pub trait Adapter: Send + Sync {
     ) -> InstructionDeclaration {
         InstructionDeclaration::missing(self.provider(), mode)
     }
+    /// Pure candidate discovery for a hired copy that the launch only adds to its working copy.
+    /// An engine that cannot add a copy supplies explicit unknown coverage.
+    fn added_copy_manifest(
+        &self,
+        _ctx: &AgentCtx<'_>,
+        mode: Mode,
+        _selection: &ModelSelection,
+    ) -> InstructionDeclaration {
+        InstructionDeclaration::missing(self.provider(), mode)
+    }
     /// How this provider's session id comes into existence. Pure and constant.
     fn session_acquisition(&self) -> SessionAcquisition;
     /// The model this adapter would select for a managed turn right now, as its own raw spelling.

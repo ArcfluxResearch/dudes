@@ -54,6 +54,10 @@ fn recorded(daemon: &mut TestDaemon, record: Record) -> Lsn {
 }
 
 fn fixture() -> (Setup, TestDaemon, AgentId) {
+    fixture_with(false)
+}
+
+fn setup_with_profile() -> Setup {
     let mut setup = Setup::new();
     let profile = setup.fixture.runtime.path().join("profile");
     std::fs::create_dir_all(profile.join(".claude")).unwrap();
@@ -65,19 +69,40 @@ fn fixture() -> (Setup, TestDaemon, AgentId) {
             "HOME",
             profile.to_str().unwrap(),
         ));
-    let (mut running, hires, params) = setup.start(true);
+    setup
+}
+
+fn fixture_with(unconfined: bool) -> (Setup, TestDaemon, AgentId) {
+    let setup = setup_with_profile();
+    let (mut running, hires, params) = if unconfined {
+        setup.start_from(setup.boot_unconfined())
+    } else {
+        setup.start(true)
+    };
     let agent = hires.hire(params).unwrap().agent;
     running.stop(ExitCause::Ended);
-    let mut daemon = setup.boot(false);
+    let mut daemon = if unconfined {
+        setup.boot_unconfined()
+    } else {
+        setup.boot(false)
+    };
     daemon.started().unwrap();
     (setup, daemon, agent)
 }
 
+fn ticket(daemon: &mut TestDaemon, agent: AgentId) -> RepositoryTurnGrant {
+    ticket_declaring(daemon, agent, &["web", "api"])
+}
+
 #[expect(
     clippy::too_many_lines,
-    reason = "one immutable ticket prefix retains the real declared subset and check authority"
+    reason = "one immutable ticket prefix retains the real declared set and check authority"
 )]
-fn ticket(daemon: &mut TestDaemon, agent: AgentId) -> RepositoryTurnGrant {
+fn ticket_declaring(
+    daemon: &mut TestDaemon,
+    agent: AgentId,
+    declared: &[&str],
+) -> RepositoryTurnGrant {
     let row = &daemon.sup.world().agents[&agent];
     let HireRepositories::Scoped(hire) = &row.repositories else {
         unreachable!()
@@ -87,9 +112,10 @@ fn ticket(daemon: &mut TestDaemon, agent: AgentId) -> RepositoryTurnGrant {
         project: hire.project.id.clone(),
         catalog_lsn: hire.catalog_lsn,
         repositories: RepositorySet::new(
-            dudes_proto::repository::RepoId::parse("web").unwrap(),
-            ["web", "api"]
-                .into_iter()
+            dudes_proto::repository::RepoId::parse(declared[0]).unwrap(),
+            declared
+                .iter()
+                .copied()
                 .map(|id| {
                     let repo_id = dudes_proto::repository::RepoId::parse(id).unwrap();
                     RepositoryEntry {
@@ -675,4 +701,300 @@ fn a_missing_undeclared_copy_blocks_accept_and_done() {
 #[test]
 fn a_replaced_undeclared_copy_blocks_accept_and_done() {
     unknown_copy(true);
+}
+
+fn full_declaration(daemon: &TestDaemon, agent: AgentId) -> Vec<String> {
+    let HireRepositories::Scoped(hire) = &daemon.sup.world().agents[&agent].repositories else {
+        unreachable!()
+    };
+    hire.repositories
+        .primary_first()
+        .map(|member| member.repo_id.as_str().to_owned())
+        .collect()
+}
+
+fn copies_of(daemon: &TestDaemon, agent: AgentId) -> Vec<std::path::PathBuf> {
+    match &daemon.sup.world().agents[&agent].repositories {
+        HireRepositories::Scoped(hire) => hire
+            .repositories
+            .entries()
+            .iter()
+            .map(|member| member.value.recorded.execution.directory.clone())
+            .collect(),
+        HireRepositories::Legacy(_) => unreachable!(),
+    }
+}
+
+fn write_skill(copy: &Path, text: &str) {
+    let directory = copy.join(".claude/skills/review");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("SKILL.md"), text).unwrap();
+}
+
+fn sampled_paths(member: &RepositoryInstructionSnapshot) -> Vec<std::path::PathBuf> {
+    member
+        .snapshot
+        .inputs
+        .iter()
+        .filter(|input| {
+            matches!(
+                input.fingerprint,
+                dudes_proto::InstructionFingerprint::File { .. }
+            )
+        })
+        .filter_map(|input| input.path.to_path().ok())
+        .collect()
+}
+
+fn turn_ended(agent: AgentId, turn: TurnId) -> Record {
+    Record::TurnEnded {
+        agent,
+        turn,
+        mode: Mode::Managed,
+        provenance: dudes_types::Provenance::Observed,
+        exit: dudes_proto::ExitStatus::UNKNOWN,
+        usage: None,
+        model_usage: std::collections::BTreeMap::new(),
+        last_message: None,
+        session: None,
+        outcome: None,
+        final_reply: None,
+        elapsed_ms: None,
+        session_usage: None,
+        step_digest: None,
+        context: None,
+    }
+}
+
+#[test]
+fn an_added_copy_is_sampled_for_its_skills_and_never_for_its_memory_files() {
+    let (_setup, mut daemon, agent) = fixture_with(true);
+    let declared = full_declaration(&daemon, agent);
+    let grant = ticket_declaring(
+        &mut daemon,
+        agent,
+        &declared.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let owner = InstructionObservationOwner::Managed {
+        agent,
+        turn: TurnId::from_parts(3, 3),
+        issue: InstructionIssueAssociation::Prospective,
+    };
+    let copies = copies_of(&daemon, agent);
+    for copy in &copies {
+        std::fs::write(copy.join("CLAUDE.md"), "memory").unwrap();
+        write_skill(copy, "review v1");
+    }
+    let (start, _) = sample(&mut daemon, owner, &grant, None);
+    let primary_index = start
+        .members
+        .iter()
+        .position(|member| member.repo_id == *grant.repositories.primary_id())
+        .unwrap();
+    let primary = sampled_paths(&start.members[primary_index]);
+    assert!(
+        primary.contains(&copies[primary_index].join("CLAUDE.md")),
+        "{primary:?}"
+    );
+    assert!(!primary.contains(&copies[primary_index].join(".claude/skills/review/SKILL.md")));
+    for (index, member) in start.members.iter().enumerate() {
+        if index != primary_index {
+            assert_eq!(
+                sampled_paths(member),
+                [copies[index].join(".claude/skills/review/SKILL.md")],
+                "an added copy contributes exactly its skill tree"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_skill_changed_in_a_secondary_copy_during_a_ticket_round_blocks_done_until_reviewed() {
+    let (setup, mut daemon, agent) = fixture_with(true);
+    let declared = full_declaration(&daemon, agent);
+    let grant = ticket_declaring(
+        &mut daemon,
+        agent,
+        &declared.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let turn = TurnId::from_parts(3, 3);
+    let owner = InstructionObservationOwner::Managed {
+        agent,
+        turn,
+        issue: InstructionIssueAssociation::Prospective,
+    };
+    let copies = copies_of(&daemon, agent);
+    let secondary_id = declared.last().unwrap().clone();
+    let HireRepositories::Scoped(hire) = &daemon.sup.world().agents[&agent].repositories else {
+        unreachable!()
+    };
+    let secondary = hire
+        .repositories
+        .entries()
+        .iter()
+        .position(|member| member.repo_id.as_str() == secondary_id)
+        .unwrap();
+    write_skill(&copies[secondary], "review v1");
+    let (start, _) = sample(&mut daemon, owner, &grant, None);
+    let baseline = append(
+        &mut daemon,
+        Record::InstructionObservationBatchStarted(start.clone()),
+    );
+    issue(&mut daemon, agent, turn, grant.clone());
+    write_skill(&copies[secondary], "review v2, now with an extra step");
+    let end_lsn = append(&mut daemon, turn_ended(agent, turn));
+    let (ending, comparisons) = sample(&mut daemon, owner, &grant, Some(&start));
+    let finish = dudes_proto::repository_instruction::RepositoryInstructionFinish {
+        v: ending.v,
+        binding: ending.binding,
+        owner,
+        ticket: ending.ticket,
+        baseline: dudes_proto::InstructionBaselineRef::Started { lsn: baseline },
+        members: comparisons
+            .unwrap()
+            .into_iter()
+            .map(
+                |member| dudes_proto::repository_instruction::RepositoryInstructionSettlement {
+                    repo_id: member.repo_id,
+                    ending_root: member.ending_root,
+                    settlement: InstructionSettlement::Compared {
+                        end: dudes_proto::InstructionEndBoundary::ManagedTurn { turn, end_lsn },
+                        sampled_at: ending.members[0].snapshot.sampled_at,
+                        recovery: false,
+                        comparison: member.comparison,
+                    },
+                },
+            )
+            .collect(),
+    };
+    append(
+        &mut daemon,
+        Record::InstructionObservationBatchFinished(finish),
+    );
+    let card = grant.ticket.as_ref().unwrap().card;
+    assert!(
+        daemon
+            .sup
+            .world()
+            .instructions
+            .pending_for_goal(grant.ticket.as_ref().unwrap().goal)
+    );
+    let review = daemon
+        .sup
+        .world()
+        .instructions
+        .review(card, digest)
+        .unwrap()
+        .unwrap();
+    let changed: Vec<_> = review
+        .changed_paths
+        .iter()
+        .filter_map(|change| change.repo_id.as_ref().map(|repo| repo.as_str().to_owned()))
+        .collect();
+    assert_eq!(changed, [secondary_id]);
+    let seq = daemon.ctx.projections.card(card).unwrap().unwrap().seq;
+    let next = daemon.ctx.writer.next_lsn().unwrap();
+    let error = daemon
+        .ctx
+        .append(
+            daemon.sup.world(),
+            &Entry {
+                at: daemon.ctx.clock.now(),
+                record: Record::CardTransition {
+                    card,
+                    from: CardStatus::Review,
+                    to: CardStatus::Done,
+                    by: Actor::Peer { pid: 7, uid: None },
+                    expected_seq: seq,
+                    reason: None,
+                },
+            },
+        )
+        .unwrap_err();
+    assert!(
+        error.chain().any(
+            |cause| cause
+                .downcast_ref::<dudes_journal::Error>()
+                .is_some_and(|error| matches!(
+                    error,
+                    dudes_journal::Error::InstructionAdmission { .. }
+                        | dudes_journal::Error::Instruction { .. }
+                ))
+        ),
+        "{error:#}"
+    );
+    assert_eq!(daemon.ctx.writer.next_lsn().unwrap(), next);
+    assert!(setup.host.spawned().is_empty());
+}
+
+#[test]
+fn an_edit_in_a_non_ticket_turn_is_recorded_and_is_preexisting_at_the_next_ticket_baseline() {
+    use crate::runtime::repository_hire_tests::unconfined_sites::send_chat;
+
+    let setup = setup_with_profile();
+    let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
+    let agent = hires.hire(params).unwrap().agent;
+    let copies = setup.copies_of(agent);
+    write_skill(&copies[1], "review v1");
+    send_chat(&running, agent);
+    let turn = setup
+        .fixture
+        .await_record("the spawn", |record| match record {
+            Record::TurnSpawned { turn, .. } => Some(*turn),
+            _ => None,
+        });
+    write_skill(&copies[1], "review v2, edited during a chat turn");
+    common::end_turn(&running.handle, turn);
+    let finished =
+        setup
+            .fixture
+            .await_record("the chat turn's observation", |record| match record {
+                Record::InstructionObservationBatchFinished(batch) => Some(batch.clone()),
+                _ => None,
+            });
+    running.stop(ExitCause::Ended);
+    assert_eq!(finished.ticket, None);
+    let skill = copies[1].join(".claude/skills/review/SKILL.md");
+    let changed: Vec<_> = finished
+        .members
+        .iter()
+        .flat_map(|member| match &member.settlement {
+            InstructionSettlement::Compared { comparison, .. } => comparison
+                .changes
+                .iter()
+                .filter_map(|change| change.path.to_path().ok())
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(changed, [skill.clone()]);
+
+    let mut daemon = setup.boot_unconfined();
+    daemon.started().unwrap();
+    let declared = full_declaration(&daemon, agent);
+    let grant = ticket_declaring(
+        &mut daemon,
+        agent,
+        &declared.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let owner = InstructionObservationOwner::Managed {
+        agent,
+        turn: TurnId::from_parts(3, 3),
+        issue: InstructionIssueAssociation::Prospective,
+    };
+    let (start, _) = sample(&mut daemon, owner, &grant, None);
+    assert!(
+        start
+            .members
+            .iter()
+            .any(|member| sampled_paths(member).contains(&skill)),
+        "the edited skill is part of the ticket's baseline"
+    );
+    let (_, comparisons) = sample(&mut daemon, owner, &grant, Some(&start));
+    let ticket_changes: usize = comparisons
+        .unwrap()
+        .iter()
+        .map(|member| member.comparison.changes.len())
+        .sum();
+    assert_eq!(ticket_changes, 0, "the earlier edit is preexisting");
 }
