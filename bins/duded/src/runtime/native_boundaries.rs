@@ -168,7 +168,13 @@ impl InheritedNativeBoundaries {
                 || attempt.owner != captured.owner
                 || attempt.spawn_lsn != Some(captured.spawn_lsn)
                 || attempt.boundary_settled.is_some()
-                || !same_prior_run_scope(host, &captured.key, attempt.legacy_snapshot())
+                || !attempt.snapshot.as_ref().is_some_and(|evidence| {
+                    let mut samples = evidence.samples().peekable();
+                    samples.peek().is_some()
+                        && samples.all(|(_, snapshot)| {
+                            same_prior_run_scope(host, &captured.key, Some(snapshot))
+                        })
+                })
             {
                 continue;
             }
@@ -233,7 +239,7 @@ fn same_prior_run_scope<H: ProcessHost>(
     }
 }
 
-fn owner_agent(owner: InstructionObservationOwner) -> dudes_types::AgentId {
+pub(super) fn owner_agent(owner: InstructionObservationOwner) -> dudes_types::AgentId {
     match owner {
         InstructionObservationOwner::Managed { agent, .. }
         | InstructionObservationOwner::AttachedProcess { agent, .. }
@@ -263,8 +269,12 @@ pub(super) fn owed_retry_observation(
         && attempt.spawn_lsn.is_none()
         && matches!(attempt.baseline, dudes_proto::InstructionBaselineRef::Started { lsn }
             if lsn == started)
-        && attempt.legacy_snapshot().is_some_and(|snapshot| {
-            snapshot.source == dudes_proto::InstructionSnapshotSource::Fresh
+        && attempt.snapshot.as_ref().is_some_and(|evidence| {
+            let mut samples = evidence.samples().peekable();
+            samples.peek().is_some()
+                && samples.all(|(_, snapshot)| {
+                    snapshot.source == dudes_proto::InstructionSnapshotSource::Fresh
+                })
         }))
     .then_some((started, owner))
 }
@@ -415,6 +425,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             || self.attached_instruction_boundaries.len() >= MAX_OWNED_TARGET_QUERY_ROWS
             || self.pending_attached_calls.len() >= MAX_OWNED_TARGET_QUERY_ROWS
             || self.pending_native_launches.len() >= MAX_OWNED_TARGET_QUERY_ROWS
+            || self.scoped_launches.len() >= MAX_OWNED_TARGET_QUERY_ROWS
             || self.native_acknowledgements.len() >= MAX_OWNED_TARGET_QUERY_ROWS
             || self.cleanup_ptys.len() > MAX_OWNED_TARGET_QUERY_ROWS
     }
@@ -426,7 +437,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         issued_turn: Option<TurnId>,
     ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
         let owed = missing_spawn_binding(sup, agent, issued_turn);
-        self.admit_prior_attempt_for(sup, agent, issued_turn, owed.as_ref())
+        self.admit_prior_attempt_for(sup, agent, issued_turn, owed.as_ref(), None)
     }
 
     pub(super) fn admit_prior_attempt<R: Rng>(
@@ -435,23 +446,26 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         agent: dudes_types::AgentId,
         issued_turn: Option<TurnId>,
     ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
-        self.admit_prior_attempt_for(sup, agent, issued_turn, None)
+        self.admit_prior_attempt_with_candidate(sup, agent, issued_turn, None)
     }
 
-    fn admit_prior_attempt_for<R: Rng>(
+    pub(super) fn admit_prior_attempt_with_candidate<R: Rng>(
         &self,
         sup: &Supervisor<Shared<C>, R>,
         agent: AgentId,
         issued_turn: Option<TurnId>,
-        consent: Option<&dudes_proto::recovery::RecoveryBinding>,
+        candidate: Option<crate::codex_profile::scoped::Attempt>,
     ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
-        let refused = || dudes_supervisor::SharedFolderRefusal::PriorAttemptUnresolved { agent };
-        let world = sup.world();
-        if self.native_admission_capacity_exceeded(world) {
-            return Err(dudes_supervisor::SharedFolderRefusal::ChildLimit);
-        }
-        if self
-            .pending_native_launches
+        self.admit_prior_attempt_for(sup, agent, issued_turn, None, candidate)
+    }
+
+    fn has_pending_runtime_launch(
+        &self,
+        world: &dudes_supervisor::World,
+        agent: AgentId,
+        candidate: Option<crate::codex_profile::scoped::Attempt>,
+    ) -> bool {
+        self.pending_native_launches
             .values()
             .any(|pending| owner_agent(pending.owner) == agent)
             || self
@@ -472,7 +486,26 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 .native_acknowledgements
                 .values()
                 .any(|pending| owner_agent(pending.owner) == agent)
-        {
+            || self.scoped_launches.iter().any(|(turn, reservation)| {
+                owner_agent(reservation.attempt().owner) == agent
+                    && !reservation.matches_candidate(*turn, world, Some(agent), candidate)
+            })
+    }
+
+    fn admit_prior_attempt_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+        issued_turn: Option<TurnId>,
+        consent: Option<&dudes_proto::recovery::RecoveryBinding>,
+        candidate: Option<crate::codex_profile::scoped::Attempt>,
+    ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
+        let refused = || dudes_supervisor::SharedFolderRefusal::PriorAttemptUnresolved { agent };
+        let world = sup.world();
+        if self.native_admission_capacity_exceeded(world) {
+            return Err(dudes_supervisor::SharedFolderRefusal::ChildLimit);
+        }
+        if self.has_pending_runtime_launch(world, agent, candidate) {
             return Err(refused());
         }
         let mut native = world.managed_native_spawn_receipts();

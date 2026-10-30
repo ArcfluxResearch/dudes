@@ -78,5 +78,7 @@ export function shortcutRows(mac: boolean): readonly ShortcutRow[] {
     { keys: ['l'], label: 'Show the List' },
     { keys: [mac ? '⌘K' : 'Ctrl+K'], label: 'Command menu' },
     { keys: ['?'], label: 'Show this sheet' },
+    { keys: [mac ? '⌘↵' : 'Ctrl+↵'], label: 'Create the ticket, in the New ticket dialog' },
+    { keys: ['p', 'd', 'a'], label: 'Open Priority, Done when or Agent, in the New ticket dialog' },
   ];
 }

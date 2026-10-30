@@ -44,7 +44,7 @@ export const CONTROL_VIEWS: readonly { readonly view: ControlView; readonly labe
 
 export const CONTROL_TITLE_ID = 'control-title';
 
-type BoardOverlay = { readonly kind: 'new' } | { readonly kind: 'card'; readonly id: string; readonly full: boolean } | null;
+type BoardOverlay = { readonly kind: 'new'; readonly requested: boolean } | { readonly kind: 'card'; readonly id: string; readonly full: boolean } | null;
 
 export function toggledView(open: ControlView | null, pressed: ControlView, focused: boolean): ControlView | null {
   return open === pressed && !focused ? null : pressed;
@@ -146,10 +146,10 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onOpen
     setOverlay({ kind: 'card', id, full: asPage });
   }
 
-  function openNewTicket(from: HTMLElement | null): void {
+  function openNewTicket(from: HTMLElement | null, requested = false): void {
     opener.current = from;
     seenCard.current = null;
-    setOverlay({ kind: 'new' });
+    setOverlay({ kind: 'new', requested });
   }
 
   function expandCard(): void {
@@ -160,7 +160,7 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onOpen
 
   useRequestedNewTicket(view === 'board' && ticketActionsOpen(floor), (title) => {
     if (title !== '') writeNewTicketDraft({ ...readNewTicketDraft(), title });
-    openNewTicket(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    openNewTicket(document.activeElement instanceof HTMLElement ? document.activeElement : null, title !== '');
   });
 
   useLayoutEffect(() => {
@@ -233,15 +233,18 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onOpen
       <div className={cn('control-view min-h-0 min-w-0 overflow-auto', page || view === 'board' ? 'flex-none overflow-visible' : 'flex-auto')}>{panels[view]}</div>
       {view === 'board' ? <TicketNotice floor={floor}
         card={open ? overlay?.kind === 'card' ? overlay.id : null : undefined} /> : null}
-      {view === 'board' ? <Dialog className="ticket-dialog focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-focus m-0 ml-auto h-dvh max-h-none w-[min(100vw,56rem,max(35rem,70vw))] max-w-[100vw] rounded-none rounded-l-xl border-y-0 border-r-0 data-[composer=true]:m-auto data-[composer=true]:h-fit data-[composer=true]:max-h-[calc(100dvh-4rem)] data-[composer=true]:w-[min(36rem,calc(100vw-2rem))] data-[composer=true]:rounded-xl data-[composer=true]:border max-[801px]:data-[composer=false]:w-screen max-[801px]:data-[composer=false]:rounded-none"
+      {view === 'board' ? <Dialog className="ticket-dialog focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-focus m-0 ml-auto h-dvh max-h-none w-[min(100vw,56rem,max(35rem,70vw))] max-w-[100vw] rounded-none rounded-l-xl border-y-0 border-r-0 data-[composer=true]:m-auto data-[composer=true]:h-fit data-[composer=true]:max-h-[calc(100dvh-4rem)] data-[composer=true]:w-[min(40rem,calc(100vw-2rem))] data-[composer=true]:rounded-xl data-[composer=true]:border max-[801px]:data-[composer=false]:w-screen max-[801px]:data-[composer=false]:rounded-none"
         id="selected-card-detail" ref={dialog}
         data-composer={overlay?.kind === 'new'}
         aria-label={overlay?.kind === 'new' ? 'New ticket' : 'Ticket detail'}
         onCancel={(event) => { event.preventDefault(); closeOverlay(); }}
         onKeyDown={(event) => { if (event.key === 'Escape') event.stopPropagation(); }}>
-        {showing ? <><header className={cn('ticket-dialog-head sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-6 py-2',
-          overlay?.kind === 'new' && 'border-b-0 pb-0')}>
-          <p className={cn('m-0 text-caption font-semibold tracking-label text-muted uppercase', overlay?.kind === 'new' && 'sr-only')}>{overlay?.kind === 'new' ? 'New ticket' : 'Ticket review'}</p>
+        {showing ? overlay?.kind === 'new' ? <div className="ticket-composer flex flex-col">
+          {floor.ticket ? null : <div className="px-6 pt-4"><TicketOffHint floor={floor} /></div>}
+          <NewTicketForm floor={floor} onHire={onHire} onCancel={closeOverlay} requested={overlay.requested}
+            onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id, full: false }); }} />
+        </div> : <><header className="ticket-dialog-head sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-6 py-2">
+          <p className="m-0 text-caption font-semibold tracking-label text-muted uppercase">Ticket review</p>
           <div className="ml-auto flex items-center gap-2">
             {overlay?.kind === 'card' ? <>
               <CopyLink id={overlay.id} />
@@ -250,12 +253,7 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onOpen
             <IconButton label="Close ticket dialog" icon={<X {...ICON} />} className="ticket-dialog-close" onClick={closeOverlay} />
           </div>
         </header>
-        {overlay?.kind === 'new' ? <div className="ticket-composer flex flex-col gap-2 px-6 pt-2 pb-6"><h3 className="m-0 text-page font-semibold">New ticket</h3>
-          <p className="m-0 text-base text-muted">Tell an agent what you want to happen.</p>
-          {floor.ticket ? null : <TicketOffHint floor={floor} />}
-          <NewTicketForm floor={floor} onHire={onHire} onCancel={closeOverlay}
-            onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id, full: false }); }} />
-        </div> : ticketBody}
+        {ticketBody}
         </> : null}
       </Dialog> : null}
     </section>

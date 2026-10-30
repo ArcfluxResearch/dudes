@@ -45,6 +45,9 @@ impl Fixture {
             facts: RecoveryFacts {
                 through: Lsn(60),
                 binding: binding.clone(),
+                authority: crate::recovery_state::admission::RecoveryAuthority::Legacy {
+                    worktree: None,
+                },
                 source_issue: RecoveryIssue {
                     lsn: Lsn(20),
                     issued: RecoveryIssued {

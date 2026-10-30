@@ -130,10 +130,18 @@ where
         RecoveryCache::load_transition(&CacheReader(tables.recovery), through, transition)?;
     match transition {
         RecoveryTransition::Invalidated(record) => {
-            let positions = match record.evidence {
+            let mut positions = match record.evidence {
                 dudes_proto::recovery::RecoveryInvalidationEvidence::RecordedChange { lsn, .. } => vec![lsn],
                 dudes_proto::recovery::RecoveryInvalidationEvidence::BrowserAuthorityUnavailable { .. } => Vec::new(),
             };
+            positions.push(
+                cache
+                    .state()
+                    .claim_receipt(record.claim)?
+                    .authorization
+                    .binding
+                    .hired_lsn,
+            );
             let sources =
                 RecoveryCache::load_sources(&CacheReader(tables.recovery), through, &positions)?;
             cache

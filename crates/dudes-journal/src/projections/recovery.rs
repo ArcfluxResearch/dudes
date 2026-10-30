@@ -6,7 +6,7 @@ use dudes_proto::record::Hex32;
 use dudes_proto::recovery::RecoveryBinding;
 use dudes_proto::recovery::{RecoveryAuthorized, RecoveryClaimRef, RecoveryPlan, RecoveryWork};
 use dudes_proto::recovery_state::admission::{
-    RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent, RecoveryLeaseCurrent,
+    RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent,
 };
 use dudes_proto::recovery_state::cache::{RecoveryCache, RecoveryCacheReader, RecoveryCacheRow};
 use dudes_proto::recovery_state::history::{
@@ -671,24 +671,31 @@ where
         .model_selection
         .clone_from(&turn.model_selection);
     let ticket = current_ticket(tables.board, &goal, initial.history())?;
-    let lease = agent
+    let lease_rows = agent
         .repositories
-        .singleton()
-        .ok_or(RecoveryStateError::Binding)?
-        .worktree()
+        .worktrees()
         .map(|id| {
-            let row = super::get_row::<super::WorktreeRow>(tables.leases, &id.to_bytes())?
-                .ok_or(RecoveryStateError::Binding)?;
-            Ok::<_, Error>(RecoveryLeaseCurrent {
-                worktree: id,
-                agent: row.agent,
-                removed: row.removed,
-            })
+            super::get_row::<super::WorktreeRow>(tables.leases, &id.to_bytes())?
+                .ok_or_else(|| Error::from(RecoveryStateError::Binding))
         })
-        .transpose()?;
+        .collect::<Result<Vec<_>>>()?;
+    let leases = lease_rows
+        .iter()
+        .map(
+            |row| dudes_proto::repository_state::history::RepositoryLease {
+                worktree: row.worktree,
+                leased_lsn: row.leased_lsn,
+                origin: &row.origin,
+                path: &row.path,
+                base: row.base,
+                agent: row.agent,
+                removed: row.removed.is_some(),
+            },
+        )
+        .collect();
     let current = RecoveryCurrent {
         through,
-        agent: current_agent(&agent)?,
+        agent: current_agent(&agent),
         goal: RecoveryGoalCurrent {
             goal: goal.id,
             agent: goal.agent,
@@ -720,7 +727,8 @@ where
             confirmation_lsn: turn.confirmation_lsn,
         },
         ticket,
-        lease,
+        repositories,
+        leases,
     };
     let sources = RecoveryCache::load_sources(&CacheReader(table), through, &current.sources())?;
     Ok(current.bind(binding, sources.history())?)
@@ -739,7 +747,7 @@ where
     let scoped =
         RecoveryCache::load_transition(&CacheReader(tables.recovery), through, transition)?;
     if let RecoveryTransition::Invalidated(record) = transition {
-        let positions = match record.evidence {
+        let mut positions = match record.evidence {
             dudes_proto::recovery::RecoveryInvalidationEvidence::RecordedChange { lsn, .. } => {
                 vec![lsn]
             }
@@ -747,6 +755,14 @@ where
                 ..
             } => Vec::new(),
         };
+        positions.push(
+            scoped
+                .state()
+                .claim_receipt(record.claim)?
+                .authorization
+                .binding
+                .hired_lsn,
+        );
         let sources =
             RecoveryCache::load_sources(&CacheReader(tables.recovery), through, &positions)?;
         return Ok(scoped
@@ -837,18 +853,12 @@ fn standing_control(agent: &super::AgentRow) -> RecoveryStandingControl {
     }
 }
 
-fn current_agent(
-    agent: &super::AgentRow,
-) -> std::result::Result<RecoveryAgentCurrent, RecoveryStateError> {
-    Ok(RecoveryAgentCurrent {
+fn current_agent(agent: &super::AgentRow) -> RecoveryAgentCurrent {
+    RecoveryAgentCurrent {
         agent: agent.id,
         hired_lsn: agent.hired_lsn,
         provider: agent.provider,
-        worktree: agent
-            .repositories
-            .singleton()
-            .ok_or(RecoveryStateError::Binding)?
-            .worktree(),
+        worktree: agent.repositories.primary_worktree(),
         mode: agent.mode,
         retired: false,
         control: standing_control(agent),
@@ -856,7 +866,7 @@ fn current_agent(
         control_lsn: agent.control_lsn,
         session: agent.session.clone(),
         session_lsn: agent.session_lsn,
-    })
+    }
 }
 
 fn current_ticket(

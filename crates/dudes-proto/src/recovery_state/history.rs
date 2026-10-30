@@ -366,6 +366,14 @@ pub struct RecoveryWitnessContext {
     pub cleared_goal: Option<crate::instruction::InstructionGoalClear>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+enum RepositoryWitness {
+    Hire(Box<crate::repository::RepositoryHire>),
+    Issue(Box<crate::repository::RepositoryTurnGrant>),
+    Start(Box<crate::repository::TicketStartRepositories>),
+}
+
 /// One immutable projection of an actual journal record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -375,9 +383,38 @@ pub struct RecoveryWitness {
     context: RecoveryWitnessContext,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     semantic_issue: Option<crate::issue::ManagedIssueKind>,
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    repositories: Option<RepositoryWitness>,
 }
 
 impl RecoveryWitness {
+    /// Complete original scoped hire, absent for historical singleton hires.
+    #[must_use]
+    pub fn scoped_hire(&self) -> Option<&crate::repository::RepositoryHire> {
+        match &self.repositories {
+            Some(RepositoryWitness::Hire(hire)) => Some(hire),
+            _ => None,
+        }
+    }
+
+    /// The issue's complete frozen selection, independent of the hire primary.
+    #[must_use]
+    pub fn grant(&self) -> Option<&crate::repository::RepositoryTurnGrant> {
+        match &self.repositories {
+            Some(RepositoryWitness::Issue(grant)) => Some(grant),
+            _ => None,
+        }
+    }
+
+    /// Exact authority frozen by a scoped ticket start.
+    #[must_use]
+    pub fn ticket_start(&self) -> Option<&crate::repository::TicketStartRepositories> {
+        match &self.repositories {
+            Some(RepositoryWitness::Start(start)) => Some(start),
+            _ => None,
+        }
+    }
+
     /// Actual before-record context, absent when it was not supplied by a fold.
     #[must_use]
     pub const fn context(&self) -> RecoveryWitnessContext {
@@ -420,6 +457,31 @@ impl RecoveryWitness {
             return Err(RecoveryHistoryError::Position);
         }
         if (self.reference.kind == K::TurnIssuedWithRepositories) != self.semantic_issue.is_some() {
+            return Err(RecoveryHistoryError::Identity);
+        }
+        let repository_kind = match &self.repositories {
+            Some(RepositoryWitness::Hire(hire)) => {
+                if self.reference.owner != O::Agent(hire.id)
+                    || !matches!(&self.evidence, E::Hire { provider, worktree, .. } if *provider == hire.provider && *worktree == Some(hire.repositories.repositories.primary().worktree))
+                {
+                    return Err(RecoveryHistoryError::Identity);
+                }
+                K::AgentHiredWithRepositories
+            }
+            Some(RepositoryWitness::Issue(_)) => K::TurnIssuedWithRepositories,
+            Some(RepositoryWitness::Start(_)) => K::TicketStartedWithRepositories,
+            None if matches!(
+                self.reference.kind,
+                K::AgentHiredWithRepositories
+                    | K::TurnIssuedWithRepositories
+                    | K::TicketStartedWithRepositories
+            ) =>
+            {
+                return Err(RecoveryHistoryError::Identity);
+            }
+            None => self.reference.kind,
+        };
+        if repository_kind != self.reference.kind {
             return Err(RecoveryHistoryError::Identity);
         }
         if let Some(attempt) = self.context.attempt
@@ -472,7 +534,10 @@ impl RecoveryWitness {
             return Err(RecoveryHistoryError::Identity);
         }
         let valid = match (&self.evidence, self.reference.owner) {
-            (E::Hire { .. }, O::Agent(_)) => self.reference.kind == K::AgentHired,
+            (E::Hire { .. }, O::Agent(_)) => matches!(
+                self.reference.kind,
+                K::AgentHired | K::AgentHiredWithRepositories
+            ),
             (E::Lease { .. }, O::Worktree(_)) => matches!(
                 self.reference.kind,
                 K::WorktreeLeased | K::WorktreeLeasedWithIdentity
@@ -583,6 +648,38 @@ impl RecoveryHistory {
             return Err(RecoveryHistoryError::ConflictingWitness);
         }
         Ok(())
+    }
+
+    /// Original lease subjects, retained independently of the current active target.
+    pub fn hired_worktrees(
+        &self,
+        binding: &crate::recovery::RecoveryBinding,
+    ) -> Result<Vec<WorktreeId>, RecoveryHistoryError> {
+        let source = self.at(binding.hired_lsn)?;
+        if source.reference.owner != RecoveryWitnessOwner::Agent(binding.work.agent)
+            || !matches!(&source.evidence, RecoveryEvidence::Hire { provider, worktree, .. } if *provider == binding.provider && *worktree == binding.worktree)
+        {
+            return Err(RecoveryHistoryError::Identity);
+        }
+        match source.reference.kind {
+            RecordKind::AgentHired if source.scoped_hire().is_none() => {
+                Ok(binding.worktree.into_iter().collect())
+            }
+            RecordKind::AgentHiredWithRepositories => {
+                let hire = source.scoped_hire().ok_or(RecoveryHistoryError::Identity)?;
+                if binding.worktree != Some(hire.repositories.repositories.primary().worktree) {
+                    return Err(RecoveryHistoryError::Identity);
+                }
+                Ok(hire
+                    .repositories
+                    .repositories
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.value.worktree)
+                    .collect())
+            }
+            _ => Err(RecoveryHistoryError::Identity),
+        }
     }
 
     /// Resolve one exact source reference; absence never becomes a default fact.
@@ -755,6 +852,16 @@ pub(super) fn witness(
         context: RecoveryWitnessContext::default(),
         semantic_issue: matches!(record, Record::TurnIssuedWithRepositories(_))
             .then(|| record.issue_payload().expect("scoped issue").kind()),
+        repositories: match record {
+            Record::AgentHiredWithRepositories(hire) => Some(RepositoryWitness::Hire(hire.clone())),
+            Record::TurnIssuedWithRepositories(issue) => {
+                Some(RepositoryWitness::Issue(Box::new(issue.grant.clone())))
+            }
+            Record::TicketStartedWithRepositories(start) => Some(RepositoryWitness::Start(
+                Box::new(start.repositories.clone()),
+            )),
+            _ => None,
+        },
     }))
 }
 
@@ -1079,6 +1186,14 @@ fn target_evidence(
         return Some((O::Card(created.card), E::Marker));
     }
     match record {
+        Record::AgentHiredWithRepositories(hire) => Some((
+            O::Agent(hire.id),
+            E::Hire {
+                provider: hire.provider,
+                worktree: Some(hire.repositories.repositories.primary().worktree),
+                role_digest: text_digest(&hire.role, hash),
+            },
+        )),
         Record::AgentHired {
             id,
             provider,

@@ -56,6 +56,8 @@ pub struct RecoveryFacts {
     pub binding: RecoveryBinding,
     /// Exact source issue, including its immutable task witness and answers.
     pub source_issue: RecoveryIssue,
+    /// Frozen repository authority, independently of the binding's redundant primary lease.
+    pub authority: admission::RecoveryAuthority,
     /// Latest physical attempt positions, read from the existing turn owner.
     pub attempt: RecoveryAttempt,
     /// Current control identity.

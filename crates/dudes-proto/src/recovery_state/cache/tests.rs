@@ -60,6 +60,7 @@ fn facts() -> RecoveryFacts {
             provider: Provider::Codex,
             model_selection: Some(ModelSelection::provider_default()),
         },
+        authority: crate::recovery_state::admission::RecoveryAuthority::Legacy { worktree: None },
         source_issue: RecoveryIssue {
             lsn: Lsn(20),
             issued: crate::recovery::RecoveryIssued {
