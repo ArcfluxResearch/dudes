@@ -12,22 +12,122 @@ use common::Cli;
 use dudes::exit;
 use dudes_types::{AgentId, MailId};
 
-#[test]
-fn scoped_commands_refuse_before_opening_the_mailbox() {
+fn mailbox() -> (tempfile::TempDir, std::path::PathBuf) {
     let root = tempfile::tempdir().unwrap();
     let mailbox = root.path().join(AgentId::from_parts(1, 1).to_string());
+    fs::create_dir_all(mailbox.join("outbox")).unwrap();
+    fs::create_dir_all(mailbox.join("inbox/.done")).unwrap();
+    (root, mailbox)
+}
+
+fn requests(mailbox: &std::path::Path) -> Vec<(String, serde_json::Value)> {
+    let mut found: Vec<_> = fs::read_dir(mailbox.join("outbox"))
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            (
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap(),
+            )
+        })
+        .collect();
+    found.sort_by(|left, right| left.0.cmp(&right.0));
+    found
+}
+
+#[test]
+fn scoped_acknowledgements_queue_requests_in_the_outbox_and_say_so() {
+    let (root, mailbox) = mailbox();
+    let marker = MailId::from_parts(1, 1);
+    fs::write(mailbox.join("inbox").join(format!("{marker}.json")), "{}").unwrap();
+    let cli = || {
+        Cli::bare()
+            .env("HOME", root.path())
+            .env("DUDES_MAILBOX", &mailbox)
+            .env("DUDES_COMMAND_TRANSPORT", "file-mail")
+    };
+    let done = cli().args(["mail", "done", &marker.to_string()]).run();
+    assert_eq!(done.code(), exit::SUCCESS, "{}", done.output());
+    assert!(done.stdout.contains("queued"), "{}", done.output());
+    assert!(!done.stdout.contains("mail done 0"), "{}", done.output());
+    let ack = cli()
+        .args(["closing", "ack", "--announcement-lsn", "7"])
+        .run();
+    assert_eq!(ack.code(), exit::SUCCESS, "{}", ack.output());
+    assert!(ack.stdout.contains("queued"), "{}", ack.output());
+    assert!(!ack.stdout.contains("closing time acknowledged"));
+    let queued = requests(&mailbox);
+    assert_eq!(queued.len(), 2, "{queued:?}");
+    assert!(
+        queued
+            .iter()
+            .all(|(name, _)| name.ends_with(".control.json"))
+    );
+    let bodies: Vec<_> = queued.iter().map(|(_, body)| body.clone()).collect();
+    assert!(bodies.contains(&serde_json::json!({"request":"mail_done","marker":marker})));
+    assert!(bodies.contains(&serde_json::json!({"request":"closing_ack","announcement":7})));
+    assert!(
+        mailbox
+            .join("inbox")
+            .join(format!("{marker}.json"))
+            .exists()
+    );
+    assert!(
+        !mailbox
+            .join("inbox/.done")
+            .join(format!("{marker}.json"))
+            .exists()
+    );
+}
+
+#[test]
+fn scoped_acknowledgement_requests_stop_when_the_outbox_is_full() {
+    let (root, mailbox) = mailbox();
+    for n in 0..64 {
+        fs::write(mailbox.join("outbox").join(format!("filler-{n}")), "").unwrap();
+    }
     let run = Cli::bare()
         .env("HOME", root.path())
         .env("DUDES_MAILBOX", &mailbox)
         .env("DUDES_COMMAND_TRANSPORT", "file-mail")
-        .args(["mail", "done", &MailId::from_parts(1, 1).to_string()])
+        .args(["closing", "ack", "--announcement-lsn", "7"])
         .run();
-    assert_eq!(run.code(), exit::REFUSED, "{}", run.output());
+    assert_ne!(run.code(), exit::SUCCESS, "{}", run.output());
+    assert!(run.stderr.contains("outbox is full"), "{}", run.output());
+    assert_eq!(fs::read_dir(mailbox.join("outbox")).unwrap().count(), 64);
+}
+
+#[test]
+fn legacy_mail_done_still_moves_the_marker_itself() {
+    let (root, mailbox) = mailbox();
+    let marker = MailId::from_parts(1, 2);
+    let body = serde_json::json!({
+        "id": marker,
+        "from": {"kind": "human"},
+        "to": {"kind": "agent", "agent": AgentId::from_parts(1, 1)},
+        "act": "message",
+        "subject": "subject",
+        "body_len": 0
+    });
+    fs::write(
+        mailbox.join("inbox").join(format!("{marker}.json")),
+        serde_json::to_vec(&body).unwrap(),
+    )
+    .unwrap();
+    let run = Cli::bare()
+        .env("HOME", root.path())
+        .env("DUDES_MAILBOX", &mailbox)
+        .args(["mail", "done", &marker.to_string()])
+        .run();
+    assert_eq!(run.code(), exit::SUCCESS, "{}", run.output());
+    assert!(run.stdout.contains(&format!("mail done {marker}")));
     assert!(
-        run.stderr
-            .contains("dudes mail done is not yet available in a multi-repo ticket")
+        mailbox
+            .join("inbox/.done")
+            .join(format!("{marker}.json"))
+            .exists()
     );
-    assert!(!mailbox.exists());
+    assert!(requests(&mailbox).is_empty());
 }
 
 #[test]
@@ -50,10 +150,6 @@ fn scoped_socket_and_local_commands_refuse_without_connecting_or_writing() {
         (vec!["memory", "read"], "dudes memory read"),
         (vec!["team"], "dudes team"),
         (vec!["whoami"], "dudes whoami"),
-        (
-            vec!["closing", "ack", "--announcement-lsn", "7"],
-            "dudes closing ack",
-        ),
         (
             vec!["project", "remove", "sentinel"],
             "dudes project remove",

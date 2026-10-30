@@ -7546,6 +7546,10 @@ enum PumpOrigin {
 /// differently.
 struct ClosingAckRefusal {
     error: RpcError,
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux")),
+        allow(dead_code, reason = "only the Unix mailbox answers outbox requests")
+    )]
     transient: bool,
 }
 

@@ -636,7 +636,7 @@ mod tests {
         assert!(task.ends_with(&format!("\n\n[browser note]\n{text}\n[end browser note]")));
         assert!(!task.contains("dudes memory"));
         assert!(!task.contains("dudes team"));
-        assert!(!task.contains("dudes mail done"));
+        assert!(task.contains("dudes mail done <mail>"));
     }
 
     #[test]

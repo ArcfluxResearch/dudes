@@ -357,7 +357,7 @@ fn round_trip(body: &str, scoped_file_mail: bool) {
         _ => None,
     });
     if scoped_file_mail {
-        refuse_scoped_done(&fixture, &destination, id);
+        queue_done_for_an_unscoped_hire(&fixture, &destination, id);
     } else {
         acknowledge_once(&fixture, &destination, id);
     }
@@ -439,17 +439,31 @@ fn read_scoped(fixture: &Fixture, destination: &Path, id: MailId, body: &str) {
     );
 }
 
-fn refuse_scoped_done(fixture: &Fixture, destination: &Path, id: MailId) {
+fn queue_done_for_an_unscoped_hire(fixture: &Fixture, destination: &Path, id: MailId) {
     let before = fixture.entries();
     let done = mail_cli(destination, true)
         .args(["mail", "done", &id.to_string()])
         .run();
-    assert_eq!(done.code(), exit::REFUSED, "{}", done.output());
+    assert_eq!(done.code(), exit::SUCCESS, "{}", done.output());
+    assert!(done.stdout.contains("queued"), "{}", done.output());
+    wait(|| {
+        fs::read_dir(destination.join("outbox"))
+            .unwrap()
+            .any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".control.json")
+            })
+    });
+    std::thread::sleep(Duration::from_millis(400));
     assert!(
         destination
             .join("inbox")
             .join(format!("{id}.json"))
-            .exists()
+            .exists(),
+        "a hire without recorded repositories keeps the socket path, so its request is ignored"
     );
     assert_eq!(fixture.entries(), before);
 }
@@ -503,7 +517,8 @@ fn referenced_boundary_cli_round_trip_replies_and_acks_once() {
 }
 
 #[test]
-fn scoped_file_mail_journey_preserves_structural_sender_and_never_acknowledges() {
+fn scoped_file_mail_journey_preserves_structural_sender_and_ignores_a_request_from_an_unscoped_hire()
+ {
     round_trip("Read the request and reply through the owned outbox.", true);
 }
 

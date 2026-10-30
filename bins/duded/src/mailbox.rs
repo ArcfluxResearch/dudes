@@ -326,6 +326,14 @@ impl Mailbox {
         Arc::clone(&self.report)
     }
 
+    /// Treats `agent` as a recorded multi-repository hire and names the directory holding its
+    /// outbox, for a test that has no scoped hire to replay.
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    pub(crate) fn scope_for_test(&mut self, agent: AgentId) -> PathBuf {
+        self.scoped_agents.insert(agent);
+        self.root.join("agents").join(agent.to_string())
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) fn contains(&self, id: MailId) -> bool {
         self.rows.contains_key(&id)

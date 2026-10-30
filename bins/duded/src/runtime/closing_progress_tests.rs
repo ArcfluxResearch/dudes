@@ -302,6 +302,66 @@ fn a_board_record_during_closing_drains_its_cut_before_immediate_retirement() {
 }
 
 #[test]
+fn a_scoped_participants_outbox_acknowledgement_readies_closing_before_the_grace_ends() {
+    let fixture = common::Fixture::new();
+    let mut daemon = boot_daemon(&fixture);
+    let hired = hire_open(&mut daemon, &fixture);
+    let agent_dir = daemon
+        .ctx
+        .mailbox
+        .as_mut()
+        .unwrap()
+        .scope_for_test(hired.agent);
+    let crate::closing::Answer::Announced(started) = daemon
+        .closing_request(crate::closing::Request::Announce)
+        .unwrap()
+    else {
+        panic!("announcement");
+    };
+    daemon.mailbox_pass();
+    let request = |n: u128, announcement: Lsn| {
+        let path = agent_dir.join("outbox").join(format!(
+            "{}.control.json",
+            dudes_types::MailId::from_parts(5, n)
+        ));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "request": "closing_ack",
+                "announcement": announcement
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    };
+    let acknowledged = |daemon: &TestDaemon| {
+        daemon.sup.world().closing.as_ref().unwrap().participants[&hired.agent]
+            .acknowledged
+            .is_some()
+    };
+    let stale = request(1, Lsn(started.announcement.0 + 1));
+    daemon.mailbox_pass();
+    assert!(!acknowledged(&daemon));
+    assert!(!stale.exists());
+    let accepted = request(2, started.announcement);
+    daemon.mailbox_pass();
+    assert!(acknowledged(&daemon));
+    assert!(!accepted.exists());
+    daemon.closing.responses = 0;
+    assert!(!daemon.closing_tick().unwrap());
+    let turn = daemon.sup.world().agents[&hired.agent].open_turn.unwrap();
+    daemon.pump(observed_end(turn)).unwrap();
+    assert!(daemon.closing_tick().unwrap());
+    assert!(
+        daemon
+            .closing
+            .deadline
+            .is_some_and(|deadline| deadline > Instant::now() + Duration::from_secs(300))
+    );
+}
+
+#[test]
 fn complete_stream_snapshot_keeps_final_counts_and_positive_time_after_waiting_is_cleared() {
     let fixture = common::Fixture::new();
     let mut daemon = boot_daemon(&fixture);
