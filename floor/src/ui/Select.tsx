@@ -30,7 +30,7 @@ export interface SelectProps {
   readonly disabled?: boolean;
   readonly autoFocus?: boolean;
   readonly className?: string;
-  /** Classes for the open list, for a list that is wider than its button. */
+  /** Classes for the open list. A list with its own classes is no longer held to the button's width. */
   readonly listClassName?: string;
   /** Opens the list, with focus on the button, each time this number goes up. For a shortcut that names the select. */
   readonly openRequest?: number;
@@ -58,7 +58,7 @@ export function Select({ options, value, onValueChange, id, name, placeholder = 
   const run = useRef({ text: '', at: 0 });
   const selected = options.findIndex((option) => option.value === value);
   const close = useCallback(() => setOpen(false), []);
-  useTopLayerPopover(open, trigger, list, close, true);
+  useTopLayerPopover(open, trigger, list, close, listClassName === undefined);
 
   useEffect(() => {
     if (open) list.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' });

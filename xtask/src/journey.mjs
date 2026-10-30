@@ -209,8 +209,9 @@ export class Journey {
     await this.fill('input[name="title"]', 'Add a second note');
     await this.typeNote('Add one more line to the notes.');
     await this.screen('new ticket');
-    await this.click('.ticket-create');
+    await this.createFromNote();
     await this.until(`Boolean(document.querySelector('.ticket-panel'))`, 'the ticket was not created');
+    await this.until(`document.querySelector('.ticket-panel')?.innerText.includes('Add one more line to the notes.')`, 'the ticket does not show its note');
     await this.screen('ticket to do');
     await this.clickButton('Give to agent', '.ticket-action');
     await this.until(`Boolean(document.querySelector('form[aria-label="Give to agent"]'))`, 'the give form did not open');
@@ -241,6 +242,15 @@ export class Journey {
     await this.until(`Boolean(document.querySelector('[data-ticket-column="done"] .ticket-card'))`, 'the accepted ticket is not in Done');
     await this.screen('ticket accepted');
     check((await stat(join(this.run.repo, 'journey-note.txt')).catch(() => null))?.isFile(), 'the agent left no change in the project');
+  }
+
+  /** Ctrl+Enter pressed in the note creates the ticket, and the editor does not take it for a line break. */
+  async createFromNote() {
+    const inNote = `Boolean(document.activeElement?.closest('[data-ticket-note]'))`;
+    await this.until(inNote, 'the note does not have focus');
+    for (const type of ['keyDown', 'keyUp']) {
+      await this.run.cdp.send('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers: 2 }, this.run.cdp.session);
+    }
   }
 
   /** An unassigned ticket, so the New ticket dialog has an open ticket to find as similar to what is typed. */
