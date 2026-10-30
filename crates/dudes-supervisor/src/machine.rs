@@ -1215,7 +1215,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         match input {
             Input::MissingWorktrees(agents) => self.set_missing_worktrees(agents),
             Input::CopyMissing { agent, worktree } => {
-                self.hold_for_missing_worktree(agent, worktree)
+                self.hold_for_missing_worktree(agent, worktree);
             }
             Input::Started => self.on_started(operation),
             Input::InstructionLaunchCleanupUnconfirmed { turn } => {

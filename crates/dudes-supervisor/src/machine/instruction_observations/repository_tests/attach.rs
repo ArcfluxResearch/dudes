@@ -26,6 +26,10 @@ fn catalog_origin(index: u8) -> TrustedRepository {
 }
 
 /// A hire of three copies whose primary is the middle one, replayed into a harness.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one replayed catalog, trust, lease and hire prefix supplies the attach controls"
+)]
 fn hired_with_three_copies(policy: RepositoryPolicy) -> (Harness, AgentId) {
     let mut harness = Harness::new();
     let ids: Vec<RepoId> = NAMES
