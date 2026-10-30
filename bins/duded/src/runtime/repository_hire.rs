@@ -2,7 +2,8 @@
 
 use dudes_proto::record::RecordedWorkspace;
 use dudes_proto::repository::{
-    RepoId, RepositoryEntry, RepositoryHire, RepositoryPolicy, RepositorySet, ScopedRepositories,
+    Confinement, RepoId, RepositoryEntry, RepositoryHire, RepositoryPolicy, RepositorySet,
+    ScopedRepositories,
 };
 use dudes_proto::rpc::agent::{Checkout, HireParams, HireResult, HireTarget, ProjectHireTarget};
 use dudes_proto::rpc::{ErrorCode, RpcError};
@@ -18,7 +19,14 @@ fn refused(message: impl Into<String>) -> RpcError {
     crate::worktree::unavailable(message)
 }
 
-fn require_scoped_options(params: &HireParams) -> anyhow::Result<()> {
+/// The one policy the daemon records for a project hire.
+pub(super) const HIRE_POLICY: RepositoryPolicy = RepositoryPolicy::WorkingTreeV1;
+
+fn require_scoped_options(params: &HireParams, confinement: Confinement) -> anyhow::Result<()> {
+    match confinement {
+        Confinement::Confined => {}
+        Confinement::Unconfined => anyhow::bail!("unconfined repository hires are not enabled yet"),
+    }
     anyhow::ensure!(
         params.provider == Provider::Claude,
         "restricted repository execution has no verified provider capability for {}",
@@ -113,7 +121,7 @@ impl CurrentHireAdmission<'_> {
         world: &World,
         plan: &RepositoryHirePlan,
     ) -> anyhow::Result<()> {
-        require_scoped_options(&plan.params)?;
+        require_scoped_options(&plan.params, HIRE_POLICY.confinement())?;
         let target = plan
             .params
             .project
@@ -126,7 +134,7 @@ impl CurrentHireAdmission<'_> {
                 && plan.repositories == repositories,
             "the project's configuration or original trust grants changed during the copy"
         );
-        self.require_repository_capability()
+        self.require_repository_capability(HIRE_POLICY.confinement())
     }
 
     pub(super) fn require_scoped_hire_authority(
@@ -134,6 +142,13 @@ impl CurrentHireAdmission<'_> {
         world: &World,
         scope: &ScopedRepositories,
     ) -> anyhow::Result<()> {
+        let confinement = scope.policy.confinement();
+        match confinement {
+            Confinement::Confined => {}
+            Confinement::Unconfined => {
+                anyhow::bail!("unconfined repository hires are not enabled yet")
+            }
+        }
         let target = ProjectHireTarget {
             project_id: scope.project.id.clone(),
             expected_revision: scope.catalog_lsn,
@@ -141,7 +156,6 @@ impl CurrentHireAdmission<'_> {
         let (project, originals) = self.current_repository_hire_facts(world, &target)?;
         anyhow::ensure!(
             scope.project == project
-                && scope.policy == RepositoryPolicy::WorkingTreeV1
                 && scope.repositories.primary_id() == originals.primary_id()
                 && scope.repositories.entries().len() == originals.entries().len(),
             "the complete current repository authority is required"
@@ -155,7 +169,7 @@ impl CurrentHireAdmission<'_> {
                 "a repository copy or original trust grant changed before the hire append"
             );
         }
-        self.require_repository_capability()
+        self.require_repository_capability(confinement)
     }
 }
 
@@ -221,7 +235,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let providers = crate::floor_actions::BROWSER_ENGINES
             .into_iter()
             .map(|provider| {
-                let refusal = if admission.require_repository_capability().is_err() {
+                let refusal = if admission
+                    .require_repository_capability(HIRE_POLICY.confinement())
+                    .is_err()
+                {
                     Some("Multi-repository hiring is not enabled yet.")
                 } else if provider != Provider::Claude {
                     Some("Multi-repository projects are not available for this engine yet.")
@@ -428,7 +445,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "a project hire requires trusted own copies of every repository, without from",
             ));
         }
-        require_scoped_options(&params).map_err(|error| refused(error.to_string()))?;
+        require_scoped_options(&params, HIRE_POLICY.confinement())
+            .map_err(|error| refused(error.to_string()))?;
         if !params.mcp_servers.is_empty() {
             return Err(refused(
                 "restricted repository hires cannot enable MCP servers",
@@ -566,7 +584,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             repositories: ScopedRepositories {
                 project: plan.project.clone(),
                 catalog_lsn: plan.catalog_lsn,
-                policy: RepositoryPolicy::WorkingTreeV1,
+                policy: HIRE_POLICY,
                 repositories: prepared.repositories.clone(),
             },
         };
@@ -607,5 +625,69 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "the repository hire was not acknowledged; copies are retained for replay",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod confinement_tests {
+    use super::*;
+    use crate::runtime::repository_admission::CurrentRepositories;
+    use dudes_proto::record::samples;
+    use dudes_proto::{Record, RecordKind};
+
+    fn params() -> HireParams {
+        let mut params = super::super::work_test_support::hire_params(std::path::Path::new(""));
+        params.model = Some(dudes_types::ModelName::parse("claude-sonnet-4-6").unwrap());
+        params
+    }
+
+    #[test]
+    fn hire_options_take_the_unconfined_arm_only_for_an_unconfined_policy() {
+        let params = params();
+        if let Err(error) = require_scoped_options(&params, Confinement::Confined) {
+            assert!(!error.to_string().contains("unconfined"), "{error}");
+        }
+        let error = require_scoped_options(&params, Confinement::Unconfined).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unconfined repository hires are not enabled yet"
+        );
+    }
+
+    #[test]
+    fn the_capability_gate_stays_closed_for_an_unconfined_policy() {
+        let enrollment = crate::floor_actions::Enrollment::default();
+        let mut current = CurrentRepositories::default();
+        current.test_hire_capability = true;
+        let admission = CurrentHireAdmission::new(&enrollment, &current);
+        admission
+            .require_repository_capability(Confinement::Confined)
+            .unwrap();
+        let error = admission
+            .require_repository_capability(Confinement::Unconfined)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unconfined repository execution is not enabled yet"
+        );
+    }
+
+    #[test]
+    fn an_unconfined_hire_is_refused_before_its_catalog_is_read() {
+        let Record::AgentHiredWithUnconfinedRepositories(hire) =
+            samples::record(RecordKind::AgentHiredWithUnconfinedRepositories)
+        else {
+            unreachable!()
+        };
+        let enrollment = crate::floor_actions::Enrollment::default();
+        let mut current = CurrentRepositories::default();
+        current.test_hire_capability = true;
+        let error = CurrentHireAdmission::new(&enrollment, &current)
+            .require_scoped_hire_authority(&World::default(), &hire.repositories)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unconfined repository hires are not enabled yet"
+        );
     }
 }

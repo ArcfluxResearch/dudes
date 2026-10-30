@@ -593,7 +593,8 @@ impl OnboardingFailure {
                 browser_onboarding: Some(_),
                 ..
             }
-            | Record::AgentHiredWithRepositories(_) => OnboardingFailurePoint::Hire,
+            | Record::AgentHiredWithRepositories(_)
+            | Record::AgentHiredWithUnconfinedRepositories(_) => OnboardingFailurePoint::Hire,
             Record::GoalSet {
                 browser_onboarding: Some(_),
                 ..
@@ -665,6 +666,7 @@ impl OnboardingFailure {
                 browser_onboarding: Some(_),
                 ..
             } | Record::AgentHiredWithRepositories(_)
+                | Record::AgentHiredWithUnconfinedRepositories(_)
         ) {
             return false;
         }
@@ -724,16 +726,22 @@ impl OnboardingPause {
                 Some(Point::AfterHirePermit),
                 Some(Point::AfterHireFsync),
             ),
-            Record::AgentHiredWithRepositories(hire) if hire.browser_onboarding.is_some() => (
-                Some(Point::BeforeHireAppend),
-                Some(Point::AfterHirePermit),
-                Some(Point::AfterHireFsync),
-            ),
+            Record::AgentHiredWithRepositories(hire)
+            | Record::AgentHiredWithUnconfinedRepositories(hire)
+                if hire.browser_onboarding.is_some() =>
+            {
+                (
+                    Some(Point::BeforeHireAppend),
+                    Some(Point::AfterHirePermit),
+                    Some(Point::AfterHireFsync),
+                )
+            }
             Record::AgentHired {
                 browser_onboarding: None,
                 ..
             }
-            | Record::AgentHiredWithRepositories(_) => {
+            | Record::AgentHiredWithRepositories(_)
+            | Record::AgentHiredWithUnconfinedRepositories(_) => {
                 (None, Some(Point::BeforeSocketHireAppend), None)
             }
             record if record.worktree_lease().is_some() => {

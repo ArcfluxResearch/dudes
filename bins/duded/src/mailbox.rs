@@ -337,7 +337,8 @@ impl Mailbox {
                 }
                 self.hired += 1;
             }
-            Record::AgentHiredWithRepositories(hire) => {
+            Record::AgentHiredWithRepositories(hire)
+            | Record::AgentHiredWithUnconfinedRepositories(hire) => {
                 self.live_agents.insert(hire.id);
                 if matches!(
                     hire.provider,

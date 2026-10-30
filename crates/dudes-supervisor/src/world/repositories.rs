@@ -53,7 +53,10 @@ impl World {
         let project = match &entry.record {
             Record::ProjectRepositoriesRecorded { project, .. }
             | Record::RepositoryTrustSet { project, .. } => Some(project.as_str()),
-            Record::AgentHiredWithRepositories(hire) => Some(hire.repositories.project.id.as_str()),
+            Record::AgentHiredWithRepositories(hire)
+            | Record::AgentHiredWithUnconfinedRepositories(hire) => {
+                Some(hire.repositories.project.id.as_str())
+            }
             _ => entry
                 .record
                 .ticket_created()
@@ -65,7 +68,7 @@ impl World {
                         .map(|project| project.id.as_str())
                 }),
         };
-        let needs_hire = matches!(entry.record, Record::AgentHiredWithRepositories(_));
+        let needs_hire = entry.record.repository_hire().is_some();
         let catalog_change = matches!(entry.record, Record::ProjectRepositoriesRecorded { .. });
         let trust: Vec<_> = if needs_hire
             || entry.record.ticket_start().is_some()

@@ -10,6 +10,7 @@ use dudes_supervisor::World;
 use dudes_types::AgentId;
 
 use super::super::repository_admission::CurrentHireAdmission;
+use super::super::repository_hire::HIRE_POLICY;
 
 #[cfg(all(test, unix))]
 mod tests;
@@ -89,6 +90,9 @@ impl CurrentHireAdmission<'_> {
                 let HireRepositories::Scoped(hire) = &row.repositories else {
                     anyhow::bail!("the ticket requires a scoped hire");
                 };
+                if hire.policy.require_confined().is_err() {
+                    anyhow::bail!("the ticket requires a confined hire");
+                }
                 ensure!(
                     row.mcp.hire_lsn == start.repositories.hired_lsn
                         && hire
@@ -121,7 +125,7 @@ impl CurrentHireAdmission<'_> {
         project: &str,
         selected: Option<&[RepoId]>,
     ) -> anyhow::Result<TicketDeclaration> {
-        self.require_repository_capability()?;
+        self.require_repository_capability(HIRE_POLICY.confinement())?;
         let (_, observed) = self.current_project_repositories(world, project)?;
         let wanted = selected.map(|ids| ids.iter().collect::<BTreeSet<_>>());
         if let Some(ids) = selected {
@@ -167,7 +171,7 @@ impl CurrentHireAdmission<'_> {
         world: &World,
         declaration: &TicketDeclaration,
     ) -> anyhow::Result<()> {
-        self.require_repository_capability()?;
+        self.require_repository_capability(HIRE_POLICY.confinement())?;
         let (_, current) = self.current_project_repositories(world, &declaration.project)?;
         ensure!(
             declaration.repositories.entries().iter().all(|entry| {
@@ -197,6 +201,9 @@ impl CurrentHireAdmission<'_> {
         let HireRepositories::Scoped(recorded) = &row.repositories else {
             anyhow::bail!("the ticket requires a scoped hire");
         };
+        if recorded.policy.require_confined().is_err() {
+            anyhow::bail!("the ticket requires a confined hire");
+        }
         ensure!(
             recorded.project.id == declaration.project,
             "the agent belongs to another project"

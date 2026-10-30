@@ -936,6 +936,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 let dudes_proto::repository::HireRepositories::Scoped(hire) = scope.hire() else {
                     return None;
                 };
+                if hire.policy.require_confined().is_err() {
+                    return None;
+                }
                 Some((
                     dudes_proto::repository_instruction::RepositoryInstructionBinding {
                         hired_lsn: scope.hired_lsn(),

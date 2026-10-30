@@ -15,6 +15,9 @@ impl World {
         match &owner.repositories {
             dudes_proto::repository::HireRepositories::Legacy(repository) => Some(repository.cwd()),
             dudes_proto::repository::HireRepositories::Scoped(hire) => {
+                if hire.policy.require_confined().is_err() {
+                    return None;
+                }
                 match self
                     .active_repository_round(self.goals.get(&goal)?.agent)
                     .ok()?

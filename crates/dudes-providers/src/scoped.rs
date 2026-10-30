@@ -3,9 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use dudes_proto::repository::{
-    RepoId, RepositoryEntry, RepositoryPolicy, RepositoryTurnGrant, ScopedRepositories,
-};
+use dudes_proto::repository::{RepoId, RepositoryEntry, RepositoryTurnGrant, ScopedRepositories};
 use dudes_types::{Mode, ModelSelection, Provider};
 use serde::Serialize;
 
@@ -181,6 +179,9 @@ pub enum ScopedError {
     /// Mode/platform is outside the candidate set.
     #[error("execution mode or platform has no scoped recipe")]
     ModeOrPlatform,
+    /// The restricted recipe applies only to a confined repository policy.
+    #[error("the scoped recipe does not apply to an unconfined repository policy")]
+    Unconfined,
     /// The supplied frozen sets disagree.
     #[error("frozen repository authority is inconsistent")]
     Authority,
@@ -229,9 +230,11 @@ fn overlaps(left: &Path, right: &Path) -> bool {
 fn protected_repositories(scope: &ScopedLaunchInputs<'_>) -> Result<Vec<PathBuf>, ScopedError> {
     let hired = scope.hired;
     let grant = scope.grant;
+    if grant.policy.require_confined().is_err() {
+        return Err(ScopedError::Unconfined);
+    }
     if grant.hired_lsn == dudes_types::Lsn::ZERO
         || grant.catalog_lsn == dudes_types::Lsn::ZERO
-        || grant.policy != RepositoryPolicy::WorkingTreeV1
         || grant.project != hired.project.id
         || grant.catalog_lsn != hired.catalog_lsn
         || grant.policy != hired.policy

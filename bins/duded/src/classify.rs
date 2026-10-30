@@ -57,7 +57,7 @@ use crate::ports::{
 };
 use crate::pty_output::OutputSubscription;
 
-mod scoped_socket;
+pub(crate) mod scoped_socket;
 pub(crate) use scoped_socket::{ScopedHires, ScopedSocketAuthorizer};
 
 /// The resolver a daemon runs before it can walk an ancestry chain: every peer is

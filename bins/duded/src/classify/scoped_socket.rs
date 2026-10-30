@@ -1,14 +1,14 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use dudes_proto::repository::HireRepositories;
+use dudes_proto::repository::{Confinement, HireRepositories};
 use dudes_rpc::auth::{Authorizer, PeerClassifier, PeerProvenance, PeerRole, Presented, Refusal};
 use dudes_supervisor::World;
 use dudes_types::AgentId;
 
 /// Scoped owners from completed journal folds, retained after retirement.
 #[derive(Clone, Debug)]
-pub(crate) struct ScopedHires(Arc<RwLock<BTreeSet<AgentId>>>);
+pub(crate) struct ScopedHires(Arc<RwLock<BTreeMap<AgentId, Confinement>>>);
 
 impl ScopedHires {
     pub(crate) fn new(replayed: &World) -> Self {
@@ -22,19 +22,22 @@ impl ScopedHires {
         }
     }
 
-    fn contains(&self, agent: AgentId) -> bool {
+    fn confinement(&self, agent: AgentId) -> Option<Confinement> {
         self.0
             .read()
-            .map_or(true, |members| members.contains(&agent))
+            .map_or(Some(Confinement::Confined), |members| {
+                members.get(&agent).copied()
+            })
     }
 }
 
-fn members(world: &World) -> BTreeSet<AgentId> {
+fn members(world: &World) -> BTreeMap<AgentId, Confinement> {
     world
         .agents
         .iter()
-        .filter_map(|(agent, row)| {
-            matches!(row.repositories, HireRepositories::Scoped(_)).then_some(*agent)
+        .filter_map(|(agent, row)| match &row.repositories {
+            HireRepositories::Scoped(hire) => Some((*agent, hire.policy.confinement())),
+            HireRepositories::Legacy(_) => None,
         })
         .collect()
 }
@@ -60,18 +63,23 @@ impl Authorizer for ScopedSocketAuthorizer {
     ) -> Result<PeerRole, Refusal> {
         let role = self.classifier.authorize(presented, provenance, method)?;
         if let PeerProvenance::Agent(agent) = provenance
-            && self.hires.contains(agent)
+            && let Some(confinement) = self.hires.confinement(agent)
         {
-            return Err(Refusal::unauthorized(format!(
-                "{method} is not yet available in a multi-repo ticket"
-            )));
+            return Err(Refusal::unauthorized(match confinement {
+                Confinement::Confined => {
+                    format!("{method} is not yet available in a multi-repo ticket")
+                }
+                Confinement::Unconfined => {
+                    format!("{method} is not yet available to an unconfined multi-repo hire")
+                }
+            }));
         }
         Ok(role)
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use dudes_proto::record::samples;
     use dudes_proto::rpc::cred::OperatorCredential;
     use dudes_proto::{Entry, Record, RecordKind};
@@ -90,7 +98,7 @@ mod tests {
         }
     }
 
-    fn pending_hire() -> (World, Entry, AgentId) {
+    pub(crate) fn pending_hire() -> (World, Entry, AgentId) {
         let hire = samples::record(RecordKind::AgentHiredWithRepositories);
         let Record::AgentHiredWithRepositories(fields) = &hire else {
             unreachable!()
@@ -177,6 +185,32 @@ mod tests {
             ScopedSocketAuthorizer::new(classifier(agent), ScopedHires::new(&world))
                 .authorize(Presented::default(), peer, "system.ping")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn an_unconfined_hire_is_refused_with_its_own_reason() {
+        let (mut world, _, agent) = pending_hire();
+        let unconfined = entry(samples::record(
+            RecordKind::AgentHiredWithUnconfinedRepositories,
+        ));
+        world
+            .apply_checked(Lsn::from_parts(1, 256).unwrap(), &unconfined)
+            .unwrap();
+        let authorizer = ScopedSocketAuthorizer::new(classifier(agent), ScopedHires::new(&world));
+        let params = json!({"token": TOKEN});
+        let refusal = authorizer
+            .authorize(
+                Presented::from_params(Some(&params)),
+                PeerProvenance::Agent(agent),
+                "agent.ask",
+            )
+            .unwrap_err();
+        assert!(
+            refusal
+                .to_string()
+                .contains("agent.ask is not yet available to an unconfined multi-repo hire"),
+            "{refusal}"
         );
     }
 

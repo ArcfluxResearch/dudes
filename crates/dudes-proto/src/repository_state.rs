@@ -340,7 +340,8 @@ impl Record {
                     worktree: *worktree,
                 },
             }),
-            Self::AgentHiredWithRepositories(hire) => Some(HireRecord {
+            Self::AgentHiredWithRepositories(hire)
+            | Self::AgentHiredWithUnconfinedRepositories(hire) => Some(HireRecord {
                 source: self,
                 agent: hire.id,
                 fields: HireFields {

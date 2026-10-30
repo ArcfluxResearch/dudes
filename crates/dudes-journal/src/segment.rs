@@ -239,7 +239,8 @@ mod tests {
                 start.repositories.hired_lsn,
                 start.repositories.declaration.catalog_lsn,
             ],
-            Record::AgentHiredWithRepositories(hire) => {
+            Record::AgentHiredWithRepositories(hire)
+            | Record::AgentHiredWithUnconfinedRepositories(hire) => {
                 let mut refs = vec![hire.repositories.catalog_lsn];
                 refs.extend(
                     hire.repositories
@@ -793,7 +794,7 @@ mod tests {
 
     #[test]
     fn no_sample_lsn_is_below_the_first_segment() {
-        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 99;
+        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 101;
 
         let mut swept = 0_usize;
         let mut lsns = 0_usize;

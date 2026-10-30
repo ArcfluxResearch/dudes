@@ -1365,7 +1365,9 @@ impl World {
                     },
                 );
             }
-            Record::AgentHired { .. } | Record::AgentHiredWithRepositories(_) => {
+            Record::AgentHired { .. }
+            | Record::AgentHiredWithRepositories(_)
+            | Record::AgentHiredWithUnconfinedRepositories(_) => {
                 let hire = entry.record.hire().expect("hire carrier");
                 let fields = hire.fields;
                 let repositories = prepared_hire.expect("validated hire authority");

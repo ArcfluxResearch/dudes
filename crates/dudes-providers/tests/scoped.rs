@@ -784,6 +784,20 @@ fn incompatible_options_and_authority_are_refused() {
 }
 
 #[test]
+fn an_unconfined_policy_has_no_scoped_recipe() {
+    let mut f = Fixture::new(&["b"]);
+    f.grant.policy = dudes_proto::repository::RepositoryPolicy::OperatorTrustV1;
+    f.hired.policy = dudes_proto::repository::RepositoryPolicy::OperatorTrustV1;
+    let model = ModelSelection::named("claude-sonnet-4-6");
+    assert_eq!(
+        claude()
+            .managed_scoped(&f.ctx(&[]), &f.scope(), "task", &first(), &model)
+            .unwrap_err(),
+        LaunchError::Scoped(ScopedError::Unconfined)
+    );
+}
+
+#[test]
 fn private_control_locations_and_literal_path_patterns_cannot_expand_authority() {
     let f = Fixture::new(&["b"]);
     let ctx = f.ctx(&[]);

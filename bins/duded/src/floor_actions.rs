@@ -582,7 +582,8 @@ impl OnboardingIndex {
                 browser_onboarding: Some(metadata),
                 ..
             } => (*id, metadata, None),
-            Record::AgentHiredWithRepositories(hire) => {
+            Record::AgentHiredWithRepositories(hire)
+            | Record::AgentHiredWithUnconfinedRepositories(hire) => {
                 let Some(metadata) = &hire.browser_onboarding else {
                     return Ok(());
                 };

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::record::{Actor, BrowserControl, Entry, Hex32, Record, RecordKind, TurnOutcome};
 use crate::recovery::{RecoveryIssue, RecoveryIssued, RecoveryWork};
+use crate::repository::Confinement;
 use crate::{AutomaticHold, BrowserNoteDestination, Evidence, LoopDecision};
 
 #[cfg(test)]
@@ -466,13 +467,17 @@ impl RecoveryWitness {
                 {
                     return Err(RecoveryHistoryError::Identity);
                 }
-                K::AgentHiredWithRepositories
+                match hire.repositories.policy.confinement() {
+                    Confinement::Confined => K::AgentHiredWithRepositories,
+                    Confinement::Unconfined => K::AgentHiredWithUnconfinedRepositories,
+                }
             }
             Some(RepositoryWitness::Issue(_)) => K::TurnIssuedWithRepositories,
             Some(RepositoryWitness::Start(_)) => K::TicketStartedWithRepositories,
             None if matches!(
                 self.reference.kind,
                 K::AgentHiredWithRepositories
+                    | K::AgentHiredWithUnconfinedRepositories
                     | K::TurnIssuedWithRepositories
                     | K::TicketStartedWithRepositories
             ) =>
@@ -536,7 +541,9 @@ impl RecoveryWitness {
         let valid = match (&self.evidence, self.reference.owner) {
             (E::Hire { .. }, O::Agent(_)) => matches!(
                 self.reference.kind,
-                K::AgentHired | K::AgentHiredWithRepositories
+                K::AgentHired
+                    | K::AgentHiredWithRepositories
+                    | K::AgentHiredWithUnconfinedRepositories
             ),
             (E::Lease { .. }, O::Worktree(_)) => matches!(
                 self.reference.kind,
@@ -665,7 +672,8 @@ impl RecoveryHistory {
             RecordKind::AgentHired if source.scoped_hire().is_none() => {
                 Ok(binding.worktree.into_iter().collect())
             }
-            RecordKind::AgentHiredWithRepositories => {
+            RecordKind::AgentHiredWithRepositories
+            | RecordKind::AgentHiredWithUnconfinedRepositories => {
                 let hire = source.scoped_hire().ok_or(RecoveryHistoryError::Identity)?;
                 if binding.worktree != Some(hire.repositories.repositories.primary().worktree) {
                     return Err(RecoveryHistoryError::Identity);
@@ -853,7 +861,10 @@ pub(super) fn witness(
         semantic_issue: matches!(record, Record::TurnIssuedWithRepositories(_))
             .then(|| record.issue_payload().expect("scoped issue").kind()),
         repositories: match record {
-            Record::AgentHiredWithRepositories(hire) => Some(RepositoryWitness::Hire(hire.clone())),
+            Record::AgentHiredWithRepositories(hire)
+            | Record::AgentHiredWithUnconfinedRepositories(hire) => {
+                Some(RepositoryWitness::Hire(hire.clone()))
+            }
             Record::TurnIssuedWithRepositories(issue) => {
                 Some(RepositoryWitness::Issue(Box::new(issue.grant.clone())))
             }
@@ -1186,7 +1197,8 @@ fn target_evidence(
         return Some((O::Card(created.card), E::Marker));
     }
     match record {
-        Record::AgentHiredWithRepositories(hire) => Some((
+        Record::AgentHiredWithRepositories(hire)
+        | Record::AgentHiredWithUnconfinedRepositories(hire) => Some((
             O::Agent(hire.id),
             E::Hire {
                 provider: hire.provider,
