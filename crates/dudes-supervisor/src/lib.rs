@@ -74,7 +74,7 @@ pub mod world;
 
 pub use agent_fsm::FsmEvent;
 pub use doctor::KeyHealth;
-pub use effect::Effect;
+pub use effect::{Effect, ManagedSpawn};
 pub use host::{
     AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, MAX_OWNED_TARGET_QUERY_ROWS,
     NativeBoundaryAcknowledgement, NativeBoundaryReceipt, OwnedTargetEvidence, OwnedTargetState,

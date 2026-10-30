@@ -831,11 +831,27 @@ pub enum Input {
         /// A resolved absolute launch or a confirmed preparation refusal.
         prepared: Result<Box<LaunchSpec>, String>,
     },
+    /// The runtime retained typed scoped inputs for this browser preparation.
+    BrowserScopedLaunchReady {
+        /// The immutable issued turn.
+        turn: TurnId,
+        /// The unique run-local preparation generation.
+        generation: u64,
+    },
     /// A predicate run ended without an observed verdict.
     PredicateEndedWithoutVerdict {
         /// The goal whose run ended.
         goal: GoalId,
     },
+}
+
+/// Immutable repository selection for an atomic scoped ticket start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TicketStartScope {
+    /// The next ticket round.
+    pub round: u32,
+    /// Exact recorded declaration, hire and configured check root.
+    pub repositories: dudes_proto::repository::TicketStartRepositories,
 }
 
 /// An RPC call, parsed.
@@ -1001,6 +1017,8 @@ pub enum Command {
         completion_check: Option<dudes_proto::CompletionCheckRef>,
         /// The card's sequence the daemon decided against.
         expected_seq: dudes_types::Seq,
+        /// Frozen scoped authority; absent for a legacy start.
+        repositories: Option<Box<TicketStartScope>>,
     },
     /// `goal.clear`.
     GoalClear {

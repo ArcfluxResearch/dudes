@@ -1943,6 +1943,9 @@ fn assert_failed_replay_preserves_history(failure: &str) {
     }
     restarted.handle.doctor().unwrap();
     assert_historical_replay_is_unsettled(&history, failure);
+    if failure == "resolution" {
+        assert_current_no_host_replay_observation(&history);
+    }
     let outcome = restarted
         .handle
         .chat(
@@ -1974,6 +1977,42 @@ fn assert_failed_replay_preserves_history(failure: &str) {
         ),
         history.spend
     );
+}
+
+fn assert_current_no_host_replay_observation(history: &HistoricalReplay) {
+    use dudes_proto::{
+        InstructionBaselineRef, InstructionNoProcessProof, InstructionObservationOwner,
+        InstructionSettlement,
+    };
+    let entries = history.fixture.entries();
+    let prior = *history
+        .before
+        .browser_issue(history.turn)
+        .unwrap()
+        .dispatch_intents
+        .last()
+        .unwrap();
+    let proofs: Vec<_> = entries
+        .iter()
+        .filter_map(|(lsn, entry)| match &entry.record {
+            Record::InstructionObservationFinished {
+                owner: InstructionObservationOwner::Managed { turn, .. },
+                baseline: InstructionBaselineRef::Started { lsn: started },
+                settlement:
+                    InstructionSettlement::NoProcess {
+                        proof_lsn,
+                        proof: InstructionNoProcessProof::NoHostCall,
+                    },
+                ..
+            } if *turn == history.turn => Some((*lsn, *started, *proof_lsn)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(proofs.len(), 1);
+    let (finished, started, proof) = proofs[0];
+    assert!(started > prior && proof > started && finished > proof);
+    assert!(entries.iter().any(|(lsn, entry)| *lsn == proof && matches!(&entry.record,
+        Record::AgentHeld { agent, cause: dudes_proto::AutomaticHold::LaunchRefused { .. }, .. } if *agent == history.agent)));
 }
 
 #[test]

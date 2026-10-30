@@ -272,6 +272,87 @@ fn three_repository_writer_freezes_selection_edits_and_assigns_after_equivalent_
 }
 
 #[test]
+fn scoped_ticket_start_freezes_default_or_subset_and_the_configured_owned_check_root() {
+    for selection in [None, Some(json!(["api", "web"]))] {
+        let setup = setup();
+        let (mut running, hires, params) = setup.start(true);
+        let agent = hires.hire(params).unwrap().agent;
+        let mut socket = Client::connect(setup.settings.socket()).unwrap();
+        let mut request = json!({"title":"Run the configured check", "check_repo":"api"});
+        if let Some(selection) = selection {
+            request["repos"] = selection;
+        }
+        let created: TicketCreateResult = ok(&mut socket, &setup, Method::TicketCreate, request);
+        let queued = read(&mut socket, &setup, created.card);
+        let declaration = declaration(&queued).clone();
+        let _: Value = ok(
+            &mut socket,
+            &setup,
+            Method::TicketAssign,
+            json!({
+                "card":created.card, "agent":agent, "expected_seq":queued.card.seq
+            }),
+        );
+        let current = read(&mut socket, &setup, created.card);
+        assert_eq!(
+            current.card.status,
+            dudes_types::CardStatus::Doing,
+            "{:?}",
+            current.ticket.reason
+        );
+        drop(socket);
+        running.stop(crate::ExitCause::Ended);
+        let records = setup.fixture.records();
+        let entries = setup.fixture.entries();
+        let (position, recorded) = entries
+            .iter()
+            .find_map(|(position, entry)| match &entry.record {
+                Record::AgentHiredWithRepositories(recorded) if recorded.id == agent => {
+                    Some((*position, recorded))
+                }
+                _ => None,
+            })
+            .unwrap();
+        let starts: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                Record::TicketStartedWithRepositories(start) => Some(start),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts.len(), 1);
+        let start = starts[0];
+        assert_eq!(start.repositories.declaration, declaration);
+        assert_eq!(start.repositories.hired_lsn, position);
+        assert_eq!(start.round, 1);
+        assert_eq!(start.expected_seq, dudes_types::Seq(1));
+        assert_eq!(start.repositories.check_repo.as_str(), "api");
+        assert_eq!(
+            start.repositories.check_root,
+            recorded
+                .repositories
+                .repositories
+                .get(&start.repositories.check_repo)
+                .unwrap()
+                .execution
+        );
+        assert_eq!(
+            start.goal.completion_check,
+            crate::ticket_index::goal_check(&start.repositories.check).map(|reference| {
+                crate::ticket_index::scoped_check_reference(
+                    "service",
+                    &start.repositories.check_repo,
+                    reference,
+                )
+            })
+        );
+        assert!(!records.iter().any(|record| record.turn_issue().is_some()
+            || matches!(record, Record::TicketBaselineRecorded { .. })));
+        assert!(setup.host.spawned().is_empty());
+    }
+}
+
+#[test]
 fn scoped_ticket_refusals_do_not_append_or_redirect_the_configured_check() {
     let setup = setup();
     let (mut running, _, _) = setup.start(true);
@@ -452,6 +533,71 @@ fn scoped_check_revision_binds_context_and_full_definition_but_legacy_stays_exac
     let legacy = changed.checks[0].reference().unwrap();
     assert_eq!(changed.resolve_check(None).unwrap().reference(), &legacy);
     assert!(changed.resolve_check(None).unwrap().repo().is_none());
+}
+
+#[test]
+fn scoped_ticket_start_rechecks_the_owned_check_root_after_its_final_permit() {
+    let setup = setup();
+    let (mut running, hires, params) = setup.start(true);
+    let agent = hires.hire(params).unwrap().agent;
+    running.stop(crate::ExitCause::Ended);
+    let mut daemon = setup.boot(true);
+    let by = dudes_proto::Actor::Peer { pid: 17, uid: None };
+    let request =
+        serde_json::from_value(json!({"title":"Keep the check root", "check_repo":"api"})).unwrap();
+    let crate::ports::Answered::TicketCreated(created) =
+        daemon.ticket_create(&request, None, by).unwrap()
+    else {
+        panic!("scoped ticket")
+    };
+    daemon
+        .board_append(Record::TicketAssigned {
+            card: created.card,
+            agent,
+            by,
+            expected_seq: dudes_types::Seq::ZERO,
+            priority: None,
+            message: None,
+        })
+        .unwrap();
+    let copy = match &daemon.sup.world().agents[&agent].repositories {
+        dudes_proto::repository::HireRepositories::Scoped(hire) => hire
+            .repositories
+            .get(&RepoId::parse("api").unwrap())
+            .unwrap()
+            .recorded
+            .execution
+            .directory
+            .clone(),
+        dudes_proto::repository::HireRepositories::Legacy(_) => unreachable!(),
+    };
+    let pause = daemon.onboarding_pause();
+    pause.arm(crate::runtime::OnboardingPausePoint::AfterTicketPermit);
+    let worker = std::thread::spawn(move || {
+        let outcome = daemon.ticket_reactions();
+        (daemon, outcome)
+    });
+    assert!(pause.wait_reached(std::time::Duration::from_secs(2)));
+    let preserved = copy.with_extension("preserved");
+    std::fs::rename(&copy, &preserved).unwrap();
+    std::fs::create_dir(&copy).unwrap();
+    std::fs::write(copy.join("sentinel"), "keep").unwrap();
+    pause.release();
+    let (daemon, outcome) = worker.join().unwrap();
+    assert!(outcome.is_err());
+    assert!(
+        !setup
+            .fixture
+            .records()
+            .iter()
+            .any(|record| record.ticket_start().is_some() || record.turn_issue().is_some())
+    );
+    assert_eq!(
+        std::fs::read_to_string(copy.join("sentinel")).unwrap(),
+        "keep"
+    );
+    assert!(setup.host.spawned().is_empty());
+    drop(daemon);
 }
 
 #[test]

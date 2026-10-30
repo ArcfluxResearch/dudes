@@ -724,6 +724,11 @@ impl OnboardingPause {
                 Some(Point::AfterHirePermit),
                 Some(Point::AfterHireFsync),
             ),
+            Record::AgentHiredWithRepositories(hire) if hire.browser_onboarding.is_some() => (
+                Some(Point::BeforeHireAppend),
+                Some(Point::AfterHirePermit),
+                Some(Point::AfterHireFsync),
+            ),
             Record::AgentHired {
                 browser_onboarding: None,
                 ..
@@ -804,6 +809,7 @@ impl OnboardingPause {
                         record,
                         Record::TicketCreatedWithRepositories(_)
                             | Record::TicketEditedWithRepositories(_)
+                            | Record::TicketStartedWithRepositories(_)
                             | Record::TicketAssigned { .. }
                     ) =>
             {
@@ -982,7 +988,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
     pub(crate) browser_launches: crate::chat_launch::LaunchPreparations,
     pub(crate) resolved_browser_turn: Option<(TurnId, u64)>,
-    pub(crate) scoped_launches: BTreeMap<TurnId, crate::codex_profile::scoped::Attempt>,
+    pub(crate) scoped_launches: BTreeMap<TurnId, scoped_launch::ScopedReservation>,
     pub(crate) scoped_generation: u64,
     /// The operator file the Settings page edits and a reload reads; `None` without one.
     pub(crate) operator_config: Option<PathBuf>,
@@ -1576,6 +1582,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     reply,
                 } => {
                     let _ = reply.send(self.onboard_copied(&session, &request, worktree, &trust));
+                }
+                Job::OnboardProjectPrepared {
+                    session,
+                    request,
+                    prepared,
+                    reply,
+                } => {
+                    let _ =
+                        reply.send(self.onboard_project_prepared(&session, &request, &prepared));
                 }
                 Job::InspectRecoveryFromFloor {
                     session,
@@ -2204,31 +2219,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .floor_streams
             .as_ref()
             .ok_or_else(|| "Floor stream unavailable".to_owned())?;
-        // Offered with the switch on, a Hire slot left and, per workspace, an
-        // eligible profile with at least one offered engine. No ceiling or reserve is required.
         let live = self.ctx.switches.load();
-        let offered: Vec<_> = if live.hire
-            && !self.ctx.journal_writes_stopped()
-            && self.ctx.onboarding_index.count(session.digest()) < 4
-        {
-            self.ctx
-                .enrollment
-                .profiles
-                .iter()
-                .filter(|profile| self.onboarding_profile_eligible(profile))
-                .map(|profile| (profile, self.offered_engines(profile)))
-                .filter(|(_, engines)| !engines.is_empty())
-                .map(|(profile, engines)| {
-                    let trusted = self.sup.world().workspace_trust.contains_key(&profile.id);
-                    (profile, engines, trusted)
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let onboarding = (!offered.is_empty()).then(|| {
-            crate::floor_actions::Enrollment::view(self.sup.config().floor_usd_per_day, offered)
-        });
+        let onboarding = self.onboarding_catalog(session);
         let checks = (live.hire || live.control.goal()).then(|| self.ctx.enrollment.checks_view());
         let mut switches = dudes_proto::rpc::floor::SettingsSwitches::default();
         switches.answer = live.answer;
@@ -2488,6 +2480,40 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
+    fn onboarding_catalog(
+        &self,
+        session: &crate::floor_session::SessionIdentity,
+    ) -> Option<crate::floor_actions::OnboardingView> {
+        if !self.ctx.switches.load().hire
+            || self.ctx.journal_writes_stopped()
+            || self.ctx.onboarding_index.count(session.digest()) >= 4
+        {
+            return None;
+        }
+        let offered = self
+            .ctx
+            .enrollment
+            .profiles
+            .iter()
+            .filter(|profile| self.onboarding_profile_eligible(profile))
+            .map(|profile| (profile, self.offered_engines(profile)))
+            .filter(|(_, engines)| !engines.is_empty())
+            .map(|(profile, engines)| {
+                (
+                    profile,
+                    engines,
+                    self.sup.world().workspace_trust.contains_key(&profile.id),
+                )
+            });
+        let mut view =
+            crate::floor_actions::Enrollment::view(self.sup.config().floor_usd_per_day, offered);
+        view.add_repository_groups(self.ctx.enrollment.profiles.iter().filter_map(|profile| {
+            self.browser_repository_offer(profile)
+                .map(|group| (profile, group))
+        }));
+        (!view.is_empty() && view.fits()).then_some(view)
+    }
+
     fn onboarding_profile_eligible(&self, profile: &crate::floor_actions::Profile) -> bool {
         if profile.repositories.is_some()
             || !self
@@ -2501,20 +2527,26 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .canonicalize()
             .is_ok_and(|path| path == profile.cwd)
             && profile.cwd.join(".git").exists();
+        path_valid && self.onboarding_profile_resources_eligible(profile)
+    }
+
+    fn onboarding_profile_resources_eligible(&self, profile: &Profile) -> bool {
         // Any check that can run makes the workspace one a hire can name a check in; a chosen
         // check that cannot run is the baseline's to refuse.
         let a_check_runs = profile.checks.iter().any(|check| {
             matches!(&check.predicate, Predicate::Command { argv, timeout_s } if *timeout_s > 0
                 && predicate::spec_for(
                     argv,
-                    &profile.cwd,
+                    profile.repositories.as_ref().map_or(profile.cwd.as_path(), |repositories| {
+                        check.check_repo.as_ref().and_then(|id| repositories.get(id))
+                            .unwrap_or_else(|| repositories.primary()).path.as_path()
+                    }),
                     &self.ctx.predicate_env,
                     self.ctx.predicate_path.as_deref(),
                 )
                 .is_ok())
         });
-        path_valid
-            && profile.isolation == dudes_types::IsolationMode::Default
+        profile.isolation == dudes_types::IsolationMode::Default
             && profile.hop_cap > 0
             && a_check_runs
             && crate::reserve::missing(
@@ -2571,13 +2603,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .cloned();
         // The index folds only fsynced records, so its conflict and completion answer while fenced.
         if let Some(attempt) = &existing {
-            if attempt.metadata.request_digest != request.request_digest {
-                return answer(Err(OnboardRefusal::Conflict));
-            }
-            return answer(Ok(OnboardOutcome::Complete {
-                attempt_id: request.attempt_wire.clone(),
-                agent: attempt.agent,
-            }));
+            return answer(attempt.outcome(request));
         }
         if self.ctx.journal_writes_stopped() {
             // Nothing is indexed, so this request has appended nothing: its newly acquired
@@ -2594,6 +2620,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
     ) -> OnboardStep {
+        if matches!(
+            request.target,
+            crate::floor_actions::OnboardTarget::Project(_)
+        ) {
+            return match self.onboarding_repository_plan(session, request) {
+                Ok(plan) => OnboardStep::Project {
+                    plan: Box::new(plan),
+                },
+                Err(refusal) => OnboardStep::Answer(Err(refusal)),
+            };
+        }
         match self.onboarding_admission(session, request) {
             Ok(profile) => self.hire_onboarded(session, request, &profile, None),
             Err(refusal) => OnboardStep::Answer(Err(refusal)),
@@ -2684,10 +2721,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return Err(OnboardRefusal::Forbidden);
         }
+        let crate::floor_actions::OnboardTarget::Workspace { id, revision } = &request.target
+        else {
+            return Err(OnboardRefusal::Forbidden);
+        };
         let profile = self
             .ctx
             .enrollment
-            .profile(&request.workspace_id)
+            .profile(id)
             .cloned()
             .ok_or(OnboardRefusal::Forbidden)?;
         self.ctx
@@ -2695,7 +2736,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .map_err(|_| OnboardRefusal::Forbidden)?;
         // A hire is bound to the workspace revision its page was offered, so a
         // re-point that lands while a page shows the old entry cannot redirect a hire from it.
-        if request.workspace_revision != profile.revision() {
+        if *revision != profile.revision() {
             return Err(OnboardRefusal::ProfileChanged);
         }
         if !self.onboarding_profile_eligible(&profile)
@@ -7037,7 +7078,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Job::ChatFile { reply, .. } => {
                     let _ = reply.send(Err("unavailable"));
                 }
-                Job::Onboard { reply, .. } | Job::OnboardCopied { reply, .. } => {
+                Job::Onboard { reply, .. }
+                | Job::OnboardCopied { reply, .. }
+                | Job::OnboardProjectPrepared { reply, .. } => {
                     let _ = reply.send(OnboardStep::Answer(Err(OnboardRefusal::Unavailable)));
                 }
                 Job::Answer { reply, .. } => {
@@ -8384,30 +8427,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             Effect::PrepareBrowserLaunch {
                 turn,
                 generation,
-                spec,
-            } => {
-                if !self
-                    .browser_launches
-                    .prepare(*turn, *generation, spec.clone())
-                {
-                    queue.push_back(Input::BrowserLaunchReady {
-                        turn: *turn,
-                        generation: *generation,
-                        prepared: Err(
-                            "managed launch preparation capacity is unavailable".to_owned()
-                        ),
-                    });
-                }
-            }
+                launch,
+            } => self.prepare_browser_turn(*turn, *generation, launch, queue, sup),
             Effect::Persist { token, entry } => {
                 self.persist_effect(*token, entry, queue, sup, report)?;
             }
             Effect::Spawn {
                 turn,
-                spec,
-                install,
+                launch,
                 mcp_grant,
-            } => self.spawn_turn(*turn, spec, install, *mcp_grant, queue, sup)?,
+            } => self.spawn_turn(*turn, launch, *mcp_grant, queue, sup)?,
             Effect::Kill { turn, key, .. } => match self.host.kill(key) {
                 KillOutcome::Signalled => {}
                 // A refusal is the reaper's finding by a second route. The host routes
@@ -8987,6 +9016,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let ticket_id = match &entry.record {
             Record::TicketEditedWithRepositories(edited) => Some(edited.card),
             Record::TicketAssigned { card, .. } => Some(*card),
+            Record::TicketStartedWithRepositories(start) => Some(start.card),
             _ => None,
         };
         let ticket = ticket_id

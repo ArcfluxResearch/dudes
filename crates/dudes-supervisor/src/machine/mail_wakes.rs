@@ -520,10 +520,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(selection) = self.model_selection(&row) else {
             return;
         };
+        let Some(repositories) = self.issue_repositories(agent) else {
+            return;
+        };
         let launch = match self.launch(
             agent,
             &row,
-            row.repositories.singleton(),
+            Some(&repositories),
             preparation.plan.task.as_str(),
             &session,
             &selection,
@@ -558,10 +561,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if !issue.valid() {
             return;
         }
-        let record = match issue.task.contract() {
-            TaskContract::Legacy => Record::MailWakeOnlyTurnIssued(issue),
-            TaskContract::Identified => Record::IdentifiedMailWakeOnlyTurnIssued(issue),
+        let payload = match issue.task.contract() {
+            TaskContract::Legacy => dudes_proto::issue::ManagedIssuePayload::MailWake(issue),
+            TaskContract::Identified => {
+                dudes_proto::issue::ManagedIssuePayload::IdentifiedMailWake(issue)
+            }
         };
+        let record = launch.repositories.record(payload);
         self.persist_at(
             at,
             record,

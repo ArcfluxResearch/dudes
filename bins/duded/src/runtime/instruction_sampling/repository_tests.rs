@@ -153,7 +153,13 @@ fn ticket(daemon: &mut TestDaemon, agent: AgentId) -> RepositoryTurnGrant {
         id: GoalId::from_parts(3, 2),
         text: "Observe instructions".into(),
         predicate: check.predicate.clone(),
-        completion_check: crate::ticket_index::goal_check(&check),
+        completion_check: crate::ticket_index::goal_check(&check).map(|reference| {
+            crate::ticket_index::scoped_check_reference(
+                &declaration.project,
+                &check_repo,
+                reference,
+            )
+        }),
         baseline: Some(CheckBaseline::MayAlreadyPass),
         budget: GoalBudget {
             usd: None,

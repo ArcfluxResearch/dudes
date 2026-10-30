@@ -430,7 +430,7 @@ fn unknown_repository_hire_fields_refuse_before_open_or_warm_replay_changes_stat
     let mut bytes = std::fs::read(&path).unwrap();
     bytes.truncate(usize::try_from(hire_lsn.offset()).unwrap());
     let mut extended = serde_json::to_value(&hire).unwrap();
-    extended["browser_onboarding"] = serde_json::json!({"attempt": "future"});
+    extended["future_browser_field"] = serde_json::json!({"attempt": "future"});
     dudes_journal::frame::encode_required(
         RecordKind::AgentHiredWithRepositories,
         &serde_json::to_vec(&extended).unwrap(),
@@ -463,7 +463,7 @@ fn unknown_repository_hire_fields_refuse_before_open_or_warm_replay_changes_stat
         assert!(
             matches!(result, Err(Error::Decode { lsn, ref source })
                 if lsn == hire_lsn
-                    && source.to_string().contains("unknown field `browser_onboarding`")),
+                    && source.to_string().contains("unknown field `future_browser_field`")),
             "{result:?}"
         );
     }

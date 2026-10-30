@@ -53,7 +53,7 @@ pub struct HireFields<'a> {
     pub trusted: bool,
     /// Historical MCP selection. Scoped policy admits no inherited servers.
     pub mcp_servers: &'a [dudes_types::McpServerName],
-    /// Historical browser onboarding marker.
+    /// Whether this complete hire records browser onboarding.
     pub browser_onboarding: bool,
 }
 
@@ -358,7 +358,7 @@ impl Record {
                     isolation: None,
                     trusted: false,
                     mcp_servers: &[],
-                    browser_onboarding: false,
+                    browser_onboarding: hire.browser_onboarding.is_some(),
                 },
                 repositories: HireRepositoryRecord::Scoped(&hire.repositories),
             }),
