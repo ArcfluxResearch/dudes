@@ -2117,7 +2117,10 @@ pub fn validate_instruction_record(record: &Record) -> Result<(), InstructionVal
         Record::InstructionObservationBatchStarted(batch) => {
             batch.validate()?;
             owner_valid(batch.owner)?;
-            if !matches!(batch.owner, InstructionObservationOwner::Managed { .. }) {
+            if matches!(
+                batch.owner,
+                InstructionObservationOwner::AttachedTurn { .. }
+            ) {
                 return Err(InstructionValidationError::InvalidBoundary);
             }
         }

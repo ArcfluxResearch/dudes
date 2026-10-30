@@ -30,6 +30,8 @@ pub(super) struct Setup {
     git: Git,
     pub(super) host: common::SharedHost,
     pty_opened: Arc<std::sync::Mutex<Vec<dudes_providers::launch::LaunchSpec>>>,
+    /// A PTY host that opens, keys and closes its sessions like the real one, when a test needs it.
+    native_ptys: Option<common::SharedPtyHost>,
 }
 
 impl Setup {
@@ -106,6 +108,7 @@ impl Setup {
             git,
             host: common::SharedHost::new(),
             pty_opened: Arc::default(),
+            native_ptys: None,
         }
     }
 
@@ -150,7 +153,12 @@ impl Setup {
                 dudes_providers::pi::config::PiConfig::default(),
             )),
         ]);
-        seams.pty_host = Box::new(unconfined_sites::RecordingPtyHost(self.pty_opened.clone()));
+        if let Some(ptys) = &self.native_ptys {
+            seams.pty_host = Box::new(ptys.clone());
+            seams.resolver = common::native_resolver(ptys);
+        } else {
+            seams.pty_host = Box::new(unconfined_sites::RecordingPtyHost(self.pty_opened.clone()));
+        }
         let mut daemon = crate::boot_with_options(&self.settings, seams, options).unwrap();
         daemon.ctx.current_repositories.test_hire_capability = capability;
         daemon.ctx.current_repositories.test_hire_policy =

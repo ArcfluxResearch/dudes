@@ -358,15 +358,17 @@ pub fn validate_binding(
     let Some((hired_lsn, HireRepositories::Scoped(_))) = facts.hire else {
         return Err(InstructionValidationError::InvalidBoundary);
     };
-    let InstructionObservationOwner::Managed { agent, issue, .. } = owner else {
-        return Err(InstructionValidationError::InvalidBoundary);
+    let (agent, issue) = match owner {
+        InstructionObservationOwner::Managed { agent, issue, .. } => (agent, Some(issue)),
+        InstructionObservationOwner::AttachedProcess { agent, .. }
+        | InstructionObservationOwner::AttachedTurn { agent, .. } => (agent, None),
     };
     if agent != facts.agent || binding.hired_lsn != hired_lsn || hired_lsn >= lsn {
         return Err(InstructionValidationError::InvalidBoundary);
     }
     let round = match issue {
-        InstructionIssueAssociation::Prospective => facts.round,
-        InstructionIssueAssociation::Issued { issue_lsn } => {
+        None | Some(InstructionIssueAssociation::Prospective) => facts.round,
+        Some(InstructionIssueAssociation::Issued { issue_lsn }) => {
             let Some((actual, grant)) = facts.issue else {
                 return Err(InstructionValidationError::InvalidBoundary);
             };
@@ -403,6 +405,24 @@ pub fn observation_owner(record: &Record) -> Option<InstructionObservationOwner>
         Record::InstructionObservationStarted { owner, .. }
         | Record::InstructionObservationFinished { owner, .. } => Some(*owner),
         _ => None,
+    }
+}
+
+/// Whether the record's ticket binding comes from the agent's active round now, rather than from
+/// the grant of an issued turn: a start before its issue, and any record of an attached session.
+#[must_use]
+pub fn reads_active_round(record: &Record) -> bool {
+    let (owner, starts) = match record {
+        Record::InstructionObservationBatchStarted(batch) => (batch.owner, true),
+        Record::InstructionObservationBatchFinished(batch) => (batch.owner, false),
+        _ => return false,
+    };
+    match owner {
+        InstructionObservationOwner::Managed { issue, .. } => {
+            starts && issue == InstructionIssueAssociation::Prospective
+        }
+        InstructionObservationOwner::AttachedProcess { .. }
+        | InstructionObservationOwner::AttachedTurn { .. } => true,
     }
 }
 

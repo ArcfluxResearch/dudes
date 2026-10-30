@@ -219,3 +219,161 @@ fn a_confined_multi_repository_hire_is_not_attached() {
             .any(|record| matches!(record, Record::Attached { .. }))
     );
 }
+
+#[test]
+fn a_stop_in_an_unconfined_attached_session_settles_every_copy_with_a_record_the_journal_accepts() {
+    use crate::machine::{EventKind, HookId};
+
+    let (mut harness, agent) = hired_with_three_copies(RepositoryPolicy::OperatorTrustV1);
+    attach(&mut harness, agent);
+    let event = dudes_providers::claude::translate(
+        agent,
+        Timestamp::UNIX_EPOCH,
+        &serde_json::json!({"hook_event_name":"Stop","last_assistant_message":"owned observed end"}),
+    )
+    .unwrap();
+    assert!(!matches!(event.kind, EventKind::PromptSubmit));
+    harness.drive(Input::Hook {
+        hook: HookId(91),
+        event,
+    });
+    let settled: Vec<_> = harness
+        .records()
+        .filter_map(|record| match record {
+            Record::InstructionObservationBatchFinished(batch) => Some(batch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(settled.len(), 1);
+    let batch = settled[0];
+    assert!(matches!(
+        batch.owner,
+        InstructionObservationOwner::AttachedTurn { .. }
+    ));
+    assert!(matches!(
+        batch.baseline,
+        InstructionBaselineRef::MissingTurnBoundary { .. }
+    ));
+    assert_eq!(
+        batch
+            .members
+            .iter()
+            .map(|member| member.repo_id.as_str())
+            .collect::<Vec<_>>(),
+        ["web", "api", "docs"]
+    );
+    assert!(
+        !harness
+            .records()
+            .any(|record| matches!(record, Record::InstructionObservationFinished { .. })),
+        "a multi-repository hire never records the single-folder shape"
+    );
+}
+
+#[test]
+fn a_restart_settles_a_closed_unconfined_attached_session_as_unknown_for_every_copy() {
+    use dudes_proto::rpc::pty::PtyId;
+    use dudes_proto::{InstructionUnknownReason, PtyCloseOutcome};
+
+    let (mut harness, agent) = hired_with_three_copies(RepositoryPolicy::OperatorTrustV1);
+    attach(&mut harness, agent);
+    let attachment_lsn = harness
+        .supervisor
+        .world()
+        .instructions
+        .attachment_lsn(agent)
+        .unwrap();
+    let hired = harness.supervisor.world().agents[&agent].mcp.hire_lsn;
+    let owner = InstructionObservationOwner::AttachedProcess {
+        agent,
+        attachment_lsn,
+    };
+    let member = |name: &str| RepositoryInstructionSnapshot {
+        repo_id: RepoId::parse(name).unwrap(),
+        root: None,
+        snapshot: InstructionSnapshot {
+            sampled_at: Timestamp::UNIX_EPOCH,
+            source: InstructionSnapshotSource::Fresh,
+            execution_folder: None,
+            participants: Vec::new(),
+            inputs: Vec::new(),
+            inventoried: Vec::new(),
+            gaps: vec![gap(InstructionGapKind::PathUnresolved, agent)],
+            usage: InstructionSampleUsage::default(),
+            pid_namespace: None,
+            boot: None,
+        },
+    };
+    let started = append(
+        &mut harness,
+        Record::InstructionObservationBatchStarted(RepositoryInstructionStart {
+            v: INSTRUCTION_BATCH_VERSION,
+            binding: RepositoryInstructionBinding {
+                hired_lsn: hired,
+                ticket_start_lsn: None,
+            },
+            owner,
+            ticket: None,
+            members: NAMES.map(member).to_vec(),
+        }),
+    );
+    let pty = PtyId(5);
+    append(
+        &mut harness,
+        Record::PtySpawned {
+            agent,
+            pty,
+            pid: 77,
+            start_time: 9,
+            boot: None,
+        },
+    );
+    let request_lsn = append(
+        &mut harness,
+        Record::PtyCloseRequested {
+            pty,
+            actor: Actor::System,
+            provenance: None,
+            reason: "test".into(),
+        },
+    );
+    append(
+        &mut harness,
+        Record::PtyCloseCompleted {
+            request_lsn,
+            outcome: PtyCloseOutcome::Closed,
+        },
+    );
+
+    let mut restarted = Harness::from_prefix(harness.journal.clone());
+    restarted
+        .supervisor
+        .observe_repository_admission(crate::RepositoryAdmission::new([(agent, hired, true)]));
+    restarted.drive(Input::Started);
+    let settled: Vec<_> = restarted
+        .records()
+        .filter_map(|record| match record {
+            Record::InstructionObservationBatchFinished(batch) => Some(batch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(settled.len(), 1);
+    assert_eq!(settled[0].owner, owner);
+    assert_eq!(
+        settled[0].baseline,
+        InstructionBaselineRef::Started { lsn: started }
+    );
+    assert_eq!(settled[0].members.len(), 3);
+    assert!(settled[0].members.iter().all(|member| matches!(
+        member.settlement,
+        InstructionSettlement::Unknown {
+            reason: InstructionUnknownReason::IncompleteCoverage,
+            ..
+        }
+    )));
+    assert!(
+        !restarted
+            .records()
+            .any(|record| matches!(record, Record::InstructionObservationFinished { .. }))
+    );
+}

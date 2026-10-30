@@ -64,6 +64,10 @@ pub const SESSION_ACQUISITION: SessionAcquisition = SessionAcquisition::Pinned {
 /// that guards the *declared* route into it — [`check`](ClaudeConfig::check) refusing
 /// `isolation = "bare"` without an API-key path — never consulted.
 ///
+/// `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is no nesting marker. Set to `1`, it makes Claude
+/// load the memory files of every directory added with `--add-dir`, so a hired copy that a launch
+/// only adds could put instructions into the agent's context that no one reviewed.
+///
 /// Membership is by name and never by value. The vendor documents "set to `1`", but whether `0`
 /// or empty is falsey or merely present-and-truthy was **not** measured, so a value predicate
 /// would be keyed on something unknown and would forward the present-but-zero case.

@@ -380,11 +380,6 @@ fn missing_unconfined_copy(
     .flatten()
 }
 
-/// An attached session records the instructions it started with in the one folder it opens,
-/// and a multi-repository agent's record names every copy.
-pub(crate) const ATTACH_MULTI_REPOSITORY_REFUSAL: &str =
-    "Opening the real CLI is not available for a multi-repository agent yet.";
-
 /// The reason shown for a goal set outside a ticket on a multi-repository agent. The check of
 /// such a goal has no single folder to run in, so only a ticket gives the agent a goal for now.
 pub(crate) const GOAL_OUTSIDE_TICKET_REFUSAL: &str = "A goal outside a ticket is not available for a multi-repository agent yet. Give it a ticket instead.";
@@ -5837,14 +5832,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if self.ctx.holds_pty(agent) {
             return Err(refused("that agent already has an attached PTY"));
         }
-        if self.sup.world().agents.get(&agent).is_some_and(|row| {
-            matches!(
-                row.repositories.workplace(),
-                dudes_proto::repository::Workplace::Unconfined(_)
-            )
-        }) {
-            return Err(refused(ATTACH_MULTI_REPOSITORY_REFUSAL));
-        }
         if self
             .sup
             .world()
@@ -8653,11 +8640,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .agents
             .get(&agent)
             .ok_or_else(|| anyhow::anyhow!("attached launch owner is unavailable"))?;
-        if row
-            .repositories
-            .singleton()
-            .is_none_or(|repository| repository.cwd() != spec.cwd)
-        {
+        let opens_recorded_copy = match row.repositories.workplace() {
+            dudes_proto::repository::Workplace::Single(repository) => repository.cwd() == spec.cwd,
+            dudes_proto::repository::Workplace::Unconfined(hire) => {
+                hire.execution_directories().next() == Some(spec.cwd.as_path())
+            }
+            dudes_proto::repository::Workplace::Confined => false,
+        };
+        if !opens_recorded_copy {
             queue.push_back(Input::PtyExited { agent });
             report.record_open(
                 agent,
@@ -8707,8 +8697,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 return Ok(());
             }
         };
-        let (instruction_owner, instruction_started) =
-            self.start_attached_boundary(sup, agent, &spec.cwd, queue, waiting)?;
+        let Some((instruction_owner, instruction_started)) =
+            self.start_attached_boundary(sup, agent, &spec.cwd, queue, waiting)?
+        else {
+            queue.push_back(Input::PtyExited { agent });
+            report.record_open(
+                agent,
+                Err("the instructions of the hired repositories could not be observed for this attachment".to_owned()),
+            )?;
+            return Ok(());
+        };
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(mailbox) = &mut self.mailbox {
             mailbox.begin_subject_context(

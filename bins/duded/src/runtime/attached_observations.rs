@@ -1,6 +1,11 @@
 use std::collections::VecDeque;
 
 use anyhow::{Context as _, Result};
+use dudes_proto::repository::{HireRepositories, RepositoryTurnGrant};
+use dudes_proto::repository_instruction::{
+    INSTRUCTION_BATCH_VERSION, RepositoryInstructionFinish, RepositoryInstructionSettlement,
+    RepositoryInstructionStart,
+};
 use dudes_proto::{
     Entry, InstructionBaselineRef, InstructionBoundaryAbsenceProof, InstructionEndBoundary,
     InstructionNativeBoundaryReceipt, InstructionObservationOwner, InstructionSettlement, Record,
@@ -21,6 +26,55 @@ pub(crate) struct AttachedBoundary {
     token: Option<NativeBoundaryReceipt>,
     native_acknowledged: bool,
     settlement: Option<(Lsn, Lsn)>,
+}
+
+/// What an attached session is observed under.
+enum AttachedScope {
+    /// One working copy.
+    Single,
+    /// Every copy of a multi-repository hire, bound to the ticket round the agent holds now.
+    Copies(Box<RepositoryTurnGrant>),
+    /// A multi-repository hire whose copies cannot be selected, so nothing can be observed.
+    Unavailable,
+}
+
+fn attached_scope(world: &dudes_supervisor::World, agent: AgentId) -> AttachedScope {
+    let Some(row) = world.agents.get(&agent) else {
+        return AttachedScope::Single;
+    };
+    let HireRepositories::Scoped(hire) = &row.repositories else {
+        return AttachedScope::Single;
+    };
+    let round = world.active_repository_round(agent).ok().flatten();
+    RepositoryTurnGrant::select(row.mcp.hire_lsn, hire, round)
+        .map_or(AttachedScope::Unavailable, |grant| {
+            AttachedScope::Copies(Box::new(grant))
+        })
+}
+
+/// One unknown settlement for every member of an attached session's starting sample.
+fn unknown_finish(
+    start: &RepositoryInstructionStart,
+    owner: InstructionObservationOwner,
+    baseline: InstructionBaselineRef,
+    settlement: &InstructionSettlement,
+) -> Record {
+    Record::InstructionObservationBatchFinished(RepositoryInstructionFinish {
+        v: INSTRUCTION_BATCH_VERSION,
+        binding: start.binding,
+        owner,
+        ticket: start.ticket,
+        baseline,
+        members: start
+            .members
+            .iter()
+            .map(|member| RepositoryInstructionSettlement {
+                repo_id: member.repo_id.clone(),
+                ending_root: None,
+                settlement: settlement.clone(),
+            })
+            .collect(),
+    })
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
@@ -60,7 +114,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         cwd: &std::path::Path,
         queue: &VecDeque<Input>,
         waiting: &mut crate::closing::Waiting,
-    ) -> Result<(InstructionObservationOwner, Lsn)> {
+    ) -> Result<Option<(InstructionObservationOwner, Lsn)>> {
         anyhow::ensure!(
             !queue.iter().any(|input| matches!(
                 input,
@@ -87,6 +141,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             agent,
             attachment_lsn,
         };
+        match attached_scope(sup.world(), agent) {
+            AttachedScope::Single => {}
+            AttachedScope::Unavailable => return Ok(None),
+            AttachedScope::Copies(grant) => {
+                let Ok(start) = self.sample_repository_boundary(
+                    sup,
+                    owner,
+                    &grant,
+                    &ModelSelection::provider_default(),
+                    None,
+                ) else {
+                    return Ok(None);
+                };
+                start.validate()?;
+                let started = self.append_instruction_boundary(
+                    sup,
+                    Record::InstructionObservationBatchStarted(start),
+                    waiting,
+                )?;
+                return Ok(Some((owner, started)));
+            }
+        }
         let goal = sup.world().agents.get(&agent).and_then(|row| row.goal);
         let (snapshot, ticket) = self.sample_instruction_boundary(
             sup,
@@ -106,7 +182,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             },
             waiting,
         )?;
-        Ok((owner, started))
+        Ok(Some((owner, started)))
     }
 
     pub(super) fn remember_attached_boundary(
@@ -347,6 +423,24 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             actual_started == started && attempt.owner == owner,
             "attached starting identity changed"
         );
+        if attempt.finished.is_none()
+            && let Some(start) = attempt
+                .snapshot
+                .as_ref()
+                .and_then(dudes_proto::instruction_state::InstructionSnapshotEvidence::repositories)
+                .cloned()
+        {
+            let unspawned = attempt.spawn_lsn.is_none()
+                && attempt.boundary_settled.is_none()
+                && sup.world().attached_native_spawn_receipt(started).is_none();
+            return self.compare_closed_repositories(
+                sup,
+                (owner, started),
+                &start,
+                (keyless, unspawned),
+                waiting,
+            );
+        }
         if attempt.finished.is_none() {
             let snapshot = attempt
                 .legacy_snapshot()
@@ -405,6 +499,122 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 waiting,
             )?;
         }
+        Ok(())
+    }
+
+    /// Close an attached session of a multi-repository hire: every hired copy is compared with
+    /// its start, or all of them settle as unknown when the ending boundary cannot be sampled.
+    fn compare_closed_repositories<R: Rng>(
+        &mut self,
+        sup: &mut Supervisor<Shared<C>, R>,
+        (owner, started): (InstructionObservationOwner, Lsn),
+        start: &RepositoryInstructionStart,
+        (keyless, unspawned): (bool, bool),
+        waiting: &mut crate::closing::Waiting,
+    ) -> Result<()> {
+        let InstructionObservationOwner::AttachedProcess {
+            agent,
+            attachment_lsn,
+        } = owner
+        else {
+            anyhow::bail!("PTY boundary has a different owner kind");
+        };
+        let baseline = InstructionBaselineRef::Started { lsn: started };
+        let end_lsn = sup.world().instructions.attachment_end_lsn(attachment_lsn);
+        let gap = |reason| dudes_proto::InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
+            reason,
+            context: dudes_proto::InstructionPathContext::Unresolved,
+            agent: Some(agent),
+            path: None,
+        };
+        let unknown = |reason, coverage, end| InstructionSettlement::Unknown {
+            reason,
+            end,
+            sampled_at: None,
+            recovery: false,
+            comparison: {
+                let mut comparison = dudes_proto::InstructionComparison::default();
+                let _ = comparison.try_push_gap(gap(coverage));
+                comparison
+            },
+        };
+        if end_lsn.is_none() && keyless && unspawned {
+            let settlement = unknown(
+                dudes_proto::InstructionUnknownReason::UnrecordedLaunchBoundary,
+                dudes_proto::InstructionGapKind::UnrecordedLaunchBoundary,
+                None,
+            );
+            self.append_instruction_boundary(
+                sup,
+                unknown_finish(start, owner, baseline, &settlement),
+                waiting,
+            )?;
+            return Ok(());
+        }
+        let end = InstructionEndBoundary::AttachedProcess {
+            attachment_lsn,
+            end_lsn: end_lsn.context("attached close has no durable ending boundary")?,
+        };
+        let ending = match attached_scope(sup.world(), agent) {
+            AttachedScope::Copies(grant) => self
+                .sample_repository_boundary(
+                    sup,
+                    owner,
+                    &grant,
+                    &ModelSelection::provider_default(),
+                    Some(start),
+                )
+                .ok(),
+            AttachedScope::Single | AttachedScope::Unavailable => None,
+        };
+        let comparisons = ending.as_ref().filter(|ending| {
+            ending.validate().is_ok()
+                && ending.binding == start.binding
+                && ending.owner == owner
+                && ending.ticket == start.ticket
+        });
+        let record = match comparisons {
+            Some(ending) => {
+                let sampled_at = ending
+                    .members
+                    .iter()
+                    .map(|member| member.snapshot.sampled_at)
+                    .max()
+                    .unwrap_or_else(|| self.clock.now());
+                Record::InstructionObservationBatchFinished(RepositoryInstructionFinish {
+                    v: INSTRUCTION_BATCH_VERSION,
+                    binding: start.binding,
+                    owner,
+                    ticket: start.ticket,
+                    baseline,
+                    members: crate::instruction_sample::batch::compare(start, ending)
+                        .into_iter()
+                        .map(|member| RepositoryInstructionSettlement {
+                            repo_id: member.repo_id,
+                            ending_root: member.ending_root,
+                            settlement: InstructionSettlement::Compared {
+                                end,
+                                sampled_at,
+                                recovery: false,
+                                comparison: member.comparison,
+                            },
+                        })
+                        .collect(),
+                })
+            }
+            None => unknown_finish(
+                start,
+                owner,
+                baseline,
+                &unknown(
+                    dudes_proto::InstructionUnknownReason::IncompleteCoverage,
+                    dudes_proto::InstructionGapKind::EndingBoundaryMissing,
+                    Some(end),
+                ),
+            ),
+        };
+        self.append_instruction_boundary(sup, record, waiting)?;
         Ok(())
     }
 

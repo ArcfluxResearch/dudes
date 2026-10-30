@@ -105,8 +105,7 @@ pub(super) fn load_for_record(
         Vec::new()
     };
     let required_ids: Vec<_> = required_turns.iter().map(|turn| turn.turn).collect();
-    let prospective = matches!(&entry.record, Record::InstructionObservationBatchStarted(batch)
-        if matches!(batch.owner, dudes_proto::InstructionObservationOwner::Managed { issue: dudes_proto::InstructionIssueAssociation::Prospective, .. }));
+    let prospective = repository_instruction::reads_active_round(&entry.record);
     let owner = repository_instruction::observation_owner(&entry.record);
     let current_cards: Vec<BoardRow> = if prospective {
         super::all_rows::<BoardRow>(board)?
