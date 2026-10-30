@@ -344,6 +344,8 @@ impl Story {
             max_turns: None,
             max_budget: None,
             model: None,
+            isolation: None,
+            mcp_servers: Vec::new(),
             browser_onboarding: None,
             repositories: ScopedRepositories {
                 project: RecordedWorkspace {
@@ -1457,7 +1459,7 @@ fn legacy_ticket_producers_refuse_declared_work_without_appending_any_record() {
         let error = response.error.unwrap();
         assert_eq!(error.code, ErrorCode::Refused.code());
         assert!(
-            error.message.contains("no verified provider capability"),
+            error.message.contains("is not enabled yet"),
             "{method:?}: {error:?}"
         );
         assert_eq!(

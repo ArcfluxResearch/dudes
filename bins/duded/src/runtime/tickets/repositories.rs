@@ -11,7 +11,6 @@ use dudes_supervisor::World;
 use dudes_types::AgentId;
 
 use super::super::repository_admission::CurrentHireAdmission;
-use super::super::repository_hire::HIRE_POLICY;
 
 #[cfg(all(test, unix))]
 mod tests;
@@ -145,7 +144,7 @@ impl CurrentHireAdmission<'_> {
                 IncompleteDeclaration
             );
         }
-        self.require_repository_capability(HIRE_POLICY.confinement())?;
+        self.require_repository_capability(self.current.hire_policy().confinement())?;
         let primary = observed.repositories.primary_id();
         let entries: Vec<_> = observed
             .repositories
@@ -188,7 +187,7 @@ impl CurrentHireAdmission<'_> {
         world: &World,
         declaration: &TicketDeclaration,
     ) -> anyhow::Result<()> {
-        self.require_repository_capability(HIRE_POLICY.confinement())?;
+        self.require_repository_capability(self.current.hire_policy().confinement())?;
         let (_, current) = self.current_project_repositories(world, &declaration.project)?;
         ensure!(
             declaration.repositories.entries().iter().all(|entry| {
