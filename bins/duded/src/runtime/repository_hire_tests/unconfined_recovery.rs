@@ -80,6 +80,11 @@ fn a_child_gone_with_the_daemon_is_settled_once_and_nothing_launches_again() {
             Record::TurnEnded { turn: ended, .. } if *ended == turn => Some(()),
             _ => None,
         });
+    setup
+        .fixture
+        .await_record("the settled launch boundary", |record| {
+            matches!(record, Record::InstructionObservationBatchFinished(_)).then_some(())
+        });
     again.stop(ExitCause::Ended);
     assert_eq!(setup.host.spawned().len(), 1, "no second child");
     assert_eq!(count(&setup, |r| matches!(r, Record::TurnEnded { .. })), 1);
