@@ -1352,6 +1352,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.predicate_ended_without_verdict(goal, operation);
             }
             Input::BaselineCaptured { goal, baseline } => self.on_baseline_captured(goal, baseline),
+            Input::RepositoryBaselineCaptured { capture, baseline } => {
+                self.on_repository_baseline_captured(&capture, baseline);
+            }
+            Input::RepositoryStampCaptured { capture, stamp } => {
+                let update = self.on_repository_stamp_captured(&capture, stamp, operation);
+                return Ok(Handled::default().with_recovery(update));
+            }
             Input::StampCaptured {
                 goal,
                 check_lsn,
@@ -2848,7 +2855,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if self.protection_pending(agent) {
             return;
         }
-        if self.hold_for_issue_baseline(agent) {
+        if self.hold_for_issue_baseline(agent) || self.hold_for_repository_stamp(agent) {
             return;
         }
         if self
@@ -3913,12 +3920,20 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             .map(|row| (row.goal.predicate.clone(), row.agent));
         let cwd = self
             .world
-            .agents
-            .get(&agent)
-            .and_then(|row| row.repositories.singleton())
-            .map(|repository| repository.cwd().to_path_buf());
+            .predicate_directory(goal)
+            .map(std::path::Path::to_path_buf);
         match (predicate, cwd) {
             (Some((predicate, judged_agent)), Some(cwd)) => {
+                if self.world.agents.get(&judged_agent).is_some_and(|row| {
+                    matches!(
+                        row.repositories,
+                        dudes_proto::repository::HireRepositories::Scoped(_)
+                    )
+                }) && !self.repository_admitted(judged_agent)
+                {
+                    self.predicate_ended_without_verdict(goal, operation);
+                    return;
+                }
                 if matches!(predicate, Predicate::BoardState { .. }) {
                     self.goals_awaiting_board_result.insert(goal);
                 }
@@ -3928,6 +3943,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     cwd,
                     predicate,
                 });
+            }
+            _ if self.awaiting_recovered_predicate(goal) => {
+                self.predicate_ended_without_verdict(goal, operation);
             }
             _ => self.decide(agent, operation),
         }

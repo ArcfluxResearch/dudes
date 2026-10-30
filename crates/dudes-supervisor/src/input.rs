@@ -753,6 +753,20 @@ pub enum Input {
         /// The sample, possibly an unavailable one.
         stamp: dudes_proto::diff_stamp::StampPayload,
     },
+    /// The complete declared answer to a repository baseline request.
+    RepositoryBaselineCaptured {
+        /// Immutable request, echoed by its worker.
+        capture: Box<crate::effect::RepositoryCapture>,
+        /// One explicit outcome for every declared repository.
+        baseline: dudes_proto::repository_review::RepositoryBaselineBatch,
+    },
+    /// The complete declared answer to a repository stamp request.
+    RepositoryStampCaptured {
+        /// Immutable request, echoed by its worker.
+        capture: Box<crate::effect::RepositoryCapture>,
+        /// One explicit outcome for every declared repository.
+        stamp: dudes_proto::repository_review::RepositoryStampBatch,
+    },
     /// An attached PTY exited; the keyboard comes back to the loop.
     PtyExited {
         /// The agent.
