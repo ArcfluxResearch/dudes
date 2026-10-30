@@ -49,6 +49,7 @@ fn directories(root: &Path) -> Vec<PathBuf> {
 }
 
 fn observed(sample: RepositoryInstructionStart, starting: bool) -> RepositoryInstructionStart {
+    // A generous deadline keeps every gap's cause independent of runner speed.
     let progress = Arc::new(Mutex::new(Progress {
         sample: sample.clone(),
         completed: 0,
@@ -56,7 +57,7 @@ fn observed(sample: RepositoryInstructionStart, starting: bool) -> RepositoryIns
     observe_reporting(
         sample,
         &progress,
-        Instant::now() + crate::instruction_sample::SAMPLE_DEADLINE,
+        Instant::now() + std::time::Duration::from_secs(3600),
         starting,
     )
 }
@@ -159,11 +160,11 @@ fn metadata_saturation_preserves_members_and_unknown_coverage() {
     for member in &mut plan.members {
         member.snapshot.participants[0].discovery.rules[0].candidate =
             InstructionCandidate::Fixed {
-                paths: (0..64)
+                paths: (0..16)
                     .map(|index| {
                         NativeInstructionPath::from_path(Path::new(&format!(
                             "{index:03}-{}.md",
-                            "instruction".repeat(8)
+                            "instruction".repeat(90)
                         )))
                         .unwrap()
                     })
