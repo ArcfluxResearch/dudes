@@ -300,8 +300,8 @@ export class Journey {
         await this.until(`Boolean(document.querySelector('.ticket-similar')) && Boolean(document.querySelector('.ticket-outcome'))`,
           'the dialog shows no similar ticket or outcome line');
         await this.click('[data-field="agent"]');
-        await this.until(`Boolean(document.querySelector('[data-ui="select-list"]:popover-open [role="option"]'))`, 'the Agent list did not open');
-        check(await this.evaluate(`document.querySelector('[data-ui="select-list"]:popover-open').textContent.includes('Suggested')`),
+        await this.until(`document.querySelector('[data-field="agent"]')?.getAttribute('aria-expanded') === 'true'`, 'the Agent list did not open');
+        check(await this.evaluate(`document.getElementById(document.querySelector('[data-field="agent"]').getAttribute('aria-controls')).textContent.includes('Suggested')`),
           'the Agent list suggests no agent');
         await this.screen(`new ticket dialog suggestion and similar ${width}`);
         batch.push(await hashOf());
