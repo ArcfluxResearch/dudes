@@ -25,6 +25,7 @@ use super::trust::{TrustRefusal, Vouch};
 use crate::ports::{Answered, Ask, Handle};
 
 mod group;
+pub(crate) use group::PreparationFailure;
 pub use group::{PreparedRepositoryGroup, RepositoryHireOrigin, RepositoryHirePlan};
 
 /// What the loop says when a project's trust grant is no longer the one a hire was admitted under.

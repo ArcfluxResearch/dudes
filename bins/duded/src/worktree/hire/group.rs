@@ -43,7 +43,7 @@ pub struct PreparedRepositoryGroup {
     pub repositories: RepositorySet<OwnedRepository>,
 }
 
-enum PreparationFailure {
+pub(crate) enum PreparationFailure {
     Refused(RpcError),
     Uncertain(RpcError),
 }
@@ -69,32 +69,47 @@ impl WorktreeHires {
                 "the loop did not admit the project hire",
             ));
         };
-        self.git
-            .check_version()
-            .map_err(|error| super::from_git(&error))?;
-        let bases = self.repository_bases(&plan)?;
-        let mut pending = Vec::new();
-        let prepared = match self.prepare_group(&plan, &bases, &mut pending) {
-            Ok(prepared) => prepared,
-            Err(PreparationFailure::Refused(error)) => {
-                self.discard_group(&pending);
-                return Err(error);
-            }
-            Err(PreparationFailure::Uncertain(error)) => return Err(error),
-        };
+        let prepared = self
+            .prepare_repository_group(&plan)
+            .map_err(|failure| match failure {
+                PreparationFailure::Refused(error) | PreparationFailure::Uncertain(error) => error,
+            })?;
         match self
             .handle
-            .ask(Ask::RepositoryHireCommit(Box::new(prepared)))
+            .ask(Ask::RepositoryHireCommit(Box::new(prepared.clone())))
         {
             Ok(Answered::Hired(result)) => Ok(result),
             Ok(Answered::RepositoryHireRejected(error)) => {
-                self.discard_group(&pending);
+                self.discard_prepared_group(&prepared);
                 Err(error)
             }
-            // The writer may have committed before losing its acknowledgment. Replay owns the
-            // decision and copies remain intact until it can establish whether they were hired.
             Err(error) => Err(error),
             Ok(other) => Err(super::unexpected(&other)),
+        }
+    }
+
+    pub(crate) fn prepare_repository_group(
+        &self,
+        plan: &RepositoryHirePlan,
+    ) -> Result<PreparedRepositoryGroup, PreparationFailure> {
+        self.git
+            .check_version()
+            .map_err(|error| super::from_git(&error))?;
+        let bases = self.repository_bases(plan)?;
+        let mut pending = Vec::new();
+        match self.prepare_group(plan, &bases, &mut pending) {
+            Ok(prepared) => Ok(prepared),
+            Err(PreparationFailure::Refused(error)) => {
+                self.discard_group(&pending);
+                Err(PreparationFailure::Refused(error))
+            }
+            Err(failure @ PreparationFailure::Uncertain(_)) => Err(failure),
+        }
+    }
+
+    pub(crate) fn discard_prepared_group(&self, prepared: &PreparedRepositoryGroup) {
+        for entry in prepared.repositories.entries() {
+            self.discard(entry.value.worktree);
         }
     }
 

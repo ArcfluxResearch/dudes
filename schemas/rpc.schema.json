@@ -4608,6 +4608,17 @@
               "$ref": "#/$defs/Timestamp",
               "description": "The daemon's wall clock as `Clock::now()` reported it when the supervisor emitted the\n`Persist` that carried this record, UTC milliseconds. `lsn` orders; `at` labels —\nprojections tolerate a non-monotone `at` (clock steps, NTP) and never sort by it, and it\nis never an input to `decide()` (invariant 5)."
             },
+            "browser_onboarding": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BrowserOnboardingHire"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Browser retry and session association for this complete atomic hire."
+            },
             "budget": {
               "$ref": "#/$defs/AgentBudget",
               "description": "Daily admission ceilings."
