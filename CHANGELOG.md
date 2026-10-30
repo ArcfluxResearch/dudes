@@ -31,6 +31,7 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 ### Breaking
 
 - **The first start after the upgrade rebuilds the saved views once.** The projection version moves from 70 to 71, so Dudes rebuilds its saved views from the journal. Nothing is lost. (#315)
+- **Going back to 0.101.0 works.** 0.101.0 starts on a 0.101.1 journal, including one with an agent working in its own copy. It keeps your tickets, notes, priorities, agents and copies, and what you write there is read when you come forward again. (#315)
 
 ## [0.101.0] - 2026-10-30
 
