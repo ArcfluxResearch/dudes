@@ -1630,6 +1630,88 @@ fn current_expansion_holds_an_owed_legacy_launch_before_host_and_resume_cannot_o
 }
 
 #[test]
+fn a_failed_catalog_append_rolls_an_applied_reload_back() {
+    use crate::floor_actions::ConfiguredRepository;
+    use dudes_proto::repository::{RepoId, RepositoryEntry, RepositorySet};
+
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let root = fixture.state.path().canonicalize().unwrap();
+    let other = fixture.runtime.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join(".git")).unwrap();
+    std::fs::create_dir(other.join(".git")).unwrap();
+    daemon.ctx.enrollment = legacy_enrollment(root.clone());
+    daemon.observe_repository_enrollment().unwrap();
+    daemon.record_missing_project_catalogs().unwrap();
+    assert!(
+        fixture
+            .records()
+            .iter()
+            .all(|record| !matches!(record, Record::ProjectRepositoriesRecorded { .. }))
+    );
+    let installed = daemon.ctx.enrollment.clone();
+    let mut candidate = installed.clone();
+    let member = |id: &str, path: &PathBuf| RepositoryEntry {
+        repo_id: RepoId::parse(id).unwrap(),
+        value: ConfiguredRepository {
+            label: id.into(),
+            path: path.clone(),
+            written_path: path.clone(),
+        },
+    };
+    candidate.profiles[0].repositories = Some(
+        RepositorySet::new(
+            RepoId::parse("primary").unwrap(),
+            vec![member("primary", &root), member("other", &other)],
+        )
+        .unwrap(),
+    );
+    let sha256 = "c".repeat(64);
+    let read = crate::enrollment_reload::ReloadRead {
+        seq: 1,
+        sha256: sha256.clone(),
+        path: fixture.runtime.path().join("operator.toml"),
+        config: crate::config::OperatorConfig {
+            enrollment: candidate,
+            ..crate::config::OperatorConfig::default()
+        },
+        memory_config: daemon.ctx.memory_config,
+        apply: Some(dudes_proto::rpc::floor::EnrollmentApply {
+            sha256,
+            added: vec![],
+            removed: vec![],
+            changed: vec!["service".into()],
+        }),
+        pid: None,
+    };
+    let before = fixture.entries();
+    daemon
+        .append_failure()
+        .fail_nth(std::num::NonZeroUsize::new(1).unwrap());
+    let refusal = daemon.enrollment_reload(&read).unwrap_err();
+    assert!(
+        refusal.message.contains("could not be observed"),
+        "{}",
+        refusal.message
+    );
+    assert_eq!(fixture.entries(), before);
+    assert!(daemon.ctx.enrollment.profiles[0].repositories.is_none());
+    assert!(daemon.enrollment_reload(&read).unwrap().applied);
+    let recorded = fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::ProjectRepositoriesRecorded { .. }))
+        .count();
+    assert_eq!(recorded, 1);
+    assert!(
+        daemon.ctx.current_repositories.observed["service"]
+            .lsn
+            .is_some()
+    );
+}
+
+#[test]
 fn unresolved_current_admission_refuses_a_parked_finite_issue_with_no_charged_goal() {
     let fixture = common::Fixture::new();
     let host = CountingHost::new();

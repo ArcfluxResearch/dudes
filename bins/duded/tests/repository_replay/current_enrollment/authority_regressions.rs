@@ -169,19 +169,19 @@ fn a_plain_operator_hire_cannot_bypass_a_nonprimary_member_or_its_descendant() {
     std::fs::create_dir(&child).unwrap();
     let host = SharedHost::new();
     let daemon = open(&settings, &host);
-    assert!(daemon.world().repository_projects.is_empty());
-    let mut running = common::start(daemon);
-    let before = fixture.entries();
-    assert!(
-        call(
-            &settings,
-            Method::WorkspaceTrust,
-            json!({"workspace_id":"service","repo_id":"web","trusted":true})
-        )
-        .error
-        .is_some()
+    assert_eq!(
+        daemon.world().repository_projects["service"]
+            .revisions
+            .len(),
+        1
     );
-    assert_eq!(fixture.entries(), before);
+    let mut running = common::start(daemon);
+    let trusted = call(
+        &settings,
+        Method::WorkspaceTrust,
+        json!({"workspace_id":"service","repo_id":"web","trusted":true}),
+    );
+    assert!(trusted.error.is_none(), "{:?}", trusted.error);
     for cwd in [
         &origins[0].value.origin.directory,
         &child,
@@ -228,7 +228,7 @@ fn an_unapplied_malformed_file_keeps_the_installed_plain_hire_authority() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-fn reload_current(settings: &duded::Settings) -> dudes_proto::rpc::Response {
+pub(super) fn reload_current(settings: &duded::Settings) -> dudes_proto::rpc::Response {
     let checked = call(settings, Method::FloorEnrollmentReload, json!({}));
     if let Some(result) = &checked.result {
         call(
@@ -244,7 +244,7 @@ fn reload_current(settings: &duded::Settings) -> dudes_proto::rpc::Response {
 }
 
 #[test]
-fn ordinary_legacy_start_and_reload_leave_catalog_writes_dormant() {
+fn a_single_repository_project_never_gets_a_catalog_record() {
     let fixture = Fixture::new();
     let roots = tempfile::tempdir().unwrap();
     let origin = create_origin(&roots.path().canonicalize().unwrap(), "web");
