@@ -3713,7 +3713,7 @@ pub mod samples {
             RecordKind::AgentHiredWithRepositories => Record::AgentHiredWithRepositories(Box::new(crate::repository::RepositoryHire {
                 id: agent(), name: "Kim".into(), character: None, accent: None, role: "engineer".into(),
                 department: "eng".into(), provider: Provider::Claude, budget: AgentBudget { usd_per_day: None, tokens_per_day: None },
-                max_turns: None, max_budget: None, model: None, browser_onboarding: None,
+                max_turns: None, max_budget: None, model: None, isolation: None, mcp_servers: Vec::new(), browser_onboarding: None,
                 repositories: crate::repository::ScopedRepositories {
                     project: RecordedWorkspace { id: "service".into(), label: "Service".into() },
                     catalog_lsn: Lsn::from_parts(1, 0).unwrap(), policy: crate::repository::RepositoryPolicy::WorkingTreeV1,

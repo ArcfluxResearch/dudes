@@ -17,6 +17,7 @@ use crate::worktree::hire::{RepositoryHirePlan, WorktreeHires};
 pub(super) use common::repository_runner::Runner;
 
 mod browser_groups;
+mod unconfined_options;
 mod unconfined_recovery;
 
 pub(super) struct Setup {
@@ -119,6 +120,15 @@ impl Setup {
         capability: bool,
         claude: dudes_providers::claude::config::ClaudeConfig,
     ) -> Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng> {
+        self.boot_with_options(capability, claude, crate::settings::RunOptions::default())
+    }
+
+    fn boot_with_options(
+        &self,
+        capability: bool,
+        claude: dudes_providers::claude::config::ClaudeConfig,
+        options: crate::settings::RunOptions,
+    ) -> Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng> {
         let mut seams = common::seams(
             &self.settings,
             self.host.clone(),
@@ -136,21 +146,31 @@ impl Setup {
                 dudes_providers::pi::config::PiConfig::default(),
             )),
         ]);
-        let mut daemon = crate::boot(&self.settings, seams).unwrap();
+        let mut daemon = crate::boot_with_options(&self.settings, seams, options).unwrap();
         daemon.ctx.current_repositories.test_hire_capability = capability;
+        daemon.ctx.current_repositories.test_hire_policy =
+            Some(dudes_proto::repository::RepositoryPolicy::WorkingTreeV1);
         daemon
     }
 
     fn boot_unconfined(
         &self,
     ) -> Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng> {
-        let mut daemon = self.boot_with(
-            true,
+        self.boot_unconfined_with(
             dudes_providers::claude::config::ClaudeConfig {
                 command: std::env::current_exe().unwrap().into_os_string(),
                 ..dudes_providers::claude::config::ClaudeConfig::default()
             },
-        );
+            crate::settings::RunOptions::default(),
+        )
+    }
+
+    fn boot_unconfined_with(
+        &self,
+        claude: dudes_providers::claude::config::ClaudeConfig,
+        options: crate::settings::RunOptions,
+    ) -> Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng> {
+        let mut daemon = self.boot_with_options(true, claude, options);
         daemon.ctx.current_repositories.test_hire_policy =
             Some(dudes_proto::repository::RepositoryPolicy::OperatorTrustV1);
         daemon
@@ -310,10 +330,12 @@ fn production_project_capabilities_refuse_before_any_lease() {
         let mut request = params.clone();
         request.provider = provider;
         let error = hires.hire(request).unwrap_err();
-        assert!(
-            error.message.contains("no verified provider capability"),
-            "{error:?}"
-        );
+        let expected = if provider == Provider::Claude {
+            "no verified provider capability yet"
+        } else {
+            "not available for this engine yet"
+        };
+        assert!(error.message.contains(expected), "{error:?}");
     }
     running.stop(ExitCause::Ended);
     setup.assert_cleaned(0);
@@ -331,7 +353,7 @@ fn unsupported_project_providers_and_ignored_options_refuse_before_any_lease() {
                 .hire(request)
                 .unwrap_err()
                 .message
-                .contains("no verified provider capability")
+                .contains("not available for this engine yet")
         );
     }
     for isolation in [

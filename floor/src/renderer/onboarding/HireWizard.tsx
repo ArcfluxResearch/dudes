@@ -22,7 +22,7 @@ import { EngineSignIn } from '../login/EngineSignIn.tsx';
 import type { ModelItem, ProviderRow } from '../setup/daemon.ts';
 import { ModelListBar } from '../model/ModelListBar.tsx';
 import { modelItems, searchModels } from '../model/lists.ts';
-import { HIRE_ENGINES, isHireEngine } from './catalog.ts';
+import { groupPinsModel, HIRE_ENGINES, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
 import {
   LIMITS, NO_PROJECT_LIST, agentsIn, checkHireStatus, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenWorkspace,
@@ -370,12 +370,12 @@ function HireForm({ hire, floor, onClose, onSettings }: {
                   {workspace.engines.map((name) => (
                     <Choice key={name} type="radio" name="engine" value={name} checked={engine === name} disabled={frozen}
                       onChange={() => editDraft({ engine: name })} label={HIRE_ENGINES[name]}
-                      note={workspace.repositoryGroup === undefined ? ENGINE_REACH[name]
+                      note={workspace.repositoryGroup === undefined || !groupPinsModel(workspace.repositoryGroup, name) ? ENGINE_REACH[name]
                         : "Writes are limited to this project's copies and private work folders. The task's completion check runs with your account's full access."} />
                   ))}
                 </fieldset>
               )}
-              {engine === null ? null : workspace?.repositoryGroup === undefined
+              {engine === null ? null : workspace?.repositoryGroup === undefined || !groupPinsModel(workspace.repositoryGroup, engine)
                 ? <ModelChoice engine={engine} items={modelItems(floor, engine)} draft={hire.draft} frozen={frozen}
                   configured={row?.configuredModel ?? null} fixed={row?.modelFixed === true} invalid={invalid('model')} />
                 : <p className={NOTE}>This project uses {workspace.repositoryGroup.providers.find((offer) => offer.provider === engine)?.model} for multi-repository work.</p>}
