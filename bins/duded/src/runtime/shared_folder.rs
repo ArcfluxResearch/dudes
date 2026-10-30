@@ -8,6 +8,7 @@ use dudes_supervisor::{
 use dudes_types::{AgentId, IsolationMode, Mode, Provider};
 
 use super::{Ctx, Shared};
+use crate::codex_profile::scoped::Attempt;
 use crate::predicate::PredicateRunner;
 
 const MAX_CHILDREN: usize = 512;
@@ -25,6 +26,7 @@ struct Census<'a, H> {
     world: &'a dudes_supervisor::World,
     candidate: Option<AgentId>,
     recovery_consent: Option<&'a dudes_proto::recovery::RecoveryBinding>,
+    scoped_candidate: Option<Attempt>,
     folder: PathBuf,
     examined: usize,
     conflict: Option<(AgentId, String)>,
@@ -46,6 +48,25 @@ impl<H: ProcessHost> Census<'_, H> {
             return;
         }
         let live = key.map_or(Liveness::Unknown, |key| self.host.alive(key));
+        if self.scoped_owner(agent) {
+            let Some(folders) = self.owner_folders(agent) else {
+                self.unknown
+                    .get_or_insert(SharedFolderRefusal::ChildOwnerUnresolved);
+                return;
+            };
+            for folder in folders {
+                self.native_child(
+                    agent,
+                    &folder,
+                    if live == Liveness::Alive {
+                        OwnedTargetState::Present
+                    } else {
+                        OwnedTargetState::UnknownMissingCapability
+                    },
+                );
+            }
+            return;
+        }
         if live == Liveness::Gone {
             return;
         }
@@ -127,21 +148,40 @@ impl<H: ProcessHost> Census<'_, H> {
         }
     }
 
-    fn owner_folder(&self, agent: AgentId) -> Option<&Path> {
+    fn scoped_owner(&self, agent: AgentId) -> bool {
+        self.world.agents.get(&agent).is_some_and(|row| {
+            matches!(
+                row.repositories,
+                dudes_proto::repository::HireRepositories::Scoped(_)
+            )
+        })
+    }
+
+    fn owner_folders(&self, agent: AgentId) -> Option<Vec<PathBuf>> {
         let row = self.world.agents.get(&agent)?;
-        let repository = row.repositories.singleton()?;
-        match repository.worktree() {
-            Some(lease) => self
-                .world
-                .worktrees
-                .get(&lease)
-                .map(|lease| lease.path.as_path()),
-            None => Some(repository.cwd()),
+        match &row.repositories {
+            dudes_proto::repository::HireRepositories::Legacy(repository) => {
+                let path = match repository.worktree() {
+                    Some(lease) => self.world.worktrees.get(&lease)?.path.clone(),
+                    None => repository.cwd().to_path_buf(),
+                };
+                Some(vec![path])
+            }
+            dudes_proto::repository::HireRepositories::Scoped(hire) => Some(
+                hire.repositories
+                    .entries()
+                    .iter()
+                    .map(|copy| copy.value.recorded.execution.directory.clone())
+                    .collect(),
+            ),
         }
     }
 
     fn recorded(&mut self, agent: AgentId, key: Option<&AdoptionKey>) {
-        let Some(cwd) = self.owner_folder(agent).map(Path::to_path_buf) else {
+        let Some(cwd) = self
+            .owner_folders(agent)
+            .and_then(|folders| folders.into_iter().next())
+        else {
             if key.is_none_or(|key| self.host.alive(key) != Liveness::Gone) {
                 self.unknown
                     .get_or_insert(SharedFolderRefusal::ChildOwnerUnresolved);
@@ -158,43 +198,65 @@ impl<H: ProcessHost> Census<'_, H> {
         turns: &mut BTreeSet<dudes_types::TurnId>,
     ) -> Result<(), SharedFolderRefusal> {
         let world = self.world;
-        for (_, spawn) in world.managed_native_spawn_receipts() {
+        let receipts = world
+            .managed_native_spawn_receipts()
+            .map(|(_, spawn)| (spawn.owner, &spawn.key))
+            .chain(
+                world
+                    .attached_native_spawn_receipts()
+                    .map(|(_, spawn)| (spawn.owner, &spawn.key)),
+            );
+        for (owner, recorded_key) in receipts {
             if self.room().is_err() {
                 return Err(SharedFolderRefusal::ChildLimit);
             }
-            let dudes_proto::InstructionObservationOwner::Managed {
-                agent: owner, turn, ..
-            } = spawn.owner
-            else {
-                continue;
+            let owner = match owner {
+                dudes_proto::InstructionObservationOwner::Managed { agent, turn, .. } => {
+                    turns.insert(turn);
+                    agent
+                }
+                dudes_proto::InstructionObservationOwner::AttachedProcess { agent, .. }
+                | dudes_proto::InstructionObservationOwner::AttachedTurn { agent, .. } => agent,
             };
-            turns.insert(turn);
-            keys.push(spawn.key.clone());
+            keys.push(recorded_key.clone());
             let mut matching = targets.targets.iter().filter(|target| {
                 target
                     .key
                     .as_ref()
-                    .is_some_and(|key| super::native_boundaries::same_key(key, &spawn.key))
+                    .is_some_and(|key| super::native_boundaries::same_key(key, recorded_key))
             });
             let target = matching.next();
             let mut state = if matching.next().is_some() {
                 OwnedTargetState::UnknownIdentity
             } else {
                 target.map_or(OwnedTargetState::UnknownMissingCapability, |target| {
-                    target.state
+                    if target.state == OwnedTargetState::NativeBoundaryAbsent
+                        && target.native_absence_receipt.is_none()
+                    {
+                        OwnedTargetState::UnknownMissingCapability
+                    } else {
+                        target.state
+                    }
                 })
             };
             if state != OwnedTargetState::NativeBoundaryAbsent
-                && self.host.alive(&spawn.key) == Liveness::Alive
+                && self.host.alive(recorded_key) == Liveness::Alive
             {
                 state = OwnedTargetState::Present;
             }
-            let cwd = target
-                .map(|target| target.cwd.as_path())
-                .or_else(|| self.owner_folder(owner))
-                .map(Path::to_path_buf);
-            match cwd {
-                Some(cwd) => self.native_child(owner, &cwd, state),
+            let folders = if self.scoped_owner(owner) {
+                self.owner_folders(owner)
+            } else {
+                target
+                    .map(|target| vec![target.cwd.clone()])
+                    .or_else(|| self.owner_folders(owner))
+            };
+            match folders {
+                Some(folders) => {
+                    for folder in folders {
+                        self.native_child(owner, &folder, state);
+                    }
+                }
                 None => {
                     self.unknown
                         .get_or_insert(SharedFolderRefusal::ChildOwnerUnresolved);
@@ -242,11 +304,17 @@ impl<H: ProcessHost> Census<'_, H> {
                     )
                 });
                 if !current_before_host && !owed {
-                    let folder = attempt
-                        .legacy_snapshot()
-                        .and_then(|snapshot| snapshot.execution_folder.as_ref())
-                        .and_then(|path| path.to_path().ok());
-                    self.attempt_uncertain(owner, folder.as_deref());
+                    if let Some(evidence) = &attempt.snapshot {
+                        for (_, snapshot) in evidence.samples() {
+                            let folder = snapshot
+                                .execution_folder
+                                .as_ref()
+                                .and_then(|path| path.to_path().ok());
+                            self.attempt_uncertain(owner, folder.as_deref());
+                        }
+                    } else {
+                        self.attempt_uncertain(owner, None);
+                    }
                 }
             }
         }
@@ -292,7 +360,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         agent: Option<AgentId>,
         cwd: &Path,
     ) -> Result<(), SharedFolderRefusal> {
-        self.admit_folder_children_for(sup, agent, cwd, None)
+        let candidate = agent
+            .and_then(|agent| sup.world().agents.get(&agent)?.open_turn)
+            .and_then(|turn| self.scoped_browser_candidate(sup, turn));
+        self.admit_folder_children_for(sup, agent, cwd, None, candidate)
     }
 
     fn admit_folder_children_for<R: Rng>(
@@ -301,6 +372,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         agent: Option<AgentId>,
         cwd: &Path,
         recovery_consent: Option<&dudes_proto::recovery::RecoveryBinding>,
+        scoped_candidate: Option<Attempt>,
     ) -> Result<(), SharedFolderRefusal> {
         let folder = canonical_folder(cwd).ok_or(SharedFolderRefusal::CandidateFolderUnresolved)?;
         let world = sup.world();
@@ -309,12 +381,22 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             world,
             candidate: agent,
             recovery_consent,
+            scoped_candidate,
             folder,
             examined: 0,
             conflict: None,
             unknown: None,
         };
         let targets = self.host.owned_targets(MAX_CHILDREN);
+        if census
+            .candidate
+            .is_some_and(|agent| census.scoped_owner(agent))
+            && !matches!(targets.status, OwnedTargetsStatus::Complete)
+        {
+            census
+                .unknown
+                .get_or_insert(SharedFolderRefusal::ChildOwnerUnresolved);
+        }
         if matches!(targets.status, OwnedTargetsStatus::Truncated { .. }) {
             census
                 .unknown
@@ -340,7 +422,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             return census.result();
         }
         for target in &targets.targets {
-            if target.state == OwnedTargetState::NativeBoundaryAbsent
+            if (target.state == OwnedTargetState::NativeBoundaryAbsent
+                && target.key.is_some()
+                && target.native_absence_receipt.is_some())
                 || target.key.as_ref().is_some_and(|key| {
                     native_keys
                         .iter()
@@ -373,7 +457,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     ) -> bool {
         let turn = sup.world().agents.get(&agent).and_then(|row| row.open_turn);
         let owed = super::native_boundaries::missing_spawn_binding(sup, agent, turn);
-        self.recovery_checkout_for(sup, agent, owed.as_ref())
+        self.recovery_checkout_for(sup, agent, owed.as_ref(), None)
     }
 
     pub(super) fn recovery_checkout_clear<R: Rng>(
@@ -381,7 +465,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         sup: &Supervisor<Shared<C>, R>,
         agent: AgentId,
     ) -> bool {
-        self.recovery_checkout_for(sup, agent, None)
+        self.recovery_checkout_clear_for(sup, agent, None)
+    }
+
+    pub(super) fn recovery_checkout_clear_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+        candidate: Option<Attempt>,
+    ) -> bool {
+        self.recovery_checkout_for(sup, agent, None, candidate)
     }
 
     fn recovery_checkout_for<R: Rng>(
@@ -389,28 +482,61 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         sup: &Supervisor<Shared<C>, R>,
         agent: AgentId,
         recovery_consent: Option<&dudes_proto::recovery::RecoveryBinding>,
+        scoped_candidate: Option<Attempt>,
     ) -> bool {
         let Some(row) = sup.world().agents.get(&agent) else {
             return false;
         };
-        let Some(repository) = row.repositories.singleton() else {
-            return false;
+        let folders = match &row.repositories {
+            dudes_proto::repository::HireRepositories::Legacy(repository) => {
+                let cwd = match repository.worktree() {
+                    Some(lease) => match sup.world().worktrees.get(&lease) {
+                        Some(lease) if lease.removed.is_none() => lease.path.as_path(),
+                        _ => return false,
+                    },
+                    None => repository.cwd(),
+                };
+                vec![cwd]
+            }
+            dudes_proto::repository::HireRepositories::Scoped(hire) => {
+                let mut folders = Vec::new();
+                for entry in hire.repositories.entries() {
+                    let copy = &entry.value.recorded;
+                    if !crate::worktree::is_owned_repository(copy)
+                        || sup
+                            .world()
+                            .worktrees
+                            .get(&copy.worktree)
+                            .is_none_or(|lease| {
+                                lease.agent != Some(agent)
+                                    || lease.removed.is_some()
+                                    || lease.path != copy.execution.directory
+                                    || lease.origin != copy.origin.directory
+                                    || lease.base != copy.base
+                            })
+                    {
+                        return false;
+                    }
+                    folders.push(copy.execution.directory.as_path());
+                }
+                folders
+            }
         };
-        let cwd = match repository.worktree() {
-            Some(lease) => match sup.world().worktrees.get(&lease) {
-                Some(lease) => lease.path.as_path(),
-                None => return false,
-            },
-            None => repository.cwd(),
-        };
-        let Some(folder) = canonical_folder(cwd) else {
-            return false;
-        };
-        if !self.recovery_checks_clear(&folder) {
-            return false;
-        }
-        self.admit_folder_children_for(sup, Some(agent), &folder, recovery_consent)
-            .is_ok()
+        folders.into_iter().all(|cwd| {
+            let Some(folder) = canonical_folder(cwd) else {
+                return false;
+            };
+            self.recovery_checks_clear(&folder)
+                && self
+                    .admit_folder_children_for(
+                        sup,
+                        Some(agent),
+                        &folder,
+                        recovery_consent,
+                        scoped_candidate,
+                    )
+                    .is_ok()
+        })
     }
 
     fn recovery_checks_clear(&self, folder: &Path) -> bool {
@@ -433,6 +559,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         sup: &Supervisor<Shared<C>, R>,
         turn: dudes_types::TurnId,
     ) -> bool {
+        self.recovery_turn_checkout_clear_for(sup, turn, None)
+    }
+
+    pub(super) fn recovery_turn_checkout_clear_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        turn: dudes_types::TurnId,
+        candidate: Option<Attempt>,
+    ) -> bool {
         let Some(row) = sup.world().turns.get(&turn) else {
             return false;
         };
@@ -448,7 +583,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             turn,
         }) {
             Ok(None) => true,
-            Ok(Some(_)) => self.recovery_checkout_clear(sup, row.agent),
+            Ok(Some(_)) => match candidate {
+                Some(attempt) => self.recovery_checkout_clear_for(sup, row.agent, Some(attempt)),
+                None => self.recovery_checkout_clear(sup, row.agent),
+            },
             Err(_) => false,
         }
     }
@@ -460,6 +598,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         native_keys: &mut Vec<AdoptionKey>,
     ) -> Result<(), SharedFolderRefusal> {
         let world = census.world;
+        for (turn, reservation) in &self.scoped_launches {
+            census.room()?;
+            if reservation.matches_candidate(
+                *turn,
+                world,
+                census.candidate,
+                census.scoped_candidate,
+            ) {
+                continue;
+            }
+            let owner = super::native_boundaries::owner_agent(reservation.attempt().owner);
+            let Some(folders) = census.owner_folders(owner) else {
+                census
+                    .unknown
+                    .get_or_insert(SharedFolderRefusal::ChildOwnerUnresolved);
+                continue;
+            };
+            for folder in folders {
+                census.attempt_uncertain(owner, Some(&folder));
+            }
+        }
         let current: Result<(), SharedFolderRefusal> =
             self.children.visit_owned(|turn, key, cwd| {
                 if turns.contains(&turn) {

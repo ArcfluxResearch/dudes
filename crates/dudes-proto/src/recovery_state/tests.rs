@@ -31,6 +31,7 @@ fn facts() -> RecoveryFacts {
             provider: Provider::Codex,
             model_selection: selection.clone(),
         },
+        authority: crate::recovery_state::admission::RecoveryAuthority::Legacy { worktree: None },
         source_issue: RecoveryIssue {
             lsn: Lsn(20),
             issued: RecoveryIssued {
