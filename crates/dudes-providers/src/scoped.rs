@@ -410,6 +410,8 @@ fn environment(
         EnvVar::new("TMPDIR", &p.temp),
         EnvVar::new("TMP", &p.temp),
         EnvVar::new("TEMP", &p.temp),
+        EnvVar::new("DUDES_MAILBOX", ctx.agent_dir),
+        EnvVar::new("DUDES_COMMAND_TRANSPORT", "file-mail"),
     ]);
     env.sort();
     Ok(env)
