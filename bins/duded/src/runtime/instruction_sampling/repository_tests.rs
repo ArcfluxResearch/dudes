@@ -767,7 +767,7 @@ fn turn_ended(agent: AgentId, turn: TurnId) -> Record {
 }
 
 #[test]
-fn an_added_copy_is_sampled_for_its_skills_and_never_for_its_memory_files() {
+fn an_added_copy_is_sampled_for_its_skills_and_memory_files() {
     let (_setup, mut daemon, agent) = fixture_with(true);
     let declared = full_declaration(&daemon, agent);
     let grant = ticket_declaring(
@@ -801,19 +801,35 @@ fn an_added_copy_is_sampled_for_its_skills_and_never_for_its_memory_files() {
         if index != primary_index {
             assert_eq!(
                 sampled_paths(member),
-                [copies[index].join(".claude/skills/review/SKILL.md")],
-                "an added copy contributes exactly its skill tree"
+                [
+                    copies[index].join(".claude/skills/review/SKILL.md"),
+                    copies[index].join("CLAUDE.md"),
+                ],
+                "an added copy contributes its skill tree and its memory file"
             );
         }
     }
 }
 
+fn write_memory(copy: &Path, text: &str) {
+    std::fs::write(copy.join("CLAUDE.md"), text).unwrap();
+}
+
 #[test]
+fn a_skill_changed_in_a_secondary_copy_during_a_ticket_round_blocks_done_until_reviewed() {
+    changed_in_a_secondary_copy(write_skill);
+}
+
+#[test]
+fn a_memory_file_changed_in_a_secondary_copy_during_a_ticket_round_is_pending_review() {
+    changed_in_a_secondary_copy(write_memory);
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one physical attempt covers the baseline, the edit, the comparison and the refused completion"
 )]
-fn a_skill_changed_in_a_secondary_copy_during_a_ticket_round_blocks_done_until_reviewed() {
+fn changed_in_a_secondary_copy(write: fn(&Path, &str)) {
     let (setup, mut daemon, agent) = fixture_with(true);
     let declared = full_declaration(&daemon, agent);
     let grant = ticket_declaring(
@@ -838,14 +854,14 @@ fn a_skill_changed_in_a_secondary_copy_during_a_ticket_round_blocks_done_until_r
         .iter()
         .position(|member| member.repo_id.as_str() == secondary_id)
         .unwrap();
-    write_skill(&copies[secondary], "review v1");
+    write(&copies[secondary], "review v1");
     let (start, _) = sample(&mut daemon, owner, &grant, None);
     let baseline = append(
         &mut daemon,
         Record::InstructionObservationBatchStarted(start.clone()),
     );
     issue(&mut daemon, agent, turn, grant.clone());
-    write_skill(&copies[secondary], "review v2, now with an extra step");
+    write(&copies[secondary], "review v2, now with an extra step");
     let end_lsn = append(&mut daemon, turn_ended(agent, turn));
     let (ending, comparisons) = sample(&mut daemon, owner, &grant, Some(&start));
     let finish = dudes_proto::repository_instruction::RepositoryInstructionFinish {
