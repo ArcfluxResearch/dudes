@@ -23,7 +23,8 @@ Hire the agent into that project. Without `--cwd`, `dudes hire` uses the only pr
 one on a terminal. An agent hired without a project cannot take tickets.
 
 [Explicit repository enrollment](configuration.md#projects-with-explicit-repositories) can prepare a
-project with several repositories. Execution for that configuration is unavailable. Expanding a
+project with several repositories. A Claude Code agent hired into it works in every repository, and a
+ticket in it covers all of them. Expanding a
 project holds its existing singleton tickets and agents, including queued messages and recovery.
 
 ## Make a ticket and give it to an agent

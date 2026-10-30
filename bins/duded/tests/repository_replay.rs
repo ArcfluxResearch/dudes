@@ -1458,10 +1458,8 @@ fn legacy_ticket_producers_refuse_declared_work_without_appending_any_record() {
             .unwrap();
         let error = response.error.unwrap();
         assert_eq!(error.code, ErrorCode::Refused.code());
-        assert!(
-            error.message.contains("is not enabled yet"),
-            "{method:?}: {error:?}"
-        );
+        let reason = "select a project with an explicit repository list";
+        assert!(error.message.ends_with(reason), "{method:?}: {error:?}");
         assert_eq!(
             Reader::open(&fixture.journal_dir()).unwrap().1.end,
             before_lsn

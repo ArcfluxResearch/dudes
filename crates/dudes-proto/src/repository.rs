@@ -214,13 +214,13 @@ pub enum Confinement {
     Unconfined,
 }
 
-/// An unconfined policy reached a path that only a confined policy may take.
+/// An unconfined policy reached a path that only the confined sandbox may take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnconfinedPolicy;
 
 impl std::fmt::Display for UnconfinedPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("unconfined repository hires are not enabled yet")
+        f.write_str("this path is only available to a confined repository hire")
     }
 }
 
@@ -236,7 +236,7 @@ impl RepositoryPolicy {
         }
     }
 
-    /// The gate for a path that has no unconfined arm yet.
+    /// The gate for a path that only the confined sandbox may take.
     pub const fn require_confined(self) -> Result<(), UnconfinedPolicy> {
         match self.confinement() {
             Confinement::Confined => Ok(()),

@@ -710,19 +710,19 @@ mod confinement_tests {
     }
 
     #[test]
-    fn the_capability_gate_is_closed_for_both_policies_until_a_test_opens_it() {
+    fn only_the_unconfined_gate_is_open_without_the_test_switch() {
         let enrollment = crate::floor_actions::Enrollment::default();
         let mut current = CurrentRepositories::default();
         let admission = CurrentHireAdmission::new(&enrollment, &current);
         admission
-            .require_repository_capability(Confinement::Confined)
-            .unwrap_err();
-        let error = admission
             .require_repository_capability(Confinement::Unconfined)
+            .unwrap();
+        let error = admission
+            .require_repository_capability(Confinement::Confined)
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "unconfined repository execution is not enabled yet"
+            "restricted repository execution has no verified provider capability yet"
         );
         current.test_hire_capability = true;
         let admission = CurrentHireAdmission::new(&enrollment, &current);
@@ -741,8 +741,7 @@ mod confinement_tests {
             unreachable!()
         };
         let enrollment = crate::floor_actions::Enrollment::default();
-        let mut current = CurrentRepositories::default();
-        current.test_hire_capability = true;
+        let current = CurrentRepositories::default();
         let error = CurrentHireAdmission::new(&enrollment, &current)
             .require_scoped_hire_authority(&World::default(), &hire.repositories)
             .unwrap_err();

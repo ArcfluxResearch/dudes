@@ -152,10 +152,8 @@ pub enum WorkspaceError {
     /// `remove` was given an id the file does not hold.
     #[error("no project is named `{0}`")]
     UnknownId(String),
-    /// Current configuration requires the restricted execution contract.
-    #[error(
-        "this project has explicit repositories; scoped repository execution is not available yet"
-    )]
+    /// The project has several repositories, so it has no one folder to hire into.
+    #[error("this project has explicit repositories and no single folder")]
     ScopedExecutionUnavailable,
     /// A repository list has invalid labels or overlapping directories.
     #[error(
