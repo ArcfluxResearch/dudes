@@ -11,6 +11,28 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.101.1] - 2026-10-30
+
+### Highlights
+
+- **A faster New ticket dialog.** The dialog now starts with the title. A row of chips sets the priority, the Done when check and the agent. Each agent in the list says in plain words what it is doing, for example "Idle, starts now" or "Queue full (8 of 8)", and whether it works in its own copy or the shared folder. One agent is marked "Suggested", and Dudes never picks for you. A line above the buttons says what Create will do, for example "Ada starts it now, in its own copy." or "Goes to To do, 3rd by priority." (#329)
+- **The dialog helps you before you create.** After three characters, up to three open tickets in the same project that share your words appear with an Open button, so you can spot a duplicate. Pasting several lines into an empty title puts the first line in the title and the rest in the note, and Cmd+Z (Ctrl+Z) undoes the split. Cmd+Enter (Ctrl+Enter) creates the ticket from anywhere in the dialog, including the note. (#329)
+- **Less retyping.** A "Create more" switch keeps the dialog open and keeps the project, check, priority and agent for the next ticket. A draft kept with Escape now keeps its priority and says "Draft kept." when you reopen the dialog. The dialog opens on the project and agent chosen in the Board filters, and the To do column has a small + that opens it. (#329)
+- **Limits are stated before you hit them.** The title counts bytes against its 256-byte limit and says "Shorten it." when it is over. Create stays off with the reason printed beside it. The first-task form on Setup and in the agent drawer checks the same limit. (#329)
+
+### Changes
+
+- More groundwork for tickets that span several repositories: frozen scoped ticket authority, stricter recovery checks for a hire that spans repositories, the hire dialog's repository group, per-repository changes in the Git tab and the ticket Changes view, and capturing changes and running checks in each hired copy. Nothing offers multi-repository work yet, and a journal without these records replays unchanged. (#312, #315, #316, #317, #325)
+
+### Fixes
+
+- A daemon that runs for weeks no longer keeps a process handle and a file descriptor for every turn it has finished. (#321)
+
+### Breaking
+
+- **The first start after the upgrade rebuilds the saved views once.** The projection version moves from 70 to 71, so Dudes rebuilds its saved views from the journal. Nothing is lost. (#315)
+- **Going back to 0.101.0 works.** 0.101.0 starts on a 0.101.1 journal, including one with an agent working in its own copy. It keeps your tickets, notes, priorities, agents and copies, and what you write there is read when you come forward again. (#315)
+
 ## [0.101.0] - 2026-10-30
 
 ### Highlights
