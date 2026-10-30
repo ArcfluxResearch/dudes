@@ -13,7 +13,19 @@ export type DiffRefusalReason = (typeof DIFF_REFUSALS)[number];
 export const DIFF_FRESHNESS = ['matches_review_sample', 'changed_after_check', 'unknown'] as const;
 export type DiffFreshness = (typeof DIFF_FRESHNESS)[number];
 
+export interface DiffRepositoryBinding {
+  readonly repo_id: string | null;
+  readonly baseline_id: string;
+  readonly target_id: string;
+  readonly unavailable: DiffRefusalReason | null;
+  readonly preexisting_tracked: boolean;
+  readonly preexisting_untracked: boolean;
+}
 export interface DiffBinding {
+  readonly hired_lsn: string | null;
+  readonly start_lsn: string | null;
+  readonly check_repo: string | null;
+  readonly repositories: readonly DiffRepositoryBinding[];
   readonly card: string;
   readonly seq: number;
   readonly round: number;
@@ -28,6 +40,7 @@ export interface DiffBinding {
   readonly preexisting_untracked: boolean;
 }
 export interface DiffEntry {
+  readonly repo_id: string | null;
   readonly entry_id: string | null;
   readonly old_path: string | null;
   readonly path: string;
@@ -50,6 +63,7 @@ export interface DiffPage {
   readonly freshness: DiffFreshness;
 }
 export interface DiffFile {
+  readonly repo_id: string | null;
   readonly entry_id: string;
   readonly old_path: string | null;
   readonly path: string;
@@ -68,7 +82,8 @@ export interface DiffContent {
   readonly truncated: boolean;
 }
 export type DiffResponse = DiffPage | DiffContent | { readonly mode: 'refused'; readonly reason: DiffRefusalReason };
-export type DiffRequest = { readonly mode: 'manifest'; readonly card: string; readonly expected_seq: number }
+export type DiffRequest = { readonly mode: 'manifest'; readonly card: string; readonly expected_seq: number;
+  readonly repositories?: { readonly scope: 'declared' } | { readonly scope: 'repository'; readonly repo_id: string } }
   | { readonly mode: 'page'; readonly manifest_id: string; readonly cursor: string }
   | { readonly mode: 'content'; readonly manifest_id: string; readonly entries: readonly string[] };
 export type DiffOutcome = { readonly kind: 'response'; readonly response: DiffResponse }
@@ -79,6 +94,7 @@ export interface DiffTransport {
 }
 
 const UTF8 = new TextEncoder();
+const REPO_ID = /^[a-z][a-z0-9_-]{0,31}$/;
 const ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const OPAQUE = /^[0-9a-f]{32}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -116,47 +132,68 @@ function source(value: unknown): value is string {
     && !SOURCE_FORBIDDEN.test(value)
     && value.split(/\r\n|\r|\n/).every((line) => UTF8.encode(line).length <= 4_096);
 }
+function nullableRepo(value: unknown): value is string | null {
+  return value === null || (typeof value === 'string' && REPO_ID.test(value));
+}
+function nullableLsn(value: unknown): value is string | null {
+  return value === null || (typeof value === 'string' && /^(?:0|[1-9][0-9]{0,19})$/.test(value)
+    && BigInt(value) <= 18_446_744_073_709_551_615n);
+}
+function repositoryBinding(value: unknown): DiffRepositoryBinding | null {
+  if (!exactly(value, ['repo_id', 'baseline_id', 'target_id', 'unavailable', 'preexisting_tracked', 'preexisting_untracked'])
+    || !nullableRepo(value.repo_id) || typeof value.baseline_id !== 'string' || !DIGEST.test(value.baseline_id)
+    || typeof value.target_id !== 'string' || !DIGEST.test(value.target_id)
+    || !(value.unavailable === null || oneOf(value.unavailable, DIFF_REFUSALS))
+    || typeof value.preexisting_tracked !== 'boolean' || typeof value.preexisting_untracked !== 'boolean') return null;
+  return Object.freeze({ repo_id: value.repo_id, baseline_id: value.baseline_id, target_id: value.target_id,
+    unavailable: value.unavailable, preexisting_tracked: value.preexisting_tracked, preexisting_untracked: value.preexisting_untracked });
+}
 function binding(value: unknown): DiffBinding | null {
-  if (!exactly(value, ['card', 'seq', 'round', 'goal', 'claimant', 'check_lsn', 'baseline_id', 'target_id',
+  if (!exactly(value, ['card', 'seq', 'round', 'goal', 'claimant', 'hired_lsn', 'start_lsn', 'check_repo', 'repositories', 'check_lsn', 'baseline_id', 'target_id',
     'policy_version', 'sampler_version', 'preexisting_tracked', 'preexisting_untracked'])
     || typeof value.card !== 'string' || !ID.test(value.card) || !safeCount(value.seq) || !count(value.round)
     || typeof value.goal !== 'string' || !ID.test(value.goal) || typeof value.claimant !== 'string' || !ID.test(value.claimant)
-    || !(value.check_lsn === null || (typeof value.check_lsn === 'string'
-      && /^(?:0|[1-9][0-9]{0,19})$/.test(value.check_lsn) && BigInt(value.check_lsn) <= 18_446_744_073_709_551_615n))
+    || !nullableLsn(value.check_lsn) || !nullableLsn(value.hired_lsn) || !nullableLsn(value.start_lsn)
+    || !nullableRepo(value.check_repo) || !Array.isArray(value.repositories) || value.repositories.length < 1 || value.repositories.length > 8
     || typeof value.baseline_id !== 'string' || !DIGEST.test(value.baseline_id)
     || typeof value.target_id !== 'string' || !DIGEST.test(value.target_id) || !count(value.policy_version)
     || !count(value.sampler_version) || typeof value.preexisting_tracked !== 'boolean'
     || typeof value.preexisting_untracked !== 'boolean') return null;
-  return Object.freeze({ card: value.card, seq: value.seq, round: value.round, goal: value.goal,
+  const repositories = value.repositories.map(repositoryBinding);
+  if (!repositories.every((row) => row !== null) || new Set(repositories.map((row) => row.repo_id)).size !== repositories.length) return null;
+  if (value.hired_lsn === null ? repositories.length !== 1 || repositories[0]?.repo_id !== null || value.check_repo !== null
+    : value.start_lsn === null || value.check_repo === null || repositories.some((row) => row.repo_id === null)) return null;
+  return Object.freeze({ hired_lsn: value.hired_lsn, start_lsn: value.start_lsn, check_repo: value.check_repo,
+    repositories: Object.freeze(repositories), card: value.card, seq: value.seq, round: value.round, goal: value.goal,
     claimant: value.claimant, check_lsn: value.check_lsn, baseline_id: value.baseline_id,
     target_id: value.target_id, policy_version: value.policy_version, sampler_version: value.sampler_version,
     preexisting_tracked: value.preexisting_tracked, preexisting_untracked: value.preexisting_untracked });
 }
 function entry(value: unknown): DiffEntry | null {
-  if (!exactly(value, ['entry_id', 'old_path', 'path', 'kind', 'availability']) || !path(value.path)
+  if (!exactly(value, ['repo_id', 'entry_id', 'old_path', 'path', 'kind', 'availability']) || !nullableRepo(value.repo_id) || !path(value.path)
     || !(value.old_path === null || path(value.old_path)) || !oneOf(value.kind, DIFF_KINDS)) return null;
   const available = value.availability;
   if (exactly(available, ['state']) && available.state === 'available' && opaque(value.entry_id)) {
-    return Object.freeze({ entry_id: value.entry_id, old_path: value.old_path, path: value.path,
+    return Object.freeze({ repo_id: value.repo_id, entry_id: value.entry_id, old_path: value.old_path, path: value.path,
       kind: value.kind, availability: Object.freeze({ state: 'available' }) });
   }
   if (exactly(available, ['state', 'reason']) && available.state === 'unavailable' && value.entry_id === null
     && oneOf(available.reason, DIFF_OMISSIONS)) {
-    return Object.freeze({ entry_id: null, old_path: value.old_path, path: value.path, kind: value.kind,
+    return Object.freeze({ repo_id: value.repo_id, entry_id: null, old_path: value.old_path, path: value.path, kind: value.kind,
       availability: Object.freeze({ state: 'unavailable', reason: available.reason }) });
   }
   return null;
 }
 function file(value: unknown): DiffFile | null {
-  if (!exactly(value, ['entry_id', 'old_path', 'path', 'kind', 'old', 'current']) || !opaque(value.entry_id)
-    || !path(value.path) || !(value.old_path === null || path(value.old_path)) || !oneOf(value.kind, DIFF_KINDS)
+  if (!exactly(value, ['repo_id', 'entry_id', 'old_path', 'path', 'kind', 'old', 'current']) || !opaque(value.entry_id)
+    || !nullableRepo(value.repo_id) || !path(value.path) || !(value.old_path === null || path(value.old_path)) || !oneOf(value.kind, DIFF_KINDS)
     || !source(value.old) || !source(value.current)) return null;
-  return Object.freeze({ entry_id: value.entry_id, old_path: value.old_path, path: value.path,
+  return Object.freeze({ repo_id: value.repo_id, entry_id: value.entry_id, old_path: value.old_path, path: value.path,
     kind: value.kind, old: value.old, current: value.current });
 }
 
 export function sameDiffBinding(left: DiffBinding, right: DiffBinding): boolean {
-  return (Object.keys(left) as (keyof DiffBinding)[]).every((key) => left[key] === right[key]);
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export function decodeDiffResponse(body: string): DiffResponse | null {
@@ -181,6 +218,8 @@ export function decodeDiffResponse(body: string): DiffResponse | null {
     && typeof raw.untracked_lower_bound === 'boolean') {
     const entries = raw.entries.map(entry);
     if (!entries.every((row) => row !== null)) return null;
+    if (entries.some((row) => !parsedBinding.repositories.some((repo) => repo.repo_id === row.repo_id && repo.unavailable === null))
+      || new Set(entries.map((row) => `${row.repo_id ?? ''}:${row.path}`)).size !== entries.length) return null;
     const ids = entries.flatMap((row) => row.entry_id === null ? [] : [row.entry_id]);
     if (new Set(ids).size !== ids.length) return null;
     return Object.freeze({ mode: raw.mode, manifest_id: raw.manifest_id, binding: parsedBinding,
@@ -193,6 +232,7 @@ export function decodeDiffResponse(body: string): DiffResponse | null {
     && raw.files.length + raw.omitted.length <= 8) {
     const files = raw.files.map(file);
     if (!files.every((row) => row !== null)) return null;
+    if (files.some((row) => !parsedBinding.repositories.some((repo) => repo.repo_id === row.repo_id && repo.unavailable === null))) return null;
     const omitted: { readonly entry_id: string; readonly reason: DiffOmissionReason }[] = [];
     for (const row of raw.omitted) {
       if (!exactly(row, ['entry_id', 'reason']) || !opaque(row.entry_id) || !oneOf(row.reason, DIFF_OMISSIONS)) return null;

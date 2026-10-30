@@ -270,6 +270,17 @@ fn cancel() -> Arc<AtomicBool> {
 }
 fn binding() -> DiffBinding {
     DiffBinding {
+        hired_lsn: None,
+        start_lsn: None,
+        check_repo: None,
+        repositories: vec![dudes_proto::DiffRepositoryBinding {
+            repo_id: None,
+            baseline_id: "a".repeat(64),
+            target_id: "b".repeat(64),
+            unavailable: None,
+            preexisting_tracked: false,
+            preexisting_untracked: false,
+        }],
         card: CardId::NIL,
         seq: Seq(1),
         round: 1,

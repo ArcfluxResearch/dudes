@@ -416,7 +416,7 @@ fn snapshot(page: &FloorPage) -> (Value, Vec<u8>) {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("timeout");
-    let request = page.upgrade_head("/floor/stream", "dudes-floor-v5");
+    let request = page.upgrade_head("/floor/stream", "dudes-floor-v6");
     stream.write_all(request.as_bytes()).expect("upgrade");
     assert!(read_head(&mut stream).starts_with("HTTP/1.1 101 Switching Protocols"));
     let subscribe = br#"{"type":"floor.subscribe"}"#;
