@@ -1,3 +1,5 @@
+mod scoped_recovery;
+
 use super::work_test_support as common;
 use super::*;
 use dudes_providers::adapter::{HookInstall, ManagedInstall};
@@ -33,6 +35,7 @@ struct MockNativeState {
     answers: VecDeque<NativeBoundaryAcknowledgement>,
     next_key: Option<AdoptionKey>,
     prior_run: Option<PriorRunObservations>,
+    query_status: Option<OwnedTargetsStatus>,
 }
 
 struct PriorRunObservations {
@@ -188,7 +191,10 @@ impl ProcessHost for MockNativeHost {
                 omitted: count - targets.len(),
             }
         };
-        OwnedTargets { targets, status }
+        OwnedTargets {
+            targets,
+            status: state.query_status.unwrap_or(status),
+        }
     }
 
     fn acknowledge_native_boundary_absence(
