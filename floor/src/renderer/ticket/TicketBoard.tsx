@@ -8,7 +8,7 @@ import { handFocusAfterLeave } from '../focus.ts';
 import type { CardRow } from '../board.ts';
 import { accentOf } from '../appearance.ts';
 import { initialOf } from '../Portrait.tsx';
-import { Plus, X } from 'lucide-react';
+import { Plus, TriangleAlert, X } from 'lucide-react';
 import { Badge, Button, Field, ICON, IconButton, Input, RING, Select, Switch, Textarea, cn } from '../../ui/index.ts';
 import { FORM_ACTIONS, HINT, STATE_BADGE } from './look.ts';
 
@@ -192,7 +192,7 @@ function openingDraft(floor: FloorState, projects: readonly { readonly id: strin
 }
 
 const CHIP = 'ticket-chip h-7 w-auto max-w-full gap-1.5 rounded-pill border-line bg-surface-2 px-3 text-small font-medium';
-const CHIP_LIST = 'w-max max-w-[min(30rem,calc(100vw-1rem))]';
+const CHIP_LIST = 'w-max max-w-[min(30rem,calc(100vw-2rem))]';
 const CHIP_KEYS: Readonly<Record<string, string>> = Object.freeze({ p: 'priority', d: 'check', a: 'agent' });
 const DOT: Readonly<Record<Priority, string>> = Object.freeze({
   none: 'bg-line-strong', urgent: 'bg-danger', high: 'bg-warn', medium: 'bg-info', low: 'bg-subtle',
@@ -395,19 +395,23 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel, requested = 
             value: entry.value, label: entry.label, short: entry.value === 'none' ? 'Priority' : entry.label,
             icon: <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-pill', DOT[entry.value])} />,
           }))} />
-        {checks.length > 0 ? <Select name="check" aria-label="Done when" value={check?.id ?? ''} openRequest={asked.check} placeholder="Done when: choose a check" className={cn(CHIP, 'max-w-80')} listClassName={CHIP_LIST}
+        {checks.length > 0 ? <Select name="check" aria-label={check === null ? 'Done when' : `Done when: ${choiceLabel(check)}`} value={check?.id ?? ''} openRequest={asked.check} placeholder="Done when: choose a check" className={CHIP} listClassName={CHIP_LIST}
           onValueChange={(value) => editDraft({ check: value })}
-          options={checks.map((entry) => ({ value: entry.id, label: choiceLabel(entry), short: `Done when: ${choiceLabel(entry)}` }))} /> : null}
+          options={checks.map((entry) => ({
+            value: entry.id, label: choiceLabel(entry), short: `Done when: ${entry.label}`,
+            mark: entry.mayAlreadyPass ? <TriangleAlert {...ICON} role="img" aria-label="may already be true" className="shrink-0 text-warn" /> : undefined,
+          }))} /> : null}
         {project === null || noProjects(floor) || usable.length === 0 ? null
-          : <Select name="agent" aria-label="Agent" value={agent} openRequest={asked.agent} className={cn(CHIP, chosen?.full === true && 'border-danger text-danger')} listClassName={CHIP_LIST}
+          : <Select name="agent" aria-label={chosen === null ? 'Agent' : `Agent: ${chosen.name}`} value={agent} openRequest={asked.agent} className={cn(CHIP, chosen?.full === true && 'border-danger text-danger')} listClassName={CHIP_LIST}
             onValueChange={(value) => editDraft({ agent: value })}
             options={[{ value: '', label: 'Not yet', short: 'Agent: Not yet' },
               ...choices.map((choice) => ({
                 value: choice.id, disabled: choice.full,
-                label: `${choice.name} · ${stateWords(choice)} · ${choice.own ? 'Own copy' : 'Shared folder'}${choice.id === suggested ? ' · Suggested' : ''}`,
+                label: choice.name, detail: `${stateWords(choice)} · ${choice.own ? 'Own copy' : 'Shared folder'}`,
+                badge: choice.id === suggested ? <Badge state="ready">Suggested</Badge> : undefined,
                 short: `Agent: ${choice.name}${choice.full ? ' (queue full)' : ''}`,
               })),
-              ...unrecorded.map((row) => ({ value: row.id, label: `${row.name} (hired before projects were recorded)`, disabled: true }))]} />}
+              ...unrecorded.map((row) => ({ value: row.id, label: row.name, detail: 'Hired before projects were recorded', disabled: true }))]} />}
       </div>
       {chosenCheck !== null && check === null && project !== null ? <p className={HINT} role="status">The saved check is no longer available. Choose a check before creating this ticket.</p> : null}
       {chosenProject !== null && project === null ? <p className={HINT} role="status">The saved project is no longer available. Choose a project before creating this ticket.</p> : null}

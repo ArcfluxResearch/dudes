@@ -303,6 +303,11 @@ export class Journey {
         await this.until(`document.querySelector('[data-field="agent"]')?.getAttribute('aria-expanded') === 'true'`, 'the Agent list did not open');
         check(await this.evaluate(`document.getElementById(document.querySelector('[data-field="agent"]').getAttribute('aria-controls')).textContent.includes('Suggested')`),
           'the Agent list suggests no agent');
+        await this.until(`document.getAnimations().every((animation) => animation.playState !== 'running')`, 'the Agent list kept animating');
+        check(await this.evaluate(`(() => { const list = document.getElementById(document.querySelector('[data-field="agent"]').getAttribute('aria-controls')).getBoundingClientRect();
+          return list.left >= 0 && list.right <= innerWidth - 8; })()`), `the Agent list runs past the window at ${width}`);
+        check(await this.evaluate(`[...document.querySelectorAll('.ticket-chip span.truncate')].every((label) => label.scrollWidth <= label.clientWidth)`) || width < 1000,
+          `a chip label is cut off at ${width}`);
         await this.screen(`new ticket dialog suggestion and similar ${width}`);
         batch.push(await hashOf());
         await this.click('[data-field="agent"]');

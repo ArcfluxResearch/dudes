@@ -1245,7 +1245,7 @@ test('the outcome line and the agent chip follow the choices, and a full queue s
     assert.match(textOf(app.page.host.querySelector('[data-field="agent"]')), /Agent: Ada/);
     const grace = app.page.host.querySelector('#' + app.page.host.querySelector('[data-field="agent"]').getAttribute('aria-controls')).querySelector(`[data-value="${GRACE}"]`);
     assert.equal(grace.getAttribute('aria-disabled'), 'true');
-    assert.match(textOf(grace), /Grace · Queue full \(8 of 8\)/);
+    assert.match(textOf(grace), /GraceQueue full \(8 of 8\) · Shared folder/);
   } finally { await app.close(); }
 });
 

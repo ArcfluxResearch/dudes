@@ -393,12 +393,12 @@ test('the new ticket form is a title, and everything else is optional', () => {
   subscribe(store, { agents: [agent()] });
   const html = form();
   assert.match(html, /<input[^>]*required=""[^>]*aria-label="Title"[^>]*placeholder="Ticket title"[^>]*name="title"/);
-  assert.match(html, /aria-label="Done when"/);
+  assert.match(html, /aria-label="Done when: default passes \(may already be true\)"/);
   assert.match(html, /data-value="default" aria-selected="true"[^>]*><span>default passes \(may already be true\)<\/span>/);
   assert.match(html, /data-value="second"[^>]*><span>second passes<\/span>/);
   assert.match(html, /aria-label="Agent"/);
   assert.match(html, /data-value=""[^>]*><span>Not yet<\/span>/);
-  assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span>Ada · Idle, starts now · Shared folder · Suggested<\/span>/);
+  assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span><span><span>Ada<\/span><span><span aria-hidden="true"><\/span>Suggested<\/span><\/span><span>Idle, starts now · Shared folder<\/span><\/span>/);
   assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket(?:<kbd[^>]*>[^<]*<\/kbd>)?<\/button>/, 'empty title: nothing to create');
 });
 
@@ -448,8 +448,8 @@ test('the agent choice lists agents of the project and shows the rest as unavail
     agents: [agent(), agent(GRACE, 'Grace', { workspace: undefined }), agent('01ARZ3NDEKTSV4RRFFQ69G5FAW', 'Other', { workspace: { id: 'website', label: 'Website' } })],
   });
   const html = form();
-  assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span>Ada · Idle, starts now · Shared folder · Suggested<\/span>/);
-  assert.match(html, /data-value="01ARZ3NDEKTSV4RRFFQ69G5FAV"[^>]*aria-disabled="true"[^>]*><span>Grace \(hired before projects were recorded\)<\/span>/);
+  assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span><span><span>Ada<\/span><span><span aria-hidden="true"><\/span>Suggested<\/span><\/span><span>Idle, starts now · Shared folder<\/span><\/span>/);
+  assert.match(html, /data-value="01ARZ3NDEKTSV4RRFFQ69G5FAV"[^>]*aria-disabled="true"[^>]*><span><span><span>Grace<\/span><\/span><span>Hired before projects were recorded<\/span><\/span>/);
   assert.ok(!/>Other</.test(html), 'an agent of another project is not offered');
   assert.match(html, /Grace was hired before projects were recorded, so it can&#x27;t take tickets\./);
 });

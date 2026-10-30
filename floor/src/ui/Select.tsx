@@ -17,6 +17,12 @@ export interface SelectOption {
   readonly short?: string;
   /** A mark drawn before the label, in the list and on the button. */
   readonly icon?: ReactNode;
+  /** A mark drawn after the label on the closed button only, such as a warning that the label does not say. */
+  readonly mark?: ReactNode;
+  /** A small badge beside the label in the list. */
+  readonly badge?: ReactNode;
+  /** A muted second line under the label in the list. */
+  readonly detail?: string;
 }
 
 export interface SelectProps {
@@ -138,8 +144,8 @@ export function Select({ options, value, onValueChange, id, name, placeholder = 
       onKeyDown={keyOf}
       onBlur={blurred}
       className={cn(FIELD_BOX, 'flex h-8 cursor-pointer items-center justify-between gap-2 text-left', className)}>
-      {selected !== -1 && options[selected]!.icon !== undefined
-        ? <span className="flex min-w-0 items-center gap-2">{options[selected]!.icon}<span className="truncate">{options[selected]!.short ?? options[selected]!.label}</span></span>
+      {selected !== -1 && (options[selected]!.icon !== undefined || options[selected]!.mark !== undefined)
+        ? <span className="flex min-w-0 items-center gap-2">{options[selected]!.icon}<span className="truncate">{options[selected]!.short ?? options[selected]!.label}</span>{options[selected]!.mark}</span>
         : <span className={cn('truncate', selected === -1 && 'text-subtle')}>{selected === -1 ? placeholder : options[selected]!.short ?? options[selected]!.label}</span>}
       <ChevronDown {...ICON} className={cn('shrink-0 text-muted transition-transform', open && 'rotate-180')} />
     </button>
@@ -151,10 +157,14 @@ export function Select({ options, value, onValueChange, id, name, placeholder = 
         aria-selected={at === selected} aria-disabled={option.disabled === true || undefined} data-active={at === active}
         onPointerMove={() => { if (option.disabled !== true && at !== active) setActive(at); }}
         onClick={() => choose(at)}
-        className={cn('flex h-8 cursor-pointer items-center justify-between gap-2 rounded-md px-2 text-base max-[801px]:min-h-11',
+        className={cn('flex min-h-8 cursor-pointer items-center justify-between gap-2 rounded-md px-2 text-base max-[801px]:min-h-11',
+          option.detail !== undefined && 'py-1',
           at === active && 'bg-surface-2', at === selected && 'font-medium', option.disabled === true && 'cursor-not-allowed opacity-50')}>
-        {option.icon === undefined ? <span className="truncate">{option.label}</span>
-          : <span className="flex min-w-0 items-center gap-2">{option.icon}<span className="truncate">{option.label}</span></span>}
+        {option.icon === undefined && option.badge === undefined && option.detail === undefined ? <span className="truncate">{option.label}</span>
+          : <span className="flex min-w-0 flex-col">
+            <span className="flex min-w-0 items-center gap-2">{option.icon}<span className="truncate">{option.label}</span>{option.badge}</span>
+            {option.detail === undefined ? null : <span className="truncate text-caption font-normal text-muted">{option.detail}</span>}
+          </span>}
         {at === selected ? <Check {...ICON} className="shrink-0 text-accent" /> : null}
       </div>)}
     </div>
