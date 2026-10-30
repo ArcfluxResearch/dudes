@@ -63,6 +63,8 @@ mod repository_admission_tests;
 mod ticket_review;
 #[cfg(test)]
 mod ticket_start;
+#[cfg(test)]
+mod unconfined_launch_tests;
 use browser_notes::BrowserLaunchPhase;
 use mail_wakes::{MailRefresh, MailRefreshPhase};
 use repositories::IssueRepositories;

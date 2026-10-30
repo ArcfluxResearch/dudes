@@ -715,4 +715,17 @@ mod confinement_tests {
             "{error}"
         );
     }
+
+    #[test]
+    fn a_hire_whose_copies_could_not_all_be_named_in_the_task_is_refused_before_any_lease() {
+        let ids: Vec<_> = (0..8)
+            .map(|n| RepoId::parse(&format!("repository-{n}")).unwrap())
+            .collect();
+        let short = std::path::Path::new("/var/lib/dudes");
+        assert!(require_section_fits(short, ids.iter()).is_ok());
+        let long = std::path::PathBuf::from(format!("/{}", "d".repeat(260)));
+        let error = require_section_fits(&long, ids.iter()).unwrap_err();
+        assert_eq!(error, dudes_proto::task::RepositorySectionError::TooLarge);
+        assert!(require_section_fits(&long, ids[..2].iter()).is_ok());
+    }
 }

@@ -690,21 +690,22 @@ impl JsonSchema for IdentifiedTaughtTaskSchema {
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         let scoped = TaskCommandSet::ScopedFileMail;
-        let patterns: Vec<_> = [TaskCommandSet::Legacy, scoped]
-            .into_iter()
-            .map(|commands| {
-                format!(
-                    "{}[\\s\\S]{{1,4096}}{}$",
-                    schema_identity_prefix(commands),
-                    schema_teaching_suffix(commands)
-                )
-            })
-            .collect();
-        let unconfined = format!(
-            "{}[\\s\\S]{{1,4096}}{}$",
-            schema_unconfined_identity_prefix(),
-            schema_teaching_suffix(TaskCommandSet::Legacy)
-        );
+        let legacy = TaskCommandSet::Legacy;
+        // The unconfined line shares the legacy teaching, and one alternation keeps the
+        // expensive note class in the pattern twice rather than three times.
+        let patterns = [
+            format!(
+                "(?:{}|{})[\\s\\S]{{1,4096}}{}$",
+                schema_identity_prefix(legacy),
+                schema_unconfined_identity_prefix(),
+                schema_teaching_suffix(legacy)
+            ),
+            format!(
+                "{}[\\s\\S]{{1,4096}}{}$",
+                schema_identity_prefix(scoped),
+                schema_teaching_suffix(scoped)
+            ),
+        ];
         let max_bytes = 4988
             .max(scoped.identity_bytes() + crate::MAX_CHAT_TEXT_BYTES + scoped.teaching_bytes())
             .max(
@@ -714,7 +715,7 @@ impl JsonSchema for IdentifiedTaughtTaskSchema {
                     + TaskCommandSet::Legacy.teaching_bytes(),
             );
         schemars::json_schema!({"type":"string", "minLength":433, "maxLength":max_bytes,
-            "pattern":format!("(?:{}|{}|{})", patterns[0], patterns[1], unconfined),
+            "pattern":format!("(?:{}|{})", patterns[0], patterns[1]),
             "description":"The identity line, a blank line, the exact normalized note and the matching fixed teaching. Runtime validation bounds the normalized labels and the note's UTF-8 bytes."})
     }
 }
@@ -747,7 +748,7 @@ pub(crate) fn schema_unconfined_identity_prefix() -> String {
     )
 }
 
-const SCHEMA_SECTION_LINE: &str = "[a-z][a-z0-9_-]{0,31}: /[^\\u0000-\\u001f\\u007f]+";
+const SCHEMA_SECTION_LINE: &str = "[a-z][a-z0-9_-]{0,31}: /[^\\x00-\\x1f\\x7f]+";
 
 /// Most bytes an unconfined identity line and section hold beyond the legacy reservation.
 const UNCONFINED_EXTRA_BYTES: usize = UNCONFINED_IDENTITY_CLOSE.len() - IDENTITY_CLOSE.len()

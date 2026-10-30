@@ -356,6 +356,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pi_refuses_extra_directories() {
+        let copies = [std::path::PathBuf::from("/data/b")];
+        let context = AgentCtx {
+            extra_dirs: &copies,
+            ..ctx(&[])
+        };
+        assert_eq!(
+            PiAdapter::default().managed(
+                &context,
+                "task",
+                &TurnSession::Assigned,
+                &ModelSelection::provider_default()
+            ),
+            Err(LaunchError::ExtraDirectoriesUnsupported)
+        );
+    }
+
     fn launch_task(task: &str, session: &TurnSession) -> Result<LaunchSpec, LaunchError> {
         PiAdapter::default().managed(
             &ctx(&[]),

@@ -957,6 +957,38 @@ mod tests {
     }
 
     #[test]
+    fn every_extra_copy_gets_its_own_add_dir_flag_before_the_task_separator() {
+        let copies = [PathBuf::from("/data/b"), PathBuf::from("/data/c")];
+        let context = AgentCtx {
+            extra_dirs: &copies,
+            ..ctx(&[])
+        };
+        let adapter = ClaudeAdapter::new(ClaudeConfig {
+            extra_args: vec!["--verbose".into()],
+            ..ClaudeConfig::default()
+        });
+        let spec = adapter
+            .managed(&context, "--add-dir /sneaky", &first(), &none())
+            .expect("a launch");
+        let mut tail = files_flag();
+        tail.extend(os(&[
+            "--add-dir",
+            "/data/b",
+            "--add-dir",
+            "/data/c",
+            "--verbose",
+            "--",
+            "--add-dir /sneaky",
+        ]));
+        assert!(
+            spec.argv.ends_with(&tail),
+            "copies follow the chat folder in order and the task stays last: {:?}",
+            spec.argv
+        );
+        assert_eq!(spec.cwd, Path::new("/tmp/dudes-fixture"));
+    }
+
+    #[test]
     fn claude_refuses_a_turn_that_announces_no_session() {
         assert_eq!(
             ClaudeAdapter::default().managed(

@@ -33,134 +33,7 @@ fn copy_of(label: &str) -> PathBuf {
 }
 
 fn hire_into(harness: &mut Harness, policy: RepositoryPolicy, labels: &[&str]) -> (AgentId, Lsn) {
-    let ids: Vec<RepoId> = labels.iter().map(|id| RepoId::parse(id).unwrap()).collect();
-    let origins: Vec<TrustedRepository> = labels
-        .iter()
-        .enumerate()
-        .map(|(index, label)| TrustedRepository {
-            directory: root().join("origins").join(label),
-            common_dir: root().join("origins").join(label).join(".git"),
-            directory_identity: FileIdentity {
-                device: 1,
-                inode: 100 + index as u64,
-            },
-            common_identity: FileIdentity {
-                device: 1,
-                inode: 200 + index as u64,
-            },
-        })
-        .collect();
-    let catalog = append(
-        harness,
-        Record::ProjectRepositoriesRecorded {
-            project: "service".into(),
-            repositories: RepositorySet::new(
-                ids[0].clone(),
-                ids.iter()
-                    .zip(&origins)
-                    .map(|(repo_id, origin)| RepositoryEntry {
-                        repo_id: repo_id.clone(),
-                        value: CatalogRepository {
-                            label: repo_id.as_str().into(),
-                            origin: origin.clone(),
-                        },
-                    })
-                    .collect(),
-            )
-            .unwrap(),
-        },
-    );
-    let base = GitCommit::parse("0000000000000000000000000000000000000000").unwrap();
-    let trusts: Vec<Lsn> = ids
-        .iter()
-        .zip(&origins)
-        .map(|(repo_id, origin)| {
-            append(
-                harness,
-                Record::RepositoryTrustSet {
-                    project: "service".into(),
-                    repo_id: repo_id.clone(),
-                    origin: origin.clone(),
-                    catalog_lsn: catalog,
-                    pin: Some(TrustPin {
-                        claude_tree: None,
-                        mcp_json: None,
-                        attributes: Hex32::new([7; 32]),
-                        config: Hex32::new([8; 32]),
-                    }),
-                },
-            )
-        })
-        .collect();
-    let mut owned = Vec::new();
-    for (index, (repo_id, origin)) in ids.iter().zip(&origins).enumerate() {
-        let worktree = WorktreeId::from_bytes([index as u8 + 1; 16]);
-        let path = copy_of(repo_id.as_str());
-        append(
-            harness,
-            Record::WorktreeLeased {
-                worktree,
-                origin: origin.directory.clone(),
-                path: path.clone(),
-                branch: format!("dudes/{index:012}"),
-                base,
-                from: None,
-            },
-        );
-        owned.push(RepositoryEntry {
-            repo_id: repo_id.clone(),
-            value: OwnedRepository {
-                origin: origin.clone(),
-                execution: ExecutionRepository {
-                    directory: path,
-                    directory_identity: FileIdentity {
-                        device: 1,
-                        inode: 300 + index as u64,
-                    },
-                    git_dir: origin.common_dir.join(format!("worktrees/copy{index}")),
-                    git_identity: FileIdentity {
-                        device: 1,
-                        inode: 400 + index as u64,
-                    },
-                },
-                worktree,
-                base,
-                trust_lsn: trusts[index],
-            },
-        });
-    }
-    let agent = AgentId::from_parts(1, 1);
-    let hire = Box::new(RepositoryHire {
-        id: agent,
-        name: "Kim".into(),
-        character: None,
-        accent: None,
-        role: "engineer".into(),
-        department: "eng".into(),
-        provider: Provider::Claude,
-        budget: AgentBudget {
-            usd_per_day: None,
-            tokens_per_day: None,
-        },
-        max_turns: None,
-        max_budget: None,
-        model: None,
-        browser_onboarding: None,
-        repositories: ScopedRepositories {
-            project: RecordedWorkspace {
-                id: "service".into(),
-                label: "Service".into(),
-            },
-            catalog_lsn: catalog,
-            policy,
-            repositories: RepositorySet::new(ids[0].clone(), owned).unwrap(),
-        },
-    });
-    let hired = append(harness, hire.into_record());
-    harness
-        .supervisor
-        .observe_repository_admission(RepositoryAdmission::new([(agent, hired, true)]));
-    (agent, hired)
+    harness.hire_with_repository_copies(policy, labels, &root())
 }
 
 fn queue_chat(harness: &mut Harness, agent: AgentId, text: &str) {
@@ -266,4 +139,60 @@ fn a_confined_hire_never_takes_the_ordinary_launch() {
             .all(|seen| !matches!(seen, Seen::Spawn { .. })),
         "a confined hire reaches the scoped path or nothing"
     );
+}
+
+#[test]
+fn a_goal_that_fills_the_cap_still_carries_the_section_and_stays_within_the_task_limit() {
+    let mut harness = Harness::new();
+    let (agent, _) = hire_into(&mut harness, RepositoryPolicy::OperatorTrustV1, &LABELS);
+    harness.drive(Input::Command(Command::GoalSet {
+        completion_check: None,
+        agent,
+        text: "g".repeat(80_000),
+        predicate: dudes_proto::Predicate::Command {
+            argv: vec!["true".into()],
+            timeout_s: 60,
+        },
+        budget: dudes_proto::GoalBudget {
+            usd: None,
+            tokens: None,
+        },
+        hop_cap: 8,
+        browser_goal: None,
+        goal_replacement: None,
+        baseline: None,
+    }));
+    let task = harness
+        .records()
+        .find_map(|record| match record {
+            Record::LoopDecided {
+                decision: dudes_proto::LoopDecision::Continue { task },
+                ..
+            } => Some(task.clone()),
+            _ => None,
+        })
+        .expect("the goal's first decision");
+    assert!(task.len() <= 65_536, "{}", task.len());
+    assert!(task.contains("\n\nservice: "));
+    assert!(
+        task.ends_with("or its boundaries.]"),
+        "the teaching is last"
+    );
+}
+
+#[test]
+fn a_missing_copy_of_an_unconfined_hire_holds_the_agent_before_any_launch() {
+    let mut recorded = Harness::new();
+    let (agent, _) = hire_into(&mut recorded, RepositoryPolicy::OperatorTrustV1, &LABELS);
+    let mut restarted = Harness::from_prefix(recorded.journal.clone());
+    restarted.drive(Input::MissingWorktrees(vec![(
+        agent,
+        WorktreeId::from_bytes([3; 16]),
+    )]));
+    restarted.drive(Input::Started);
+    queue_chat(&mut restarted, agent, "Are you there?");
+    assert!(restarted.records().any(|record| matches!(record,
+        Record::AgentHeld { agent: held, cause: dudes_proto::AutomaticHold::WorktreeMissing { .. }, .. }
+            if *held == agent)));
+    assert!(spawns(&restarted).is_empty());
 }

@@ -520,6 +520,30 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn codex_refuses_extra_directories_on_both_transports() {
+        let env = home();
+        let copies = [PathBuf::from("/data/b")];
+        let context = AgentCtx {
+            extra_dirs: &copies,
+            ..ctx(&env)
+        };
+        let selection = ModelSelection::provider_default();
+        assert_eq!(
+            CodexAdapter::default().managed(&context, TASK, &TurnSession::Assigned, &selection),
+            Err(LaunchError::ExtraDirectoriesUnsupported)
+        );
+        assert_eq!(
+            CodexAdapter::new(CodexConfig {
+                streaming: true,
+                ..CodexConfig::default()
+            })
+            .with_managed_home("/data/providers/codex".into())
+            .managed(&context, TASK, &TurnSession::Assigned, &selection),
+            Err(LaunchError::ExtraDirectoriesUnsupported)
+        );
+    }
+
     /// Opted in, exec and app-server each gain exactly one `-c` per server, in name order, and each
     /// value reads back as the literal table, operator text included. Mutants: drop
     /// `default_tools_approval_mode`, format the table by hand so the URL's quote ends the string,
