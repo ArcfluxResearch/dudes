@@ -32,20 +32,53 @@ const ENGINES: Readonly<Record<string, { readonly name: string; readonly program
   pi: { name: 'Pi', program: 'pi' },
 });
 
+function engineOf(provider: unknown) {
+  return typeof provider === 'string' && Object.hasOwn(ENGINES, provider) ? ENGINES[provider] : undefined;
+}
+
+function capitalized(reason: string): string {
+  return reason.charAt(0).toUpperCase() + reason.slice(1);
+}
+
+function sentence(reason: string): string {
+  const text = capitalized(reason);
+  return text.endsWith('.') ? text : `${text}.`;
+}
+
 /** The recorded reason ends in the error kind and names no engine, and other not-found errors share it, so the program is only the usual cause. */
+function missingEngine(hold: AutomaticHold, provider: unknown) {
+  return hold.kind === 'launch_failed' && hold.reason.endsWith('(NotFound)') ? engineOf(provider) : undefined;
+}
+
 function missingEngineHint(hold: AutomaticHold, provider: unknown): string {
-  if (hold.kind !== 'launch_failed' || !hold.reason.endsWith('(NotFound)')) return '';
-  const engine = typeof provider === 'string' && Object.hasOwn(ENGINES, provider) ? ENGINES[provider] : undefined;
+  const engine = missingEngine(hold, provider);
   if (engine === undefined) return '';
   return `. Dudes could not start ${engine.name}, usually because ${engine.program} is not installed. `
     + 'Install it and sign in, then resume this agent, or hire an agent with an engine you have.';
 }
 
+/** The full account, with the recorded reason and the hint, for Overview and the crew row. */
 export function automaticHoldText(hold: AutomaticHold, provider?: unknown): string {
   switch (hold.kind) {
     case 'repeated_fast_failure': return 'Repeated fast failures. Check the CLI before resuming.';
-    case 'launch_refused': return `Launch refused. ${hold.reason}`;
-    case 'launch_failed': return `Launch failed. ${hold.reason}${missingEngineHint(hold, provider)}`;
+    case 'launch_refused': return `Launch refused. ${capitalized(hold.reason)}`;
+    case 'launch_failed': {
+      const hint = missingEngineHint(hold, provider);
+      return `Launch failed. ${hint === '' ? capitalized(hold.reason) : capitalized(hold.reason.replace(/\.$/, ''))}${hint}`;
+    }
     case 'worktree_missing': return "This agent's worktree is missing. Restore it or retire the agent, then resume.";
+  }
+}
+
+/** The short account for the header, which sits right above the Resume button. */
+export function automaticHoldSummary(hold: AutomaticHold, provider?: unknown): string {
+  switch (hold.kind) {
+    case 'launch_refused': return `Launch refused. ${sentence(hold.reason)}`;
+    case 'launch_failed': {
+      const engine = missingEngine(hold, provider);
+      return engine === undefined ? `Launch failed. ${sentence(hold.reason)} Press Resume to try again.`
+        : `${engine.name} did not start, usually because ${engine.program} is not installed. Install it and sign in, then press Resume.`;
+    }
+    default: return automaticHoldText(hold, provider);
   }
 }

@@ -445,6 +445,20 @@ fn add_refuses_each_bad_path_and_id_before_writing() {
     assert!(control.is_ok(), "control: a canonical repository is added");
 }
 
+/// `project list` against the daemon this test started. `list` says "no daemon is running" for any
+/// failed connection, and a loaded runner has said it for a daemon the test had just used, so the
+/// report is asked for again before it is believed.
+fn list_while_running(cli: &Cli) -> common::Run {
+    let mut listed = cli.clone().args(["project", "list"]).run();
+    for _ in 0..4 {
+        if !listed.stdout.contains("no daemon is running") {
+            break;
+        }
+        listed = cli.clone().args(["project", "list"]).run();
+    }
+    listed
+}
+
 /// A running daemon adopts exactly `add`'s edit. An edit the operator did not make is shown,
 /// declined, and the file goes back; `list` flags it and `reload --apply` adopts it on purpose.
 #[test]
@@ -512,7 +526,7 @@ fn a_running_daemon_adopts_only_the_edit_the_command_made() {
         "the file goes back to its bytes before this add"
     );
 
-    let listed = cli.clone().args(["project", "list"]).run();
+    let listed = list_while_running(&cli);
     assert_eq!(listed.code(), exit::SUCCESS, "{}", listed.output());
     assert!(
         listed

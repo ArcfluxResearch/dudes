@@ -1,41 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { Ellipsis } from 'lucide-react';
-import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 
-import { Badge, Button, Disclosure, ICON, Menu, MenuSeparator, RING, RING_INSET, Tab, TabList, cn } from '../ui/index.ts';
-import { accentOf, accessoryOf, lookOf } from './appearance.ts';
-import { PORTRAIT_FRAME, Portrait } from './Portrait.tsx';
+import { RING, RING_INSET, Tab, TabList } from '../ui/index.ts';
+import { accentOf } from './appearance.ts';
 import { AgentOverview } from './AgentOverview.tsx';
 import { detailTabSelection, detailTabTarget, revealedTabScroll } from './detailTabs.ts';
 import type { DetailTab } from './detailTabs.ts';
 import type { CardRow } from './board.ts';
-import { stateSentenceOf } from './agentState.ts';
+import { agentStatusOf } from './agentState.ts';
+import { AgentHeader } from './AgentHeader.tsx';
+import type { ControlNote, ControlPart } from './control/ControlPanel.tsx';
 import { needsOf } from './needs.ts';
-import type { NeedAction } from './needs.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
-import { HIRE_ENGINES } from './onboarding/catalog.ts';
-import { NameEditor } from './rename/NameEditor.tsx';
-import { LookEditor, LookMenuItem } from './look/LookEditor.tsx';
-import { lookAvailable } from './look/look.ts';
-import { getFloorState, subscribeToFloor } from './floor/store.ts';
-import { ModelEditor } from './model/ModelEditor.tsx';
-import { beginRename } from './rename/rename.ts';
-import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from './focus.ts';
+import { handFocusOnLeave } from './focus.ts';
 import type { AgentRow } from './scene/cast.ts';
 import { fieldsOf } from './scene/label.ts';
 
-function providerLabel(provider: string): string {
-  return (HIRE_ENGINES as Readonly<Record<string, string>>)[provider] ?? provider;
-}
-
-function value(value: unknown): string {
-  return typeof value === 'string' && value !== '' ? value : '—';
-}
-
 export function AgentDetail({
-  row, cards = [], selection = null, streamState = null, control = null, recovery = null, retire = null, terminal = null, enable = null, attachNote = null, answer = null, goal: goalForm = null, task: taskForm = null, onOpenTicket,
+  row, cards = [], selection = null, streamState = null, control = null, controlNote = null, resumeOffered = false, resumeOff = null, terminalNote = null, recovery = null, retire = null, terminal = null, enable = null, attachNote = null, answer = null, goal: goalForm = null, task: taskForm = null, onOpenTicket,
   messages = null, chat = null, liveOutput = null, git = null, memory = null, tab = 'overview', onTabChange = () => {}, live = false,
 }: {
   readonly row: AgentRow;
@@ -43,10 +27,19 @@ export function AgentDetail({
   readonly selection?: ReactNode;
   /** The output stream's state, drawn as the last part of the header's status line. */
   readonly streamState?: string | null;
-  readonly control?: ReactNode;
+  /** Pause, Resume and Stop this turn, drawn into the action bar a part at a time. */
+  readonly control?: ((part: ControlPart, resumeFirst: boolean) => ReactNode) | null;
+  /** A problem or a wait on the controls, said in the status band. */
+  readonly controlNote?: ControlNote | null;
+  /** True when Resume is what the state calls for, so the action bar leads with it. */
+  readonly resumeOffered?: boolean;
+  /** Stands in the action bar for Resume while the Floor's control switch is off. */
+  readonly resumeOff?: ReactNode;
   readonly recovery?: ReactNode;
   readonly retire?: ReactNode;
   readonly terminal?: ReactNode;
+  /** One muted line for the engine that has no terminal of its own. */
+  readonly terminalNote?: ReactNode;
   /** How to turn on the controls the daemon reports off. */
   readonly enable?: ReactNode;
   /** One short line beside the model, for a control the agent's engine needs and the Floor has off. */
@@ -72,7 +65,7 @@ export function AgentDetail({
   useLiveActivityExpiry(rows, live);
   const fields = fieldsOf(row, { live, now: performance.now(), wallNow: Date.now() });
   const need = needsOf([row], cards, { live, now: performance.now(), wallNow: Date.now() })[0]!;
-  const sentence = stateSentenceOf(row, cards, fields);
+  const status = agentStatusOf(row, cards, fields, need.state);
   const panels: readonly { readonly id: DetailTab; readonly label: string; readonly content: ReactNode }[] = [
     { id: 'overview', label: 'Overview', content: <AgentOverview row={row} cards={cards} fields={fields}
       recovery={recovery} goalForm={goalForm}
@@ -82,21 +75,6 @@ export function AgentDetail({
     { id: 'memory', label: 'Memory', content: memory },
     { id: 'messages', label: 'Messages', content: messages },
   ];
-  function act(action: NeedAction): ReactNode {
-    if (action.kind === 'question') return <Button variant="primary" onClick={(event) => {
-      const question = event.currentTarget.closest('.agent-detail')?.querySelector<HTMLElement>('.agent-detail-question');
-      question?.focus();
-      question?.scrollIntoView({ block: 'nearest' });
-    }}>{action.label}</Button>;
-    if (action.kind === 'ticket') return onOpenTicket === undefined ? null
-      : <Button variant="primary" onClick={() => onOpenTicket(action.card)}>{action.label}</Button>;
-    if (action.label !== 'Talk') return null;
-    return <>
-      {tab !== 'chat' && panels.some((panel) => panel.id === 'chat' && panel.content !== null)
-        ? <Button variant="primary" onClick={() => onTabChange('chat')}>{action.label}</Button> : null}
-      {taskForm === null ? null : <Disclosure className="agent-overview-task basis-full" summary="Give a task">{taskForm}</Disclosure>}
-    </>;
-  }
   const available = panels.filter((panel) => panel.content !== null);
   const tabs = available.map((panel) => panel.id);
   const selected = detailTabSelection(tabs, tab, focusedSection);
@@ -131,55 +109,21 @@ export function AgentDetail({
   }, []);
 
   return (
-    <aside ref={detail} className="agent-detail flex min-h-0 flex-1 flex-col overflow-y-auto" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
+    <aside ref={detail} className="agent-detail flex min-h-0 flex-1 flex-col" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
       style={{ '--agent': accentOf(row) } as CSSProperties}>
       <div className="agent-detail-context flex-none">
-      <header className="agent-detail-head grid grid-cols-1 gap-3 font-sans text-ink">
-        <div className="flex items-start gap-3 pr-8">
-          <Portrait className={cn('agent-portrait agent-detail-portrait shrink-0', PORTRAIT_FRAME)} look={lookOf(row)} accessory={accessoryOf(row.role)}
-            name={row.name} />
-          <div className="agent-detail-identity grid min-w-0 flex-1 gap-0.5">
-            <div className="agent-detail-name flex min-w-0 flex-wrap items-center gap-1.5">
-              <h2 id={AGENT_DETAIL_HEADING_ID} tabIndex={-1} onDoubleClick={() => beginRename(`detail:${row.id}`, row)}
-                className={`m-0 min-w-0 rounded-sm font-sans text-page font-semibold text-ink [overflow-wrap:anywhere] ${RING}`}>{value(row.name)}</h2>
-              <NameEditor row={row} surface="detail" showName={false} />
-            </div>
-            <p className="agent-detail-status m-0 text-base text-muted [overflow-wrap:anywhere]">
-              {value(row.role)}
-              {typeof row.provider === 'string' && row.provider !== '' ? ` · ${providerLabel(row.provider)}` : ''}
-              {fields.liveActivity === null && streamState === null ? null : <span className="sr-only">
-                {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
-                {streamState === null ? null : <>{' · '}<span className="stream-state font-normal" role="status">{streamState}</span></>}
-              </span>}
-            </p>
-          </div>
-          <MoreActions row={row} retire={retire} />
-        </div>
-        {selection}
-        <section className="agent-detail-state flex flex-wrap items-center gap-x-3 gap-y-2" aria-label="State" data-state={need.state}>
-          <p className="agent-detail-state-line m-0 flex min-w-48 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-body"><Badge state={need.state} />
-            {' '}<span className="agent-detail-state-text min-w-0 text-ink [overflow-wrap:anywhere]">{sentence}</span></p>
-          <div className="agent-detail-primary flex flex-wrap items-center gap-2 empty:hidden">
-            {act(need.action)}
-            {need.second === null ? null : act(need.second)}
-            {control}
-          </div>
-        </section>
-        <LookEditor row={row} />
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <ModelEditor row={row} />
-          {terminal}
-          {attachNote}
-        </div>
-        {enable}
-        {fields.question === '' ? null : (
+      <AgentHeader row={row} need={need} status={status} note={controlNote} liveActivity={fields.liveActivity} streamState={streamState}
+        selection={selection} retire={retire} control={control} resumeOffered={resumeOffered} resumeOff={resumeOff}
+        terminal={terminal} terminalNote={terminalNote} attachNote={attachNote} enable={enable} task={taskForm}
+        showTalk={tab !== 'chat' && panels.some((panel) => panel.id === 'chat' && panel.content !== null)} onTalk={() => onTabChange('chat')}
+        question={fields.question === '' ? null : (
           <section className={`agent-detail-question m-0 grid max-h-64 gap-2 overflow-y-auto rounded-lg border border-line bg-warn-soft p-3 shadow-none ${RING}`} aria-label="Waiting question" tabIndex={-1}>
             <h3 className="m-0 font-sans text-title font-semibold text-ink">Waiting question</h3>
             <p className="m-0 text-body text-ink [overflow-wrap:anywhere]">{fields.question}</p>
             {answer}
           </section>
         )}
-      </header>
+        onOpenTicket={onOpenTicket} />
       <TabList ref={tabRow} label="Agent detail sections" className="agent-detail-tabs mt-3 mb-2 [scrollbar-width:none]"
         aria-describedby={tabs.length > 1 ? 'agent-detail-tab-hint' : undefined}>
         {available.map(({ id, label }) => <Tab key={id} selected={selected === id} className="agent-detail-tab mb-0"
@@ -199,7 +143,7 @@ export function AgentDetail({
       {tabs.length > 1 ? <p id="agent-detail-tab-hint" className="agent-detail-tab-hint sr-only">Scroll for more sections · Use arrow keys</p> : null}
       </div>
       {available.map(({ id, content }) => <section key={id} id={`agent-detail-panel-${id}`}
-        role="tabpanel" className={`flex-1 rounded-md ${RING_INSET}`} data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
+        role="tabpanel" className={`min-h-0 flex-1 overflow-y-auto rounded-md ${RING_INSET}`} data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
         ref={handFocusOnLeave} data-focus-on-leave="agent-detail-tab-overview"
         onFocus={() => setFocusedSection(id)} onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget)) setFocusedSection(null);
@@ -208,16 +152,4 @@ export function AgentDetail({
       </section>)}
     </aside>
   );
-}
-
-/** What is not the main action, in one menu. It is not drawn when it would hold nothing. */
-function MoreActions({ row, retire }: { readonly row: AgentRow; readonly retire: ReactNode }) {
-  const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
-  const look = lookAvailable(floor, row);
-  if (!look && retire === null) return null;
-  return <Menu label="More actions" trigger={<Ellipsis {...ICON} />} className="agent-more">
-    <LookMenuItem row={row} />
-    {look && retire !== null ? <MenuSeparator /> : null}
-    {retire}
-  </Menu>;
 }

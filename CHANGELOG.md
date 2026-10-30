@@ -11,6 +11,28 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.101.2] - 2026-10-31
+
+### Highlights
+
+- **The selected agent's header is laid out in clear bands.** The top of an agent's panel used to stack a name, a status line, a badge, a sentence, a pause note, mixed buttons and a model line, with the close button floating over the corner. It now has an identity row with the portrait, the name, a muted "role, engine" line, the More menu and the close button. Under it, one status badge is followed by at most one short sentence. A paused agent reads "Paused" and says what starts it again, instead of showing "Needs you" next to a second "Paused". A held agent says why in a line and ends with what to do, for example "Claude Code did not start, usually because claude is not installed. Install it and sign in, then press Resume." (#334)
+- **One row of actions, always in the same order.** The action the state calls for comes first (Answer, Review, Open ticket or Resume), then Talk, Give a task, Pause or Resume, Stop this turn and Open the real CLI. Give a task opens its form in a panel under the row. (#334)
+- **The model is one line you click to change.** "Model: name" opens the model editor right below it, and a small chevron shows that it can be changed. A model fixed in the configuration shows as plain text. (#334)
+- **The tabs stay in reach.** The header no longer scrolls away with the tab contents. Only the panel under the tabs scrolls, so Overview, Chat and the other tabs stay reachable on a short window or a phone. (#334)
+
+### Changes
+
+- More groundwork for tickets that span several repositories: a project made of several repositories now gets one catalog record in the journal. A project with one repository never gets one, and nothing offers multi-repository work yet. (#326)
+
+### Fixes
+
+- When the office cannot draw, its notice no longer makes the page taller than a short window that has an agent's panel open beside it. (#334)
+
+### Breaking
+
+- **The first start after the upgrade does not rebuild the saved views.** The projection version stays at 71, as in 0.101.1.
+- **Going back to 0.101.1 works.** 0.101.1 starts on a 0.101.2 journal, including one with an agent working in its own copy, and also when it has to rebuild the saved views. It keeps your tickets, notes, priorities, agents and copies, and what you write there is read when you come forward again.
+
 ## [0.101.1] - 2026-10-30
 
 ### Highlights

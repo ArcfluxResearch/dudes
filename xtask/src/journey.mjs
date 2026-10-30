@@ -277,6 +277,21 @@ export class Journey {
       'the dialog shows no similar ticket or outcome line');
   }
 
+  /** The first agent's drawer on one of its tabs, with its tabs inside the window so nothing above them can hide them. */
+  async openDrawer(tab, label) {
+    await this.click('[aria-label="Inspect Journey agent"]');
+    await this.until(`Boolean(document.querySelector('#selected-agent-detail'))`, 'the agent drawer did not open');
+    await this.clickButton(label, '[role="tab"]');
+    await this.until(`document.querySelector('.agent-detail')?.dataset.detailTab === '${tab}'`, `the ${tab} tab did not open`);
+    await this.until(`(() => { const tabs = document.querySelector('.agent-detail-tabs')?.getBoundingClientRect();
+      return Boolean(tabs) && tabs.top >= 0 && tabs.bottom <= innerHeight; })()`, `the ${tab} tabs are not inside the window`);
+  }
+
+  async closeDrawer() {
+    await this.click('#selection-clear');
+    await this.until(`!document.querySelector('#selected-agent-detail')`, 'the agent drawer did not close');
+  }
+
   async leaveNewTicket() {
     await this.click('.ticket-dialog-close');
     await this.until(`document.querySelector('.ticket-dialog')?.open !== true`, 'the New ticket dialog did not close');
@@ -342,6 +357,10 @@ export class Journey {
       { name: 'board', selector: '#view-board', ready: `document.querySelector('.control-panel')?.dataset.view === 'board'` },
       { name: 'new ticket dialog', selector: '#view-board', ready: `document.querySelector('.control-panel')?.dataset.view === 'board'`,
         open: () => this.fillNewTicket(), leave: () => this.leaveNewTicket() },
+      { name: 'agent drawer overview', selector: '#office-open', drawer: true, ready: `!!document.querySelector('.office-canvas') && !document.querySelector('.control-panel')`,
+        open: () => this.openDrawer('overview', 'Overview'), leave: () => this.closeDrawer() },
+      { name: 'agent drawer chat', selector: '#office-open', drawer: true, ready: `!!document.querySelector('.office-canvas') && !document.querySelector('.control-panel')`,
+        open: () => this.openDrawer('chat', 'Chat'), leave: () => this.closeDrawer() },
       { name: 'projects', selector: '#view-projects', ready: `location.hash === '#/projects' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'projects'` },
       { name: 'log', selector: '#view-log', ready: `location.hash === '#/log' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'log'` },
       { name: 'setup', selector: '#view-setup', ready: `location.hash === '#/setup' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'setup'` },
@@ -354,7 +373,7 @@ export class Journey {
         await this.run.cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, this.run.cdp.session);
         for (const view of views) {
           await this.layoutOffice();
-          if (view.name !== 'office') await this.click(view.selector);
+          if (view.name !== 'office' && !view.drawer) await this.click(view.selector);
           await this.until(view.ready, `${view.name} did not open for the viewport check`);
           await view.open?.();
           const actual = await this.evaluate(`(async () => {
