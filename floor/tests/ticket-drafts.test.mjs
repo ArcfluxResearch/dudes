@@ -8,7 +8,7 @@ import { clearNewTicketDraft, clearTicketChangesDraft, EMPTY_TICKET_DRAFT, readN
 test('a late successful send cannot erase a newer ticket or changes draft', () => {
   const values = new Map();
   const storage = () => ({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) });
-  const sent = { title: 'Submitted work', note: 'A note', project: null, check: null, agent: '' };
+  const sent = { title: 'Submitted work', note: 'A note', project: null, check: null, agent: '', priority: 'none' };
   const newer = { ...sent, note: 'Keep this newer note' };
   writeNewTicketDraft(newer, storage);
   clearNewTicketDraft(sent, storage);
@@ -51,6 +51,17 @@ test('sent draft cleanup compares normalized fields before removing the key', ()
     agent: '', check: null, project: null, note: 'Keep the details', title: 'Review the page', ignored: 'older field',
   })]]);
   const storage = () => ({ getItem: (key) => values.get(key) ?? null, removeItem: (key) => values.delete(key) });
-  clearNewTicketDraft({ title: 'Review the page', note: 'Keep the details', project: null, check: null, agent: '' }, storage);
+  clearNewTicketDraft({ title: 'Review the page', note: 'Keep the details', project: null, check: null, agent: '', priority: 'none' }, storage);
   assert.equal(values.has('dudes.floor.new-ticket-draft'), false);
+});
+
+test('priority is part of the saved draft, and a stored draft without one reads as no priority', () => {
+  const values = new Map();
+  const storage = () => ({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) });
+  writeNewTicketDraft({ ...EMPTY_TICKET_DRAFT, title: 'Urgent fix', priority: 'urgent' }, storage);
+  assert.equal(readNewTicketDraft(storage).priority, 'urgent');
+  values.set('dudes.floor.new-ticket-draft', JSON.stringify({ title: 'Older draft', note: '', project: null, check: null, agent: '' }));
+  assert.equal(readNewTicketDraft(storage).priority, 'none');
+  values.set('dudes.floor.new-ticket-draft', JSON.stringify({ ...EMPTY_TICKET_DRAFT, title: 'Odd', priority: 'soon' }));
+  assert.deepEqual(readNewTicketDraft(storage), EMPTY_TICKET_DRAFT);
 });
