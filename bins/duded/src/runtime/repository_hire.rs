@@ -24,8 +24,9 @@ fn refused(message: impl Into<String>) -> RpcError {
 pub(super) const HIRE_POLICY: RepositoryPolicy = RepositoryPolicy::OperatorTrustV1;
 
 /// The one engine and platform decision for a multi-repository hire. The hire path and the Floor
-/// offer both ask it, so the two cannot disagree. An unconfined hire needs what a single-repo hire
-/// into its own copy needs: Claude, on a platform that makes copies.
+/// offer both ask it, so the two cannot disagree. An unconfined hire needs Claude on macOS or
+/// Linux on any architecture; only the confined sandbox is limited to the platforms its profile
+/// was proved on.
 pub(super) fn group_engine_refusal(
     provider: Provider,
     confinement: Confinement,
@@ -38,9 +39,14 @@ pub(super) fn group_engine_refusal(
             Confinement::Unconfined => "Multi-repository projects work with Claude only for now.",
         });
     }
-    (super::scoped_launch::native_platform()
-        == dudes_providers::scoped::ScopedPlatform::Unsupported)
-        .then_some("Multi-repository hiring is not available on this platform.")
+    let supported = match confinement {
+        Confinement::Confined => {
+            super::scoped_launch::native_platform()
+                != dudes_providers::scoped::ScopedPlatform::Unsupported
+        }
+        Confinement::Unconfined => cfg!(unix),
+    };
+    (!supported).then_some("Multi-repository hiring is not available on this platform.")
 }
 
 /// What a multi-repository hire needs before any lease. The unconfined policy takes the model and
