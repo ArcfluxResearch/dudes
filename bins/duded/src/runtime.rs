@@ -1067,11 +1067,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) last_lsn: Arc<AtomicU64>,
     /// The agent-token projection the accept thread classifies against, republished at the end of
     /// every [`Daemon::pump`].
-    ///
-    /// The third value this daemon publishes across the loop/accept boundary, beside `last_lsn`
-    /// and `subscribers` — and the only one whose staleness has a direction that matters. See
-    /// [`crate::classify::WorldTokens`] for which direction and what closes it.
     pub(crate) tokens: crate::classify::WorldTokens,
+    pub(crate) scoped_hires: crate::classify::ScopedHires,
     /// The peer resolver, kept here for the same reason `tokens` is: its child-owner snapshot is
     /// republished at the end of every [`Daemon::pump`], and this is the thread that folds the
     /// `World` it is a projection of.
@@ -8029,6 +8026,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     ) -> Result<()> {
         if let Some(through) = handled.folded_through() {
             self.require_folded_through(world, through)?;
+            self.scoped_hires.publish(world);
             self.retire_recorded_native_launches(world);
             self.tokens.mark_folded();
         }

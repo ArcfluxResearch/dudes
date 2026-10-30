@@ -153,8 +153,8 @@ fn a_key_assembled_from_two_children_matches_neither() {
     common::shutdown_retaining_incomplete(&mut host, "shutdown");
 }
 
-/// A host that has just spawned two children owns two rows; killing one removes its confirmed row,
-/// while shutdown stops the other child and retains its incomplete-coverage row. The counts catch
+/// A host that has just spawned two children owns two rows; killing one keeps its reaped row
+/// for native settlement, while shutdown stops the other child and retains its incomplete row. The counts catch
 /// a `kill` that forgets confirmed removal or a `spawn` that forgets ownership.
 #[test]
 fn the_host_owns_what_it_spawned_until_it_is_reaped() {
@@ -184,7 +184,11 @@ fn the_host_owns_what_it_spawned_until_it_is_reaped() {
     common::await_number(&second);
 
     host.kill(&key);
-    assert_eq!(host.owned(), 1, "a reaped child is no longer owned");
+    assert_eq!(
+        host.owned(),
+        2,
+        "a killed child keeps its reaped row for native settlement"
+    );
 
     common::shutdown_retaining_incomplete(&mut host, "shutdown");
 }

@@ -116,9 +116,14 @@ fn prepare_pinned(
 
 fn validate_environment(launch: &ScopedManagedLaunch) -> io::Result<()> {
     let p = &launch.inventory.private;
+    let agent_dir = p
+        .outbox
+        .parent()
+        .ok_or_else(|| refusal("scoped Claude agent directory is unavailable"))?;
     let mut expected = BTreeMap::from([
         ("HOME", p.home.as_os_str().to_owned()),
         ("CLAUDE_CONFIG_DIR", p.profile.as_os_str().to_owned()),
+        ("DUDES_MAILBOX", agent_dir.as_os_str().to_owned()),
         ("XDG_CONFIG_HOME", p.home.join(".config").into_os_string()),
         ("XDG_CACHE_HOME", p.home.join(".cache").into_os_string()),
         ("XDG_STATE_HOME", p.home.join(".state").into_os_string()),
@@ -129,6 +134,7 @@ fn validate_environment(launch: &ScopedManagedLaunch) -> io::Result<()> {
     ]);
     expected.extend(
         [
+            ("DUDES_COMMAND_TRANSPORT", "file-mail"),
             ("SHELL", "/bin/bash"),
             ("CLAUDE_CODE_SHELL", "/bin/bash"),
             ("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "1"),
