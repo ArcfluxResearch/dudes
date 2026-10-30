@@ -160,7 +160,7 @@ fn real_three_repository_capture_and_checks_keep_the_declared_pair_and_fake_proc
         capture.binding,
         Arc::default(),
     );
-    assert!(baseline.complete());
+    assert!(baseline.complete(), "{baseline:?}");
     let effects = harness.step(Input::RepositoryBaselineCaptured {
         capture: capture.clone(),
         baseline: baseline.clone(),
@@ -195,7 +195,7 @@ fn real_three_repository_capture_and_checks_keep_the_declared_pair_and_fake_proc
         exit: Some(0),
         output_tail,
         ..
-    } = runner.run(&cwd_check, Duration::from_secs(1)).unwrap()
+    } = runner.run(&cwd_check, PROCESS_BOUND).unwrap()
     else {
         panic!("the real selected-directory check ran")
     };
@@ -226,7 +226,7 @@ fn real_three_repository_capture_and_checks_keep_the_declared_pair_and_fake_proc
             &[],
             git_path().as_deref(),
             &roots,
-            Duration::from_secs(1)
+            PROCESS_BOUND
         )
         .unwrap()
         .unwrap()
@@ -241,7 +241,7 @@ fn real_three_repository_capture_and_checks_keep_the_declared_pair_and_fake_proc
             &[],
             git_path().as_deref(),
             &roots,
-            Duration::from_secs(1)
+            PROCESS_BOUND
         )
         .unwrap()
         .unwrap()
@@ -260,7 +260,7 @@ fn real_three_repository_capture_and_checks_keep_the_declared_pair_and_fake_proc
         &roots,
     )
     .unwrap();
-    let outcome = runner.run(&check, Duration::from_secs(1)).unwrap();
+    let outcome = runner.run(&check, PROCESS_BOUND).unwrap();
     let (pass, evidence) = duded::predicate::judge(&outcome, argv, Some(program)).unwrap();
     let effects = harness.step(Input::PredicateDone {
         goal: log.goal,
@@ -310,7 +310,7 @@ fn real_three_repository_capture_and_checks_keep_the_declared_pair_and_fake_proc
             &[],
             git_path().as_deref(),
             &roots,
-            Duration::from_secs(1)
+            PROCESS_BOUND
         )
         .unwrap_or(None)
         .is_none()
