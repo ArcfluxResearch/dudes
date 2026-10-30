@@ -1585,10 +1585,11 @@ mod spawn_failure_tests {
         assert!(acknowledged.targets.is_empty());
         assert_eq!(
             host.owned(),
-            1,
-            "acknowledgement keeps shutdown capabilities"
+            0,
+            "an acknowledged, reaped row is released, so shutdown has nothing left to examine"
         );
-        expect_unresolved_shutdown(&mut host, "acknowledgement did not prove full containment");
+        host.shutdown()
+            .expect("a released row leaves shutdown clean");
     }
 
     #[test]
@@ -3081,7 +3082,11 @@ impl ProcessHost for RealHost {
             .children
             .get(&key.pid)
             .map(|owned| (owned.key.as_ref(), &owned.native_receipt));
-        acknowledge_current_native_target(current, key, receipt, owned)
+        let outcome = acknowledge_current_native_target(current, key, receipt, owned);
+        if outcome == NativeBoundaryAcknowledgement::Acknowledged {
+            self.release_settled_row(key.pid);
+        }
+        outcome
     }
 
     /// The read taken once at construction, reported rather than repeated.
@@ -3250,6 +3255,28 @@ fn same_recorded_keys(left: Option<&AdoptionKey>, right: Option<&AdoptionKey>) -
 }
 
 impl RealHost {
+    /// Drop a row whose boundary was just acknowledged, so a long-running daemon does not hold a
+    /// process handle, descriptor and keeper lifeline for every finished turn. The row goes only
+    /// when a fresh query still finds its leader reaped and its whole group empty, which is what
+    /// the acknowledgement rested on; anything else stays for shutdown. A later kill or liveness
+    /// query for the key then takes the adopted path and re-validates.
+    fn release_settled_row(&mut self, pid: u32) {
+        let settled = self.children.get(&pid).is_some_and(|owned| {
+            owned.exit.reaped()
+                && owned_target_state(
+                    owned.boundary,
+                    None,
+                    owned.reap_confirmed.load(Ordering::Acquire),
+                    &native_boundary_state(&owned.grip, owned.pid),
+                ) == OwnedTargetState::NativeBoundaryAbsent
+        });
+        if settled {
+            self.children.remove(&pid);
+            #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+            self.peers.release(pid);
+        }
+    }
+
     fn index_native_target(&mut self, pid: u32) {
         let owned = self
             .children
