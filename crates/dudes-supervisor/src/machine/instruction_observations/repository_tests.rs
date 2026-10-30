@@ -18,6 +18,8 @@ use dudes_types::{CardId, CardStatus, GitCommit, Seq, Timestamp};
 
 #[path = "repository_tests/attach.rs"]
 mod attach;
+#[path = "repository_tests/hire_policy.rs"]
+mod hire_policy;
 #[path = "repository_tests/restart.rs"]
 mod restart;
 
@@ -535,7 +537,10 @@ fn standing_gap(kind: InstructionGapKind, agent: AgentId) -> InstructionCoverage
 }
 
 /// A round whose every copy compared cleanly, carrying only the engine's standing limits.
-fn standing_gaps_round(policy: RepositoryPolicy, observed: bool) -> (Harness, GoalId, TurnId) {
+fn standing_gaps_round(
+    policy: RepositoryPolicy,
+    extra: Option<fn(AgentId) -> InstructionCoverageGap>,
+) -> (Harness, GoalId, TurnId) {
     let (mut harness, agent, goal, grant) = fixture_for(policy);
     let (request, mut sample) = pending(&mut harness, agent, &grant);
     harness.supervisor.instructions.awaiting.remove(&request);
@@ -612,7 +617,7 @@ fn standing_gaps_round(policy: RepositoryPolicy, observed: bool) -> (Harness, Go
                             standing_gap(InstructionGapKind::PolicyUnknown, agent),
                         ]
                         .into_iter()
-                        .chain(observed.then(|| gap(InstructionGapKind::PathUnresolved, agent)))
+                        .chain(extra.map(|extra| extra(agent)))
                         .collect(),
                         usage: InstructionSampleUsage::default(),
                     },
@@ -625,11 +630,11 @@ fn standing_gaps_round(policy: RepositoryPolicy, observed: bool) -> (Harness, Go
 
 #[test]
 fn standing_engine_limits_hold_a_confined_round_and_pass_an_unconfined_one() {
-    let (harness, goal, turn) = standing_gaps_round(RepositoryPolicy::WorkingTreeV1, false);
+    let (harness, goal, turn) = standing_gaps_round(RepositoryPolicy::WorkingTreeV1, None);
     let state = &harness.supervisor.world().instructions;
     assert!(!state.repository_turn_covered(turn));
     assert!(state.pending_for_goal(goal));
-    let (harness, goal, turn) = standing_gaps_round(RepositoryPolicy::OperatorTrustV1, false);
+    let (harness, goal, turn) = standing_gaps_round(RepositoryPolicy::OperatorTrustV1, None);
     let state = &harness.supervisor.world().instructions;
     assert!(state.repository_turn_covered(turn));
     assert!(!state.pending_for_goal(goal));
@@ -641,7 +646,47 @@ fn standing_engine_limits_hold_a_confined_round_and_pass_an_unconfined_one() {
 
 #[test]
 fn an_unconfined_round_stays_held_by_an_observed_shared_limit() {
-    let (harness, goal, turn) = standing_gaps_round(RepositoryPolicy::OperatorTrustV1, true);
+    let (harness, goal, turn) = standing_gaps_round(
+        RepositoryPolicy::OperatorTrustV1,
+        Some(|agent| gap(InstructionGapKind::PathUnresolved, agent)),
+    );
+    let state = &harness.supervisor.world().instructions;
+    assert!(!state.repository_turn_covered(turn));
+    assert!(state.pending_for_goal(goal));
+}
+
+fn owned_copy_gap(agent: AgentId) -> InstructionCoverageGap {
+    InstructionCoverageGap {
+        context: InstructionPathContext::OwnedWorktree {
+            lease: WorktreeId::from_bytes([3; 16]),
+        },
+        ..gap(InstructionGapKind::PathUnresolved, agent)
+    }
+}
+
+fn declared_owned_copy_gap(agent: AgentId) -> InstructionCoverageGap {
+    InstructionCoverageGap {
+        origin: dudes_proto::InstructionGapOrigin::Declared,
+        ..owned_copy_gap(agent)
+    }
+}
+
+#[test]
+fn an_observed_gap_in_a_hired_copy_holds_an_unconfined_round_but_a_declared_one_does_not() {
+    let (harness, goal, turn) =
+        standing_gaps_round(RepositoryPolicy::OperatorTrustV1, Some(owned_copy_gap));
+    let state = &harness.supervisor.world().instructions;
+    assert!(!state.repository_turn_covered(turn));
+    assert!(state.pending_for_goal(goal));
+    let (harness, goal, turn) = standing_gaps_round(
+        RepositoryPolicy::OperatorTrustV1,
+        Some(declared_owned_copy_gap),
+    );
+    let state = &harness.supervisor.world().instructions;
+    assert!(state.repository_turn_covered(turn));
+    assert!(!state.pending_for_goal(goal));
+    let (harness, goal, turn) =
+        standing_gaps_round(RepositoryPolicy::WorkingTreeV1, Some(declared_owned_copy_gap));
     let state = &harness.supervisor.world().instructions;
     assert!(!state.repository_turn_covered(turn));
     assert!(state.pending_for_goal(goal));

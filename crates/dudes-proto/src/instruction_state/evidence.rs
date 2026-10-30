@@ -204,7 +204,7 @@ impl super::InstructionAttempt {
                 };
                 let holds = |gap: &InstructionCoverageGap| match confinement {
                     Confinement::Confined => true,
-                    Confinement::Unconfined => gap.holds(),
+                    Confinement::Unconfined => gap.is_observed(),
                 };
                 self.starting_gaps().any(|(_, gap)| holds(gap))
                     || !members

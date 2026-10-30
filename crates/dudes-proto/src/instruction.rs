@@ -641,6 +641,13 @@ impl InstructionCoverageGap {
         matches!(self.origin, InstructionGapOrigin::Observed) && self.context.needs_shared_review()
     }
 
+    /// Whether this gap was raised by sampling or comparing, in any context. A hire that may
+    /// write every copy holds on such a gap wherever it falls.
+    #[must_use]
+    pub const fn is_observed(&self) -> bool {
+        matches!(self.origin, InstructionGapOrigin::Observed)
+    }
+
     /// Whether this is a standing engine limit in a context that needs shared review.
     #[must_use]
     pub const fn is_standing_limit(&self) -> bool {

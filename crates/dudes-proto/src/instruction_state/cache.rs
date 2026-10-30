@@ -15,6 +15,7 @@ use super::{
     issue_identity, owner_agent,
 };
 use crate::record::Record;
+use crate::repository::RepositoryPolicy;
 use crate::rpc::pty::PtyId;
 
 #[cfg(test)]
@@ -216,6 +217,7 @@ enum Key {
     NoHostClaim(Lsn),
     ObservedTurn(TurnId),
     AttachmentAttempt(Lsn),
+    Hire(Lsn),
 }
 
 impl Key {
@@ -246,6 +248,7 @@ impl Key {
             Self::NoHostClaim(id) => key(23, &id.0.to_be_bytes()),
             Self::ObservedTurn(id) => key(24, &id.to_bytes()),
             Self::AttachmentAttempt(id) => key(25, &id.0.to_be_bytes()),
+            Self::Hire(id) => key(26, &id.0.to_be_bytes()),
         }
     }
 }
@@ -364,6 +367,10 @@ enum Cell {
         attachment: Lsn,
         started: Lsn,
     },
+    Hire {
+        lsn: Lsn,
+        policy: RepositoryPolicy,
+    },
 }
 
 impl Cell {
@@ -394,6 +401,7 @@ impl Cell {
             Self::NoHostClaim { lsn, .. } => Key::NoHostClaim(*lsn),
             Self::ObservedTurn { turn } => Key::ObservedTurn(*turn),
             Self::AttachmentAttempt { attachment, .. } => Key::AttachmentAttempt(*attachment),
+            Self::Hire { lsn, .. } => Key::Hire(*lsn),
         }
     }
 
@@ -485,6 +493,9 @@ impl Cell {
                 started,
             } => {
                 state.attachment_attempts.insert(attachment, started);
+            }
+            Self::Hire { lsn, policy } => {
+                state.hires.insert(lsn, policy);
             }
         }
         Ok(())
@@ -616,6 +627,9 @@ fn cells(state: &InstructionState) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, Instruc
             started,
         })?;
     }
+    for (&lsn, &policy) in &state.hires {
+        add(Cell::Hire { lsn, policy })?;
+    }
     Ok(cells)
 }
 
@@ -737,6 +751,9 @@ impl<'a, R: InstructionCacheReader> Loader<'a, R> {
         }
         self.get(Key::Unfinished(lsn))?;
         self.get(Key::Unresolved(owner_agent(owner), lsn))?;
+        if let Some(binding) = self.state.attempts[&lsn].repository_binding() {
+            self.get(Key::Hire(binding.hired_lsn))?;
+        }
         self.owner(owner)?;
         self.ticket(ticket)?;
         if let Some(ticket) = ticket {

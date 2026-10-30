@@ -169,6 +169,8 @@ pub struct InstructionState {
     no_host_holds: BTreeMap<Lsn, (AgentId, Option<TurnId>)>,
     no_host_claims: BTreeMap<Lsn, Lsn>,
     observed_turns: BTreeSet<TurnId>,
+    /// The policy each scoped hire recorded, by the position of its hire record.
+    hires: BTreeMap<Lsn, RepositoryPolicy>,
     last_applied: Lsn,
 }
 
@@ -642,13 +644,16 @@ impl InstructionState {
     /// unconfined policy, which takes the acceptance rule of a single-repository agent. An attempt
     /// whose issue or policy is unknown stays strict.
     fn confinement(&self, attempt: &InstructionAttempt) -> Confinement {
-        let InstructionObservationOwner::Managed { turn, .. } = attempt.owner else {
-            return Confinement::Confined;
+        let policy = match attempt.owner {
+            InstructionObservationOwner::Managed { turn, .. } => {
+                self.issues.get(&turn).and_then(|issue| issue.policy)
+            }
+            InstructionObservationOwner::AttachedProcess { .. }
+            | InstructionObservationOwner::AttachedTurn { .. } => attempt
+                .repository_binding()
+                .and_then(|binding| self.hires.get(&binding.hired_lsn).copied()),
         };
-        self.issues
-            .get(&turn)
-            .and_then(|issue| issue.policy)
-            .map_or(Confinement::Confined, RepositoryPolicy::confinement)
+        policy.map_or(Confinement::Confined, RepositoryPolicy::confinement)
     }
 
     fn coverage_unknown(&self, attempt: &InstructionAttempt) -> bool {
@@ -1546,6 +1551,11 @@ impl InstructionState {
 
     fn fold_boundaries(&mut self, lsn: Lsn, record: &Record, folded: &mut InstructionFold) {
         self.observe_issue(lsn, record);
+        if let Some(hire) = record.repository_hire() {
+            self.hires
+                .entry(lsn)
+                .or_insert(hire.repositories.policy);
+        }
         if let Some(proof) = no_host_agent(record) {
             self.no_host_holds.insert(lsn, proof);
         }
@@ -1771,7 +1781,8 @@ fn requires_review(attempt: &InstructionAttempt, confinement: Confinement) -> bo
             } else if confinement == Confinement::Confined {
                 !comparison.changes.is_empty() || !comparison.gaps.is_empty()
             } else {
-                !comparison.changes.is_empty() || comparison.has_shared_gaps()
+                !comparison.changes.is_empty()
+                    || comparison.gaps.iter().any(InstructionCoverageGap::is_observed)
             }
         })
     {
