@@ -30,8 +30,8 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ### Breaking
 
-- **The first start after the upgrade does not rebuild the saved views.** The projection version stays at 71.
-- **Going back to 0.101.1.** PENDING
+- **The first start after the upgrade does not rebuild the saved views.** The projection version stays at 71, as in 0.101.1.
+- **Going back to 0.101.1 works.** 0.101.1 starts on a 0.101.2 journal, including one with an agent working in its own copy, and also when it has to rebuild the saved views. It keeps your tickets, notes, priorities, agents and copies, and what you write there is read when you come forward again.
 
 ## [0.101.1] - 2026-10-30
 
