@@ -1400,6 +1400,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let missing = self.missing_worktrees();
         self.pump(Input::MissingWorktrees(missing))?;
         self.pump(Input::Started)?;
+        self.record_missing_project_catalogs()?;
         self.detach_gone_attachments()?;
         if self.sup.recovering_closing() {
             let attached: Vec<_> = self.sup.closing_recovery_attachments().collect();
@@ -2387,7 +2388,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if decision.result.applied {
             let previous = std::mem::replace(&mut self.ctx.enrollment, decision.candidate);
             let previous_repositories = self.ctx.current_repositories.clone();
-            if let Err(failure) = self.observe_repository_enrollment() {
+            if let Err(failure) = self
+                .observe_repository_enrollment()
+                .and_then(|()| self.record_missing_project_catalogs())
+            {
                 self.ctx.enrollment = previous;
                 self.ctx.reloads = previous_reload;
                 self.ctx.current_repositories = previous_repositories;
