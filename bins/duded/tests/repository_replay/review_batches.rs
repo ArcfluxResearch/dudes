@@ -11,6 +11,8 @@ use dudes_types::{GoalId, Provenance, TurnId};
 
 #[path = "review_batches/capture_journey.rs"]
 mod capture_journey;
+#[path = "review_batches/committed_work.rs"]
+mod committed_work;
 #[path = "review_batches/instruction_batches.rs"]
 mod instruction_batches;
 

@@ -710,6 +710,54 @@ impl DiffReader {
         }
     }
 
+    /// Whether the checkout's `HEAD` holds a commit that changes at least one path since the
+    /// round-start `baseline`. A moved `HEAD` with no changed path, such as an empty commit,
+    /// reads as no change.
+    ///
+    /// # Errors
+    /// Refuses a changed root, an unreachable baseline commit or a failed finite read, so a
+    /// failed query is never read as "nothing changed".
+    pub fn committed_since(
+        &self,
+        tree: &super::super::Tree,
+        baseline: &BaselineCapture,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<bool, DiffRefusal> {
+        #[cfg(unix)]
+        {
+            let budget = self.budget(cancelled);
+            let shadow = self.shadow(tree, Some(baseline.root), &budget)?;
+            if shadow.head() == baseline.head {
+                return Ok(false);
+            }
+            let diff = self.run(
+                &shadow,
+                &[
+                    "diff-tree",
+                    "-r",
+                    "--raw",
+                    "-z",
+                    "--no-renames",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    &baseline.head.to_string(),
+                    &shadow.head().to_string(),
+                ],
+                &budget,
+                super::super::STDOUT_CAP,
+            )?;
+            if diff.exit != Some(0) && !diff.cut {
+                return Err(DiffRefusal::BaselineUnavailable);
+            }
+            Ok(!diff.bytes.is_empty())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (tree, baseline, cancelled);
+            Err(DiffRefusal::UnsupportedPlatform)
+        }
+    }
+
     /// Sample a validated set with one deadline and one remaining count and metadata allowance.
     pub fn capture_review_batch(
         &self,
