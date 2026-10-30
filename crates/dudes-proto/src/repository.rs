@@ -318,6 +318,51 @@ impl ScopedHireRepositories {
     }
 }
 
+/// A ticket for an unconfined hire did not name every hired repository.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IncompleteDeclaration;
+
+impl std::fmt::Display for IncompleteDeclaration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a ticket in a multi-repository project covers every repository")
+    }
+}
+
+impl std::error::Error for IncompleteDeclaration {}
+
+impl ScopedHireRepositories {
+    /// An unconfined hire is ticketed over its full set, primary first and the rest in hire order.
+    /// A confined hire may be ticketed over a subset, which callers check separately.
+    pub fn require_full_declaration(
+        &self,
+        declaration: &TicketDeclaration,
+    ) -> Result<(), IncompleteDeclaration> {
+        match self.policy.confinement() {
+            Confinement::Confined => Ok(()),
+            Confinement::Unconfined => {
+                let hired = self.repositories.entries();
+                let primary = self.repositories.primary_id();
+                let expected = hired
+                    .iter()
+                    .filter(|entry| entry.repo_id == *primary)
+                    .chain(hired.iter().filter(|entry| entry.repo_id != *primary));
+                let declared = declaration.repositories.entries();
+                if declaration.repositories.primary_id() == primary
+                    && declared.len() == hired.len()
+                    && declared.iter().zip(expected).all(|(declared, hired)| {
+                        declared.repo_id == hired.repo_id
+                            && declared.value == hired.value.recorded.origin
+                    })
+                {
+                    Ok(())
+                } else {
+                    Err(IncompleteDeclaration)
+                }
+            }
+        }
+    }
+}
+
 /// Ordinary hire fields beside the complete restricted repository authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -748,6 +793,10 @@ impl RepositoryTurnGrant {
         if hired_lsn == Lsn::ZERO {
             return Err(Error::Issue);
         }
+        if let Some(authority) = ticket.and_then(|round| round.authority.as_ref()) {
+            hire.require_full_declaration(&authority.declaration)
+                .map_err(|_| Error::Declaration)?;
+        }
         let repositories = match ticket {
             None => hire.recorded().repositories,
             Some(round) => {
@@ -1165,6 +1214,59 @@ mod tests {
         }
     }
 
+    fn two_copy_hire(policy: RepositoryPolicy) -> (ScopedHireRepositories, TicketDeclaration) {
+        let hire = sample_hire(policy);
+        let first = hire.repositories.repositories.entries()[0].clone();
+        let mut second = first.clone();
+        second.repo_id = RepoId::parse("secondary").unwrap();
+        let pin = crate::record::TrustPin {
+            claude_tree: None,
+            mcp_json: None,
+            attributes: crate::record::Hex32::new([7; 32]),
+            config: crate::record::Hex32::new([8; 32]),
+        };
+        let hired = RepositorySet::new(
+            second.repo_id.clone(),
+            [first.clone(), second.clone()]
+                .into_iter()
+                .map(|entry| RepositoryEntry {
+                    repo_id: entry.repo_id,
+                    value: HiredRepository::new(entry.value, pin.clone()),
+                })
+                .collect(),
+        )
+        .unwrap();
+        let declaration = declaration_of(&[&second, &first], &second.repo_id);
+        let scoped = ScopedHireRepositories {
+            project: hire.repositories.project.clone(),
+            catalog_lsn: hire.repositories.catalog_lsn,
+            policy,
+            repositories: hired,
+        };
+        (scoped, declaration)
+    }
+
+    fn declaration_of(
+        members: &[&RepositoryEntry<OwnedRepository>],
+        primary: &RepoId,
+    ) -> TicketDeclaration {
+        TicketDeclaration {
+            project: "service".into(),
+            catalog_lsn: Lsn::from_parts(1, 1).unwrap(),
+            repositories: RepositorySet::new(
+                primary.clone(),
+                members
+                    .iter()
+                    .map(|entry| RepositoryEntry {
+                        repo_id: entry.repo_id.clone(),
+                        value: entry.value.origin.clone(),
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+        }
+    }
+
     #[test]
     fn an_unconfined_hire_record_whose_section_cannot_fit_is_refused() {
         let mut hire = sample_hire(RepositoryPolicy::OperatorTrustV1);
@@ -1178,6 +1280,50 @@ mod tests {
                 .unwrap();
         let record = crate::Record::AgentHiredWithUnconfinedRepositories(Box::new(hire));
         assert!(crate::repository_state::history::validate_shape(&record).is_err());
+    }
+
+    #[test]
+    fn an_unconfined_hire_requires_a_full_primary_first_declaration_and_a_confined_one_does_not() {
+        use crate::repository_state::history::RepositoryStateError as Error;
+        let (unconfined, full) = two_copy_hire(RepositoryPolicy::OperatorTrustV1);
+        let recorded = unconfined.recorded();
+        let members: Vec<_> = recorded.repositories.entries().iter().collect();
+        let primary = recorded.repositories.primary_id().clone();
+        assert_eq!(unconfined.require_full_declaration(&full), Ok(()));
+        let narrower = declaration_of(&[members[1]], &primary);
+        let wrong_order = declaration_of(&[members[0], members[1]], &primary);
+        let wrong_primary = declaration_of(&[members[1], members[0]], &members[0].repo_id);
+        for declaration in [&narrower, &wrong_order, &wrong_primary] {
+            assert_eq!(
+                unconfined.require_full_declaration(declaration),
+                Err(IncompleteDeclaration)
+            );
+            let authority = TicketStartRepositories {
+                hired_lsn: Lsn::from_parts(1, 1).unwrap(),
+                declaration: declaration.clone(),
+                check: crate::record::samples::ticket_check(),
+                check_repo: primary.clone(),
+                check_root: members[1].value.execution.clone(),
+            };
+            let round = TicketRepositoryRound {
+                card: CardId::from_parts(7, 1),
+                goal: GoalId::from_parts(8, 1),
+                start_lsn: Lsn::from_parts(1, 2).unwrap(),
+                round: 1,
+                repositories: None,
+                authority: Some(authority),
+            };
+            assert_eq!(
+                RepositoryTurnGrant::select(
+                    Lsn::from_parts(1, 1).unwrap(),
+                    &unconfined,
+                    Some(&round)
+                ),
+                Err(Error::Declaration)
+            );
+        }
+        let (confined, _) = two_copy_hire(RepositoryPolicy::WorkingTreeV1);
+        assert_eq!(confined.require_full_declaration(&narrower), Ok(()));
     }
 
     #[test]
