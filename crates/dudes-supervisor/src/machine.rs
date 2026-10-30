@@ -28,9 +28,7 @@ use dudes_proto::{
     Actor, Entry, Event, EventKind, ExitStatus, Gate, GateStep, Goal, KillDeferredReason,
     KillReason, LiveActivityKind, LoopDecision, Record, Spend, TurnOutcome,
 };
-use dudes_providers::adapter::{
-    Adapter, AgentCtx, HookInstall, Isolation, ManagedInstall, TurnSession,
-};
+use dudes_providers::adapter::{Adapter, AgentCtx, HookInstall, Isolation, TurnSession};
 use dudes_providers::launch::{EnvVar, LaunchError, LaunchSpec};
 use dudes_providers::mcp::{LoadedServers, Rules};
 use dudes_providers::registry::Adapters;
@@ -41,7 +39,7 @@ use dudes_types::{
 };
 
 use crate::agent_fsm::{self, FsmEvent};
-use crate::effect::Effect;
+use crate::effect::{Effect, ManagedSpawn};
 use crate::host::{AdoptionKey, Clock, Liveness, Rng, input_digest, session_id_from_ulid};
 use crate::input::{
     BrowserAnswerCommand, ClientId, Command, DurableInputError, Handled, HookId, Input,
@@ -59,6 +57,7 @@ mod instruction_observations;
 pub use instruction_observations::InstructionSource;
 mod mail_wakes;
 mod recovery;
+mod repositories;
 #[cfg(test)]
 mod repository_admission_tests;
 mod ticket_review;
@@ -66,6 +65,7 @@ mod ticket_review;
 mod ticket_start;
 use browser_notes::BrowserLaunchPhase;
 use mail_wakes::{MailRefresh, MailRefreshPhase};
+use repositories::IssueRepositories;
 
 enum ConsumedNote {
     Local(Lsn),
@@ -399,8 +399,8 @@ enum ManagedLaunch {
 
 #[derive(Debug)]
 struct PreparedLaunch {
-    spec: LaunchSpec,
-    install: ManagedInstall,
+    spawn: ManagedSpawn,
+    repositories: IssueRepositories,
     policy_lsn: Lsn,
     task: String,
     session: TurnSession,
@@ -1312,7 +1312,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 generation,
                 prepared,
             } => {
-                self.on_browser_launch_ready(turn, generation, prepared, operation);
+                self.on_browser_launch_ready(turn, generation, prepared.map(Some), operation);
+            }
+            Input::BrowserScopedLaunchReady { turn, generation } => {
+                self.on_browser_launch_ready(turn, generation, Ok(None), operation);
             }
             Input::SessionLearned { turn, session } => self.on_session_learned(turn, &session),
             Input::ActivityObserved { turn, kind } => self.on_activity_observed(turn, kind),
@@ -2305,18 +2308,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(selection) = recorded.or_else(|| self.model_selection(&row)) else {
             return;
         };
-        match self.launch(
-            agent,
-            &row,
-            self.world
-                .turns
-                .get(&turn)
-                .and_then(|row| row.repositories.as_ref())
-                .and_then(dudes_proto::repository::TurnRepositories::singleton),
-            task,
-            &session,
-            &selection,
-        ) {
+        let Some(repositories) = self.issued_repositories(agent, turn) else {
+            return;
+        };
+        match self.launch(agent, &row, Some(&repositories), task, &session, &selection) {
             ManagedLaunch::Ready(launch) => {
                 if self.spawn(agent, turn, launch, operation) {
                     // Only a re-issue this run actually took claims the announced id. `spawn()`
@@ -2379,7 +2374,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         mut launch: Box<PreparedLaunch>,
         operation: &crate::RecoveryOperation<'_>,
     ) -> bool {
-        if !self.repository_admitted(agent) {
+        if self.issued_repositories(agent, turn).as_ref() != Some(&launch.repositories) {
             self.spawning.remove(&turn);
             return false;
         }
@@ -2392,14 +2387,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return false;
         };
         if launch.policy_lsn != row.mcp.revision {
+            let Some(repositories) = self.issued_repositories(agent, turn) else {
+                self.spawning.remove(&turn);
+                return false;
+            };
             launch = match self.launch(
                 agent,
                 &row,
-                self.world
-                    .turns
-                    .get(&turn)
-                    .and_then(|row| row.repositories.as_ref())
-                    .and_then(dudes_proto::repository::TurnRepositories::singleton),
+                Some(&repositories),
                 &launch.task,
                 &launch.session,
                 &launch.selection,
@@ -2482,11 +2477,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             self.reissued.remove(&turn);
             return;
         }
-        if self.compose_pair(agent, &mut launch.spec) {
+        if self.compose_pair_environment(agent, launch.spawn.environment_mut()) {
             if browser {
-                self.prepare_browser_launch(turn, launch.spec, launch.install, mcp_grant);
+                self.prepare_browser_launch(turn, launch.spawn, mcp_grant);
             } else {
-                self.emit_spawn(turn, launch.spec, launch.install, mcp_grant);
+                self.emit_spawn(turn, launch.spawn, mcp_grant);
             }
         } else {
             self.mint(
@@ -2501,13 +2496,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
     }
 
-    fn emit_spawn(
-        &mut self,
-        turn: TurnId,
-        spec: LaunchSpec,
-        install: ManagedInstall,
-        mcp_grant: Option<Lsn>,
-    ) {
+    fn emit_spawn(&mut self, turn: TurnId, launch: ManagedSpawn, mcp_grant: Option<Lsn>) {
         if self
             .world
             .turns
@@ -2518,8 +2507,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         self.pending.push(Effect::Spawn {
             turn,
-            spec,
-            install,
+            launch,
             mcp_grant,
         });
     }
@@ -2657,15 +2645,19 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Takes `&self`, so no path through here can change the machine's state as a side effect of
     /// reading a token.
     fn compose_pair(&self, agent: AgentId, spec: &mut LaunchSpec) -> bool {
+        self.compose_pair_environment(agent, &mut spec.env)
+    }
+
+    fn compose_pair_environment(&self, agent: AgentId, env: &mut Vec<EnvVar>) -> bool {
         let Some(token) = self.tokens.live(agent) else {
             return false;
         };
-        spec.env.push(EnvVar::new(
+        env.push(EnvVar::new(
             "DUDES_SOCK",
             self.config.socket.as_os_str().to_owned(),
         ));
-        spec.env.push(EnvVar::new("DUDES_TOKEN", token.expose()));
-        spec.env.retain(|var| {
+        env.push(EnvVar::new("DUDES_TOKEN", token.expose()));
+        env.retain(|var| {
             let name = var.name().as_encoded_bytes();
             if cfg!(windows) {
                 !name.eq_ignore_ascii_case(b"DUDES_MAILBOX")
@@ -2673,7 +2665,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 name != b"DUDES_MAILBOX"
             }
         });
-        spec.env.push(EnvVar::new(
+        env.push(EnvVar::new(
             "DUDES_MAILBOX",
             self.config
                 .data_dir
@@ -2856,7 +2848,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if self.protection_pending(agent) {
             return;
         }
-        if self.hold_for_ticket_baseline(agent) {
+        if self.hold_for_issue_baseline(agent) {
             return;
         }
         if self
@@ -3078,8 +3070,23 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let task = launch.task.as_str();
         let session = &launch.session;
         let selection = launch.selection.clone();
-        let record = match browser {
-            Some((note_lsn, Some(completion_lsn))) => Record::IdentifiedTaughtNoteOnlyTurnIssued {
+        let payload = match browser {
+            Some((note_lsn, Some(completion_lsn))) => {
+                dudes_proto::issue::ManagedIssuePayload::IdentifiedTaughtNote {
+                    agent,
+                    turn,
+                    goal,
+                    task: task.to_owned(),
+                    session: session.id().cloned(),
+                    mode: Mode::Managed,
+                    model_selection: selection,
+                    lsn_of_decision,
+                    answers,
+                    note_lsn,
+                    completion_lsn,
+                }
+            }
+            Some((note_lsn, None)) => dudes_proto::issue::ManagedIssuePayload::GoalNote {
                 agent,
                 turn,
                 goal,
@@ -3090,21 +3097,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 lsn_of_decision,
                 answers,
                 note_lsn,
-                completion_lsn,
             },
-            Some((note_lsn, None)) => Record::TurnIssuedWithBrowserNote {
-                agent,
-                turn,
-                goal,
-                task: task.to_owned(),
-                session: session.id().cloned(),
-                mode: Mode::Managed,
-                model_selection: selection,
-                lsn_of_decision,
-                answers,
-                note_lsn,
-            },
-            None => Record::TurnIssued {
+            None => dudes_proto::issue::ManagedIssuePayload::Ordinary {
                 agent,
                 turn,
                 goal,
@@ -3116,6 +3110,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 answers,
             },
         };
+        let record = launch.repositories.record(payload);
         self.persist(
             record,
             Then::Spawn {
@@ -3133,12 +3128,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &self,
         agent: AgentId,
         row: &AgentRow,
-        repository: Option<&dudes_proto::repository::SingletonRepository>,
+        repositories: Option<&IssueRepositories>,
         task: &str,
         session: &TurnSession,
         selection: &ModelSelection,
     ) -> ManagedLaunch {
-        let Some(repository) = repository else {
+        let Some(repositories) = repositories else {
             return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
         };
         let Some(adapter) = self.adapters.get(row.provider) else {
@@ -3159,6 +3154,28 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Err(refusal) => return ManagedLaunch::Refused(LaunchError::McpServer(refusal)),
         };
         let agent_dir = self.agent_dir(agent);
+        let IssueRepositories::Legacy(repository) = repositories else {
+            if !mcp_servers.is_empty() || row.mcp.first_edit.is_some() {
+                return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
+            }
+            let mut env = self.config.daemon_env.clone();
+            if let Some(dir) = &self.config.agent_bin {
+                prepend_agent_bin(&mut env, dir);
+            }
+            return ManagedLaunch::Ready(Box::new(PreparedLaunch {
+                spawn: ManagedSpawn::Scoped {
+                    task: task.to_owned(),
+                    session: session.clone(),
+                    selection: selection.clone(),
+                    env,
+                },
+                repositories: repositories.clone(),
+                policy_lsn: row.mcp.revision,
+                task: task.to_owned(),
+                session: session.clone(),
+                selection: selection.clone(),
+            }));
+        };
         let ctx = AgentCtx {
             agent,
             cwd: repository.cwd(),
@@ -3184,8 +3201,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let mut install = adapter.managed_install(&ctx, selection);
         install.directories.insert(0, agent_dir);
         ManagedLaunch::Ready(Box::new(PreparedLaunch {
-            spec,
-            install,
+            spawn: ManagedSpawn::Composed {
+                spec: Box::new(spec),
+                install,
+            },
+            repositories: repositories.clone(),
             policy_lsn: row.mcp.revision,
             task: task.to_owned(),
             session: session.clone(),
@@ -3377,6 +3397,22 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         if self.retain_failed_browser_replay(turn) {
             self.mcp_attempts.remove(&turn);
+            if let Some(attempt) = prehost
+                && let Some(agent) = self.world.turns.get(&turn).map(|row| row.agent)
+            {
+                self.persist(
+                    Record::AgentHeld {
+                        agent,
+                        provenance: Provenance::Observed,
+                        cause: dudes_proto::AutomaticHold::LaunchRefused { reason },
+                    },
+                    Then::LaunchAdmissionHeld {
+                        agent,
+                        turn: Some(turn),
+                        instruction_attempt: Some(attempt),
+                    },
+                );
+            }
             return;
         }
         self.mcp_attempts.remove(&turn);
@@ -4852,6 +4888,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 hop_cap,
                 completion_check,
                 expected_seq,
+                repositories,
             } => {
                 let goal = Goal {
                     completion_check,
@@ -4862,15 +4899,39 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     hop_cap,
                     baseline: Some(dudes_proto::CheckBaseline::MayAlreadyPass),
                 };
-                self.persist(
-                    Record::TicketStarted {
+                let scoped = repositories.is_some();
+                let record = match repositories {
+                    Some(scope) => Record::TicketStartedWithRepositories(Box::new(
+                        dudes_proto::repository::RepositoryTicketStarted {
+                            card,
+                            agent,
+                            goal,
+                            expected_seq,
+                            round: scope.round,
+                            repositories: scope.repositories,
+                        },
+                    )),
+                    None => Record::TicketStarted {
                         card,
                         agent,
                         goal,
                         expected_seq,
                     },
-                    Then::ClearedCause { agent },
-                );
+                };
+                let at = self.clock.now();
+                if scoped
+                    && (!self.repository_admitted(agent)
+                        || self
+                            .world
+                            .validate_repository_record(&Entry {
+                                at,
+                                record: record.clone(),
+                            })
+                            .is_err())
+                {
+                    return;
+                }
+                self.persist_at(at, record, Then::ClearedCause { agent });
             }
             Command::GoalClear { agent, goal } => {
                 self.persist(Record::GoalCleared { agent, goal }, Then::Fold);

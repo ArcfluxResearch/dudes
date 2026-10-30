@@ -22,6 +22,22 @@ pub(crate) fn goal_check(check: &TicketCheck) -> Option<CompletionCheckRef> {
     named_check(&declaration, &check.predicate, true)
 }
 
+pub(crate) fn scoped_check_reference(
+    project: &str,
+    repo: &dudes_proto::repository::RepoId,
+    mut reference: CompletionCheckRef,
+) -> CompletionCheckRef {
+    reference.revision = crate::goal_replacement::digest(
+        b"dudes.scoped-project-check.v1\0",
+        [
+            ("project".into(), project.to_owned()),
+            ("repo".into(), repo.as_str().to_owned()),
+            ("definition".into(), reference.revision.to_hex()),
+        ],
+    );
+    reference
+}
+
 /// The card a record that only a ticket can receive names. A start has its own, stricter check.
 const fn ticket_target(record: &Record) -> Option<&CardId> {
     match record {
@@ -82,7 +98,18 @@ impl TicketIndex {
             goal.baseline == Some(CheckBaseline::MayAlreadyPass),
             "a ticket start carries a baseline other than may-already-pass"
         );
-        let expected = goal_check(&ticket.check);
+        let expected = match start.repositories {
+            None => goal_check(&ticket.check),
+            Some((_, authority)) => {
+                world.validate_repository_record(&dudes_proto::Entry {
+                    at: dudes_types::Timestamp::UNIX_EPOCH,
+                    record: record.clone(),
+                })?;
+                goal_check(&ticket.check).map(|reference| {
+                    scoped_check_reference(&ticket.project, &authority.check_repo, reference)
+                })
+            }
+        };
         ensure!(
             expected.is_some() && goal.completion_check == expected,
             "a ticket start carries a check name that does not match the ticket's check"
@@ -208,6 +235,28 @@ mod tests {
                 argv: vec!["/usr/bin/true".into()],
                 timeout_s: 30,
             },
+        }
+    }
+
+    #[test]
+    fn scoped_check_revision_preserves_the_existing_definition_frame() {
+        let check = check();
+        let declaration = CompletionCheckDeclaration::new(&check.id, &check.label).unwrap();
+        let repo = dudes_proto::repository::RepoId::parse("api").unwrap();
+        for may_already_pass in [false, true] {
+            let reference = named_check(&declaration, &check.predicate, may_already_pass).unwrap();
+            let existing = crate::goal_replacement::digest(
+                b"dudes.scoped-project-check.v1\0",
+                [
+                    ("project".into(), "service".into()),
+                    ("repo".into(), "api".into()),
+                    ("definition".into(), reference.revision.to_hex()),
+                ],
+            );
+            assert_eq!(
+                scoped_check_reference("service", &repo, reference).revision,
+                existing
+            );
         }
     }
 

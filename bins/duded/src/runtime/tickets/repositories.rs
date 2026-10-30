@@ -72,6 +72,45 @@ impl CurrentHireAdmission<'_> {
                 }
                 Ok(())
             }
+            Record::TicketStartedWithRepositories(start) => {
+                let scope = ticket
+                    .and_then(|ticket| ticket.repositories.declared())
+                    .context("the immutable ticket declaration is unavailable")?;
+                ensure!(
+                    scope.declaration == start.repositories.declaration
+                        && scope.check_repo == start.repositories.check_repo,
+                    "the ticket start differs from its immutable declaration"
+                );
+                self.current_ticket_hire(world, start.agent, &scope.declaration)?;
+                let row = world
+                    .agents
+                    .get(&start.agent)
+                    .context("the ticket hire is unavailable")?;
+                let HireRepositories::Scoped(hire) = &row.repositories else {
+                    anyhow::bail!("the ticket requires a scoped hire");
+                };
+                ensure!(
+                    row.mcp.hire_lsn == start.repositories.hired_lsn
+                        && hire
+                            .repositories
+                            .get(&scope.check_repo)
+                            .is_some_and(
+                                |repo| repo.recorded.execution == start.repositories.check_root
+                            ),
+                    "the ticket start differs from its exact hired check root"
+                );
+                let (profile, _) =
+                    self.current_project_repositories(world, &scope.declaration.project)?;
+                let check = profile
+                    .resolve_check(Some(&start.repositories.check.id))
+                    .context("the configured ticket check is unavailable")?;
+                ensure!(
+                    check.check() == &start.repositories.check
+                        && check.repo() == Some(&scope.check_repo),
+                    "the configured ticket check changed before its start"
+                );
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
