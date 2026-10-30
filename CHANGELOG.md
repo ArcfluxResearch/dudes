@@ -11,6 +11,34 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.101.0] - 2026-10-30
+
+### Highlights
+
+- **Tickets run in separate copies at the same time.** Agents that each work in their own copy of a project now run their tickets in parallel. Agents that share the project folder still take turns. A ticket that has to wait names the ticket holding its own working copy, not any ticket in the project. (#293)
+- **A ticket shows its own copy.** A ticket whose agent works in its own copy shows the copy's branch, whether the copy is in use or released, and buttons that jump to the ticket's Changes view and the agent's Git view. Doing and Review cards carry a small branch chip. The hire dialog now ticks "Work in its own copy of the project" by default for a Claude hire into a trusted project. (#287)
+- **Ticket notes read as Markdown, and you write them in a rich editor.** A note shows headings, lists, code blocks, small tables, bold, italic and links. Only `http` and `https` links are live. Editing a note, and writing one on the New ticket form, opens an editor with Markdown shortcuts. A note the editor cannot hold exactly, such as one with a table or an image, opens in a plain Markdown box instead, so nothing is rewritten without you editing it. The 8,192-byte limit is now counted in bytes, so a long note is refused before you send it. (#292, #295)
+- **Unassigned tickets start by priority, then age.** On the Board, in the List and in `dudes ticket list`, unassigned To do tickets sort Urgent, High, then Medium and unranked together, then Low, and the oldest comes first within each. (#288)
+- **Set priority and read a note from a file on the command line.** `dudes ticket add` and `dudes ticket edit` take `--priority urgent|high|medium|low|none`, and `--note-file <path>` (`-` for standard input) so a longer note does not have to fit in one shell argument. (#285, #289)
+- **Attach opens Claude on the model the agent uses.** Before, the terminal opened on Claude's default model even when the agent ran on another. The confirmation says which model it opens on. (#290)
+
+### Changes
+
+- The journal and daemon gain more groundwork for tickets that span several repositories: repository trust pins, named completion-check repositories, per-repository instructions, hires across repository copies and scoped launch preparation. No command or Floor screen offers multi-repository work yet, and a journal without these records replays unchanged. (#269, #270, #272, #273, #297, #300, #301, #302, #303, #304, #306, #307, #313)
+
+### Fixes
+
+- After you Halt or Stop an agent's running turn, hiring another agent into the same folder without its own copy is no longer refused until the daemon restarts. The daemon now records that the stopped turn's processes are gone. (#314)
+- Previewing or refusing an edited project configuration no longer pauses agents in other projects. Dudes also stops writing a Pause that looks like yours when a project is briefly unavailable, and it retries the work when the project returns. (#298)
+- When a project's repository disappears just before a turn starts, the turn no longer stays stuck. It fails visibly with a hold, and Resume lets work continue once the repository is back. (#299)
+- Cleaning up a half-made copy after a failure or a restart now removes only the folder Dudes created. If something else has replaced that folder, or Dudes cannot tell, it leaves the folder alone and leaves the branch for you. (#296)
+- A ticket handed to another agent while a question is open now shows every open question, each headed by the agent that asked it, instead of only the newest. (#286)
+
+### Breaking
+
+- **The first start after the upgrade rebuilds the saved views once.** Dudes rebuilds its views from the journal. Nothing is lost. (#269, #296)
+- **Going back to 0.100.0 refuses a journal that holds a copy hire made on 0.101.0.** (to be measured)**
+
 ## [0.100.0] - 2026-10-28
 
 ### Highlights
