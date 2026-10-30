@@ -21,6 +21,7 @@ mod unconfined_instructions;
 mod unconfined_options;
 mod unconfined_recovery;
 pub(in crate::runtime) mod unconfined_sites;
+mod unconfined_stop_recovery;
 
 pub(super) struct Setup {
     pub(super) fixture: common::Fixture,

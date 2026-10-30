@@ -193,7 +193,7 @@ fn replacing_a_goal_of_an_unconfined_agent_is_refused_with_a_reason_and_appends_
 }
 
 /// A scoped agent's inherited context needs the host to list every child it owns.
-fn attachable_setup() -> Setup {
+pub(super) fn attachable_setup() -> Setup {
     let mut setup = Setup::new();
     setup.host = common::SharedHost::with_native_evidence(setup.fixture.journal_dir());
     setup
@@ -387,9 +387,9 @@ fn closing_an_unconfined_attached_session_compares_every_copy_with_its_start() {
     assert_replays(&setup);
 }
 
-const SESSION: &str = "550e8400-e29b-41d4-a716-446655440000";
+pub(super) const SESSION: &str = "550e8400-e29b-41d4-a716-446655440000";
 
-fn learn_a_session(setup: &Setup, agent: AgentId) {
+pub(super) fn learn_a_session(setup: &Setup, agent: AgentId) {
     let (mut writer, _) =
         dudes_journal::open(&setup.fixture.journal_dir(), setup.settings.journal).unwrap();
     writer
