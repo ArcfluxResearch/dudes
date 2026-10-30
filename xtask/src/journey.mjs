@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -108,6 +109,7 @@ export class Journey {
     const file = join(this.pictures, `${String(this.screens.length + 1).padStart(2, '0')}-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.png`);
     await writeFile(file, Buffer.from(shot.data, 'base64'));
     this.screens.push(name);
+    this.lastPicture = file;
     for (const context of oldProjectWords(text)) this.oldWords.push(`${name}: ${context}`);
     const seen = new Set();
     for (const found of findTerminalCommands(text)) {
@@ -241,6 +243,74 @@ export class Journey {
     check((await stat(join(this.run.repo, 'journey-note.txt')).catch(() => null))?.isFile(), 'the agent left no change in the project');
   }
 
+  /** An unassigned ticket, so the New ticket dialog has an open ticket to find as similar to what is typed. */
+  async ensureOpenTicket() {
+    if (this.openTicket) return;
+    await this.layoutOffice();
+    await this.click('#view-board');
+    await this.until(`document.querySelector('.control-panel')?.dataset.view === 'board'`, 'the board did not open for the dialog check');
+    await this.click('.ticket-new-toggle');
+    await this.fill('input[name="title"]', 'Write the changelog for the notes');
+    await this.click('.ticket-create');
+    await this.until(`Boolean(document.querySelector('.ticket-panel'))`, 'the open ticket was not created');
+    await this.click('.ticket-dialog-close');
+    this.openTicket = true;
+  }
+
+  /** The New ticket dialog with a title that matches the open ticket, so its similar-ticket hint and outcome line show. */
+  async fillNewTicket() {
+    await this.click('.ticket-new-toggle');
+    await this.until(`document.querySelector('.ticket-dialog')?.open === true && document.querySelector('.ticket-dialog')?.dataset.composer === 'true'`,
+      'the New ticket dialog did not open');
+    await this.fill('input[name="title"]', 'Update the changelog for notes');
+    await this.until(`Boolean(document.querySelector('.ticket-similar')) && Boolean(document.querySelector('.ticket-outcome'))`,
+      'the dialog shows no similar ticket or outcome line');
+  }
+
+  async leaveNewTicket() {
+    await this.click('.ticket-dialog-close');
+    await this.until(`document.querySelector('.ticket-dialog')?.open !== true`, 'the New ticket dialog did not close');
+  }
+
+  /** Pictures of the dialog empty, with the agent list open and a similar ticket shown, and with Create more on. */
+  async dialogPictures() {
+    await this.ensureOpenTicket();
+    const saved = await this.evaluate(`({ width: innerWidth, height: innerHeight })`);
+    const hashes = new Set();
+    const hashOf = async () => createHash('sha256').update(await readFile(this.lastPicture)).digest('hex');
+    try {
+      for (const [width, height] of [[1440, 900], [390, 844]]) {
+        await this.run.cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, this.run.cdp.session);
+        await this.click('.ticket-new-toggle');
+        await this.until(`document.querySelector('.ticket-dialog')?.open === true && document.querySelector('.ticket-dialog')?.dataset.composer === 'true'`,
+          'the New ticket dialog did not open');
+        await this.screen(`new ticket dialog empty ${width}`);
+        const batch = [await hashOf()];
+        await this.fill('input[name="title"]', 'Update the changelog for notes');
+        await this.until(`Boolean(document.querySelector('.ticket-similar')) && Boolean(document.querySelector('.ticket-outcome'))`,
+          'the dialog shows no similar ticket or outcome line');
+        await this.click('[data-field="agent"]');
+        await this.until(`Boolean(document.querySelector('[data-ui="select-list"]:popover-open [role="option"]'))`, 'the Agent list did not open');
+        check(await this.evaluate(`document.querySelector('[data-ui="select-list"]:popover-open').textContent.includes('Suggested')`),
+          'the Agent list suggests no agent');
+        await this.screen(`new ticket dialog suggestion and similar ${width}`);
+        batch.push(await hashOf());
+        await this.click('[data-field="agent"]');
+        await this.click('.ticket-create-more [role="switch"]');
+        await this.until(`document.querySelector('.ticket-create-more [role="switch"]')?.getAttribute('aria-checked') === 'true'`, 'Create more did not turn on');
+        await this.screen(`new ticket dialog create more ${width}`);
+        batch.push(await hashOf());
+        await this.click('.ticket-create-more [role="switch"]');
+        await this.leaveNewTicket();
+        check(new Set(batch).size === 3, `the dialog pictures at ${width} are not three different pictures`);
+        batch.forEach((hash) => hashes.add(hash));
+      }
+      console.log(`PASS dialog pictures: ${hashes.size} different pictures`);
+    } finally {
+      await this.run.cdp.send('Emulation.setDeviceMetricsOverride', { width: saved.width, height: saved.height, deviceScaleFactor: 1, mobile: false }, this.run.cdp.session);
+    }
+  }
+
   async layoutOffice() {
     const view = await this.evaluate(`document.querySelector('.control-panel')?.dataset.view`);
     if (view === 'board') await this.click('#view-board');
@@ -255,12 +325,15 @@ export class Journey {
     const views = [
       { name: 'office', selector: '#office-open', ready: `location.hash === '' && !!document.querySelector('.office-canvas') && !document.querySelector('.control-panel')` },
       { name: 'board', selector: '#view-board', ready: `document.querySelector('.control-panel')?.dataset.view === 'board'` },
+      { name: 'new ticket dialog', selector: '#view-board', ready: `document.querySelector('.control-panel')?.dataset.view === 'board'`,
+        open: () => this.fillNewTicket(), leave: () => this.leaveNewTicket() },
       { name: 'projects', selector: '#view-projects', ready: `location.hash === '#/projects' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'projects'` },
       { name: 'log', selector: '#view-log', ready: `location.hash === '#/log' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'log'` },
       { name: 'setup', selector: '#view-setup', ready: `location.hash === '#/setup' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'setup'` },
       { name: 'settings', selector: '#view-settings', ready: `location.hash === '#/settings' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'settings'` },
     ];
     const sizes = [[1440, 900], [800, 500], [801, 500], [390, 844]];
+    await this.ensureOpenTicket();
     try {
       for (const [width, height] of sizes) {
         await this.run.cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, this.run.cdp.session);
@@ -268,6 +341,7 @@ export class Journey {
           await this.layoutOffice();
           if (view.name !== 'office') await this.click(view.selector);
           await this.until(view.ready, `${view.name} did not open for the viewport check`);
+          await view.open?.();
           const actual = await this.evaluate(`(async () => {
             await document.fonts.ready;
             await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
@@ -275,6 +349,7 @@ export class Journey {
           })()`);
           check(actual.scrollHeight === actual.windowHeight && actual.windowWidth === width && actual.windowHeight === height,
             `viewport ${width}x${height} ${view.name} crew=${crewSize}: scrollHeight=${actual.scrollHeight}, innerWidth=${actual.windowWidth}, innerHeight=${actual.windowHeight}`);
+          await view.leave?.();
         }
       }
       console.log(`PASS viewport heights: ${sizes.length * views.length} views, crew=${crewSize}`);
@@ -349,6 +424,7 @@ export class Journey {
     await this.addProject();
     await this.hire();
     await this.ticket();
+    await this.dialogPictures();
     await this.viewportHeights(1);
     await this.crowdedViewportHeights();
     await this.otherScreens();

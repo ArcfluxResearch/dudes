@@ -65,7 +65,7 @@ export function splitPaste(pasted: string): PasteSplit | null {
   return Object.freeze({
     title: cutToBytes(lines[first]!.trim(), TITLE_LIMIT_BYTES),
     note: rest,
-    plain: toLf(pasted).replace(/\n+/g, ' ').trim(),
+    plain: toLf(pasted).replace(/\s*\n+\s*/g, ' ').trim(),
   });
 }
 
