@@ -99,6 +99,7 @@ pub struct Environment {
     opener: Option<PathBuf>,
     daemon_env: Vec<EnvVar>,
     agent_token: Option<HookToken>,
+    scoped_file_mail: bool,
     config: Result<PathBuf, NoConfig>,
     config_overridden: bool,
     current_dir: Option<PathBuf>,
@@ -349,6 +350,8 @@ impl Environment {
             opener,
             daemon_env,
             agent_token,
+            scoped_file_mail: lookup("DUDES_COMMAND_TRANSPORT")
+                .is_some_and(|value| value == "file-mail"),
             config,
             config_overridden: lookup("DUDES_CONFIG").is_some(),
             current_dir: None,
@@ -365,6 +368,11 @@ impl Environment {
     #[must_use]
     pub fn home(&self) -> Option<&Path> {
         self.home.as_deref()
+    }
+
+    /// The launch-selected CLI transport. This marker grants no socket authority.
+    pub(crate) const fn scoped_file_mail(&self) -> bool {
+        self.scoped_file_mail
     }
 
     /// The directory the command runs in, which `quickstart` enrolls and hires into; `None` when
