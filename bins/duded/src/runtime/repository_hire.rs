@@ -592,7 +592,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .world()
             .validate_repository_record(&dudes_proto::Entry {
                 at: self.ctx.clock.now(),
-                record: dudes_proto::Record::AgentHiredWithRepositories(Box::new(hire.clone())),
+                record: Box::new(hire.clone()).into_record(),
             })
             .map_err(|error| refused(error.to_string()))?;
         Ok(hire)

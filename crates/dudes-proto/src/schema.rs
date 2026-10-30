@@ -179,6 +179,7 @@ pub(crate) fn close_repository_entries(schema: &mut Schema) {
         .expect("Entry schema has record variants");
     for tag in [
         "agent_hired_with_repositories",
+        "agent_hired_with_unconfined_repositories",
         "ticket_created_with_repositories",
         "ticket_edited_with_repositories",
         "ticket_started_with_repositories",
