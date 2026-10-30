@@ -145,7 +145,6 @@ impl CurrentHireAdmission<'_> {
                 IncompleteDeclaration
             );
         }
-        self.require_repository_capability(HIRE_POLICY.confinement())?;
         let primary = observed.repositories.primary_id();
         let entries: Vec<_> = observed
             .repositories
