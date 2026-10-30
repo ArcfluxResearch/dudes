@@ -371,7 +371,7 @@ test('with no project the new ticket form says how to set one up', () => {
   const html = form();
   assert.match(html, /Tickets run in a project, and none is set up yet\. Turn on Add and remove projects under Floor switches in Settings, then add your project folder\./);
   assert.doesNotMatch(html, /No agent yet/);
-  assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket<\/button>/);
+  assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket(?:<kbd[^>]*>[^<]*<\/kbd>)?<\/button>/);
 });
 
 test('unavailable project choices do not imply missing agents or missing enrollment', () => {
@@ -386,21 +386,20 @@ test('unavailable project choices do not imply missing agents or missing enrollm
   const html = form();
   assert.match(html, /Project choices are unavailable\. Open Setup to check the project and its completion check\./);
   assert.doesNotMatch(html, /No agent works|No agent yet|none is set up yet|ticket-hire/);
-  assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket<\/button>/);
+  assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket(?:<kbd[^>]*>[^<]*<\/kbd>)?<\/button>/);
 });
 
 test('the new ticket form is a title, and everything else is optional', () => {
   subscribe(store, { agents: [agent()] });
   const html = form();
-  assert.match(html, /<label[^>]*>Title<\/label><input[^>]*required=""[^>]*name="title"/);
-  assert.match(html, /Note \(optional\)/);
-  assert.match(html, /Done when/);
+  assert.match(html, /<input[^>]*required=""[^>]*aria-label="Title"[^>]*placeholder="Ticket title"[^>]*name="title"/);
+  assert.match(html, /aria-label="Done when"/);
   assert.match(html, /data-value="default" aria-selected="true"[^>]*><span>default passes \(may already be true\)<\/span>/);
   assert.match(html, /data-value="second"[^>]*><span>second passes<\/span>/);
-  assert.match(html, /Give to agent \(optional\)/);
+  assert.match(html, /aria-label="Agent"/);
   assert.match(html, /data-value=""[^>]*><span>Not yet<\/span>/);
-  assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span>Ada<\/span>/);
-  assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket<\/button>/, 'empty title: nothing to create');
+  assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span>Ada · Idle, starts now · Shared folder · Suggested<\/span>/);
+  assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket(?:<kbd[^>]*>[^<]*<\/kbd>)?<\/button>/, 'empty title: nothing to create');
 });
 
 test('Project is asked for only when there is more than one', () => {
@@ -409,7 +408,7 @@ test('Project is asked for only when there is more than one', () => {
   store.resetFloorStore();
   subscribe(store, { agents: [agent()], checks: TWO_PROJECTS });
   const html = form();
-  assert.match(html, /<label[^>]*>Project<\/label>/);
+  assert.match(html, /aria-label="Project"/);
   assert.match(html, /data-value="service" aria-selected="true"[^>]*><span>Service<\/span>/);
   assert.match(html, /data-value="website"[^>]*><span>Project 2<\/span>/);
 });
@@ -449,7 +448,7 @@ test('the agent choice lists agents of the project and shows the rest as unavail
     agents: [agent(), agent(GRACE, 'Grace', { workspace: undefined }), agent('01ARZ3NDEKTSV4RRFFQ69G5FAW', 'Other', { workspace: { id: 'website', label: 'Website' } })],
   });
   const html = form();
-  assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span>Ada<\/span>/);
+  assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span>Ada · Idle, starts now · Shared folder · Suggested<\/span>/);
   assert.match(html, /data-value="01ARZ3NDEKTSV4RRFFQ69G5FAV"[^>]*aria-disabled="true"[^>]*><span>Grace \(hired before projects were recorded\)<\/span>/);
   assert.ok(!/>Other</.test(html), 'an agent of another project is not offered');
   assert.match(html, /Grace was hired before projects were recorded, so it can&#x27;t take tickets\./);
@@ -485,7 +484,7 @@ test('a failed engine turn is shown on its card and detail until a successful en
 test('the new ticket form asks for a priority, with No priority first', () => {
   subscribe(store, { agents: [agent()] });
   const html = form();
-  assert.match(html, /<label[^>]*>Priority<\/label>/);
+  assert.match(html, /aria-label="Priority"/);
   const list = html.match(/data-field="priority"[\s\S]*?<\/div>\s*<\/div>|data-field="priority"[\s\S]{0,1200}/)[0];
   assert.deepEqual([...list.matchAll(/data-value="(\w+)"/g)].map((m) => m[1]), ['none', 'urgent', 'high', 'medium', 'low']);
   assert.match(html, /data-field="priority"[^>]*>[\s\S]*?No priority/);

@@ -481,6 +481,13 @@ const ADMITTED_HANDLERS = [
   { file: RENAME_PANEL, tag: 'input', handler: 'onKeyDown' },
   { file: ADD_PROJECT_FORM, tag: 'form', className: 'flex w-full max-w-xl flex-col gap-3', handler: 'onSubmit' },
   { file: ADD_PROJECT_FORM, tag: 'input', handler: 'onChange' },
+  // The New ticket dialog: Cmd+Enter submits the form it is in, P, D and A open its own choices, a paste into an empty title
+  // splits into title and note, Cmd+Z puts the plain paste back, and Create more is a switch this browser remembers.
+  { file: TICKET_BOARD, tag: 'form', className: 'ticket-form flex flex-col', handler: 'onKeyDownCapture', expression: 'keys' },
+  { file: TICKET_BOARD, tag: 'input', handler: 'onPaste', expression: 'pasted' },
+  { file: TICKET_BOARD, tag: 'input', handler: 'onKeyDown', expression: 'undoPaste' },
+  { file: TICKET_BOARD, tag: 'button', className: 'ticket-create-more items-center gap-3', handler: 'onCheckedChange',
+    expression: '(on) => { setCreateMore(on); writeCreateMore(on); }' },
   { file: SETTINGS_VIEW, tag: 'form', handler: 'onSubmit' },
   { file: SETTINGS_VIEW, tag: 'button', handler: 'onCheckedChange',
     expression: '() => { if (edit.sending === null) void changeSetting(settingKey, next); }' },
@@ -1242,7 +1249,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(2).fill('src/renderer/ticket/StuckActions.tsx'),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
     ...Array(2).fill('src/renderer/ticket/TicketCopy.tsx'),
-    ...Array(9).fill(TICKET_BOARD),
+    ...Array(15).fill(TICKET_BOARD),
     ...Array(3).fill(BOARD_TOOLBAR),
     TICKET_LIST, COPY_LINK, TICKET_PAGE, SHORTCUT_HELP,
     ...Array(2).fill(NOTIFICATION_OFFER),
@@ -1287,6 +1294,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   clickExpected.splice(clickExpected.indexOf(MODEL_PANEL), 1);
   // The ticket forms each submit with a button that has no click handler of its own.
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
+  clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
+  // The Create more switch takes its press through onCheckedChange.
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   // The folder form and the new-project form each submit with a button that has no click handler of its own.
@@ -1410,9 +1419,10 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => { void desktopNotificationPreference.setEnabled(true); }', 'desktopNotificationPreference.dismissOffer',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_BOARD), 'utf8')), [
-    '() => dismissNotice(notice)', '(event) => onHire(event.currentTarget)', 'onCancel',
+    '() => dismissNotice(notice)', 'onCancel', 'discard', '() => openSimilar(card.id)', '(event) => onHire(event.currentTarget)',
+    '() => { if (made.card !== null) onCreated(made.card); }', 'onCancel',
     '(event) => onSelect(card.id, event.currentTarget)', '() => setDoneShown(doneShown + DONE_SHOWN)', '(event) => onNewTicket(event.currentTarget)',
-    'clear',
+    'clear', '(event) => onNewTicket(event.currentTarget)',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, BOARD_TOOLBAR), 'utf8')), ['() => onChange({ layout: key })', 'onClear', 'onHelp']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_LIST), 'utf8')), ['(event) => onSelect(card.id, event.currentTarget)']);
@@ -2590,9 +2600,10 @@ test('session material has no browser persistence, URL, argv or log sink', async
   const viewSyntax = parsedByExtension(viewText, ADMITTED_VIEW_STORAGE.path);
   const imports = viewSyntax.statements.filter(ts.isImportDeclaration);
   assert.deepEqual(imports.map((node) => [node.moduleSpecifier.text, node.importClause?.isTypeOnly]),
-    // The office registry is layout data the page is built with, and the pin is checked against its ids.
+    // The office registry is layout data the page is built with, and the pin is checked against its ids. The priority words
+    // are the same kind of fixed table, and a saved draft is checked against them.
     [['./floor/store.ts', true], ['./archive.ts', true], ['./detailTabs.ts', true], ['./office3d/offices.ts', false],
-      ['./office3d/offices.ts', true]], 'view preferences gained a runtime source of daemon or session material');
+      ['./office3d/offices.ts', true], ['./ticket/priority.ts', false], ['./ticket/priority.ts', true]], 'view preferences gained a runtime source of daemon or session material');
   for (const name of ['readViewPreferences', 'writeViewPreferences', 'readAgentIds', 'writeAgentIds', 'readDetailTab', 'writeDetailTab',
     'readOfficePin', 'writeOfficePin', 'readDesktopNotificationChoice', 'writeDesktopNotificationChoice']) {
     const fn = viewSyntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);

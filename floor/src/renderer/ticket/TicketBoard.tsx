@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import type { CSSProperties, FormEvent, KeyboardEvent } from 'react';
+import type { ClipboardEvent, CSSProperties, FormEvent, KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { handFocusAfterLeave } from '../focus.ts';
 
 import type { CardRow } from '../board.ts';
 import { accentOf } from '../appearance.ts';
 import { initialOf } from '../Portrait.tsx';
-import { Plus } from 'lucide-react';
-import { Badge, Button, Field, ICON, Input, RING, Select, Textarea, cn } from '../../ui/index.ts';
+import { Plus, X } from 'lucide-react';
+import { Badge, Button, Field, ICON, IconButton, Input, RING, Select, Switch, Textarea, cn } from '../../ui/index.ts';
 import { FORM_ACTIONS, HINT, STATE_BADGE } from './look.ts';
 
 import { useRequestedCard } from '../BoardPanel.tsx';
@@ -18,12 +18,14 @@ import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { decodeWorkspace } from '../workspace.ts';
 import { agentChoiceSentence, agentName, agentRow, boardColumns, cardWords, DONE_SHOWN, noProjects, otherCards, plainColumnOf, stateWord, TICKET_COLUMNS } from './model.ts';
+import { agentChoice, outcomeSentence, QUEUE_CAP, similarTickets, splitPaste, stateWords, suggestedAgent, titleBytes, titleTooLong, TITLE_COUNT_FROM, TITLE_LIMIT_BYTES } from './composer.ts';
+import type { PasteSplit } from './composer.ts';
 import type { TicketColumn } from './model.ts';
 import type { Notice } from './ticket.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
 import { titleOf } from '../setup/nextStep.ts';
 import type { FirstTaskAgent } from '../setup/nextStep.ts';
-import { agentWithoutProjectSentence, engineStopped } from './words.ts';
+import { agentWithoutProjectSentence, engineStopped, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 import { NoteField } from './NoteField.tsx';
 import { noteTooLong, toLf } from './noteText.ts';
@@ -37,9 +39,9 @@ import { PRIORITY_OPTIONS, priorityOf } from './priority.ts';
 import type { Priority } from './priority.ts';
 import { TicketList, TicketRow } from './TicketList.tsx';
 import { ShortcutHelp } from './ShortcutHelp.tsx';
-import { isMac } from './shortcuts.ts';
+import { isMac, isTypingTarget } from './shortcuts.ts';
 import { useBoardShortcuts } from './useBoardShortcuts.ts';
-import { clearNewTicketDraft, EMPTY_TICKET_DRAFT, readNewTicketDraft, writeNewTicketDraft } from '../view.ts';
+import { clearNewTicketDraft, EMPTY_TICKET_DRAFT, readCreateMore, readLastTicketProject, readNewTicketDraft, writeCreateMore, writeLastTicketProject, writeNewTicketDraft } from '../view.ts';
 import type { NewTicketDraft } from '../view.ts';
 
 const NOTICE_SECONDS = 8;
@@ -136,7 +138,8 @@ export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; r
   const [task, setTask] = useState('');
   const [chosen, setChosen] = useState('');
   const agent = agents.find((entry) => entry.id === chosen) ?? agents[0]!;
-  const ready = !sending && task.trim() !== '' && floor.ticket;
+  const tooLong = titleTooLong(titleOf(task));
+  const ready = !sending && task.trim() !== '' && floor.ticket && tooLong === null;
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -154,22 +157,55 @@ export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; r
     {agents.length > 1 ? <Field label="Who?" id={`${ids}-who`}>
       <Select id={`${ids}-who`} value={agent.id} onValueChange={setChosen}
         options={agents.map((entry) => ({ value: entry.id, label: entry.name }))} /></Field> : null}
-    <Field label={<>What should {agent.name} do?</>} id={`${ids}-task`}
+    <Field label={<>What should {agent.name} do?</>} id={`${ids}-task`} error={tooLong ?? undefined}
       hint={<span className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself ({agent.check.label}) before you review it.</span>}>
       <Textarea rows={3} maxLength={8192} value={task} placeholder="For example: add a dark mode switch to the settings page"
         onChange={(event) => setTask(event.target.value)} />
     </Field>
     <Button type="submit" variant="primary" className="first-task-start justify-self-start" disabled={!ready}
-      title={ready ? undefined : sending ? 'Wait for the task to be saved.' : !floor.ticket ? 'Turn on Make tickets in Settings.' : 'Describe the task first.'}>{sending ? 'Starting…' : 'Start'}</Button>
+      title={ready ? undefined : sending ? 'Wait for the task to be saved.' : !floor.ticket ? 'Turn on Make tickets in Settings.' : tooLong ?? 'Describe the task first.'}>{sending ? 'Starting…' : 'Start'}</Button>
   </form>;
 }
 
 
-export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
+/** Whether a draft holds anything the person typed. */
+function hasText(draft: NewTicketDraft): boolean {
+  return draft.title !== '' || draft.note !== '';
+}
+
+/**
+ * The draft a new dialog opens with. A draft with text is kept as it was. Otherwise the project and agent come from the
+ * Board's filters when they are set and still valid, then from the saved choices, then from the last project used.
+ */
+function openingDraft(floor: FloorState, projects: readonly { readonly id: string }[]): NewTicketDraft {
+  const saved = readNewTicketDraft();
+  if (hasText(saved)) return saved;
+  const browse = getBrowse();
+  const has = (id: string | null): id is string => id !== null && projects.some((entry) => entry.id === id);
+  const filtered = has(browse.project) ? browse.project : null;
+  const last = readLastTicketProject();
+  const project = filtered ?? (has(saved.project) ? saved.project : null) ?? (has(last) ? last : null);
+  if (project === null) return saved;
+  const sameProject = project === saved.project;
+  const wanted = agentsFor(floor, project).usable.some((row) => row.id === browse.agent) ? browse.agent : sameProject ? saved.agent : '';
+  return { ...saved, project, check: sameProject ? saved.check : null, agent: wanted };
+}
+
+const CHIP = 'ticket-chip h-7 w-auto max-w-full gap-1.5 rounded-pill border-line bg-surface-2 px-3 text-small font-medium';
+const CHIP_LIST = 'w-max max-w-[min(30rem,calc(100vw-1rem))]';
+const CHIP_KEYS: Readonly<Record<string, string>> = Object.freeze({ p: 'priority', d: 'check', a: 'agent' });
+const DOT: Readonly<Record<Priority, string>> = Object.freeze({
+  none: 'bg-line-strong', urgent: 'bg-danger', high: 'bg-warn', medium: 'bg-info', low: 'bg-subtle',
+});
+
+export function NewTicketForm({ floor, onCreated, onHire, onCancel, requested = false }: {
   readonly floor: FloorState;
+  /** Open this ticket in the dialog: a new one, or a similar one the person chose. */
   readonly onCreated: (card: string) => void;
   readonly onHire?: (opener: HTMLElement | null) => void;
   readonly onCancel?: () => void;
+  /** The title was typed in the command menu, so a saved draft is not news. */
+  readonly requested?: boolean;
 }) {
   const ids = useId();
   const mounted = useRef(true);
@@ -179,93 +215,232 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
   }, []);
   const ticket = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState);
   const projects = projectsOf(floor);
-  const [draft, setDraft] = useState(readNewTicketDraft);
-  const [priority, setPriority] = useState<Priority>('none');
-  const [noteStart, setNoteStart] = useState({ generation: 0, text: draft.note });
+  const [opened] = useState(() => openingDraft(floor, projects));
+  const [draft, setDraft] = useState(opened);
+  const [noteStart, setNoteStart] = useState({ generation: 0, text: opened.note });
+  const [createMore, setCreateMore] = useState(readCreateMore);
+  const [made, setMade] = useState<{ readonly title: string; readonly card: string | null; readonly fading: boolean } | null>(null);
+  const [armed, setArmed] = useState<string | null>(null);
+  const [typed, setTyped] = useState(opened.title);
   const draftNow = useRef(draft);
   draftNow.current = draft;
-  const { title, note, project: chosenProject, check: chosenCheck, agent } = draft;
+  const form = useRef<HTMLFormElement>(null);
+  const [asked, setAsked] = useState({ priority: 0, check: 0, agent: 0 });
+  const undo = useRef<{ readonly split: PasteSplit; readonly note: string } | null>(null);
+  const { title, note, project: chosenProject, check: chosenCheck, agent, priority } = draft;
   function editDraft(patch: Partial<NewTicketDraft>): void {
     const next = { ...draftNow.current, project: project ?? draftNow.current.project, check: check?.id ?? draftNow.current.check, ...patch };
     draftNow.current = next;
     writeNewTicketDraft(next);
     setDraft(next);
   }
+  function replaceNote(text: string): void {
+    setNoteStart({ generation: noteStart.generation + 1, text });
+  }
   const project = chosenProject === null ? projects[0]?.id ?? null
     : projects.find((entry) => entry.id === chosenProject)?.id ?? null;
   const checks = project === null ? [] : checksFor(floor.checks, project) ?? [];
   const check = chosenCheck === null ? checks[0] ?? null : checks.find((entry) => entry.id === chosenCheck) ?? null;
   const { usable, unrecorded } = agentsFor(floor, project ?? '');
+  const choices = usable.map((row) => agentChoice(floor, row.id));
+  const suggested = suggestedAgent(choices);
+  const chosen = choices.find((choice) => choice.id === agent) ?? null;
   const open = ticketActionsOpen(floor);
   const tooLong = noteTooLong(note);
-  const ready = open && !ticket.sending && title.trim() !== '' && tooLong === null && project !== null && check !== null;
+  const titleLong = titleTooLong(title);
+  const bytes = titleBytes(title);
+  const reason = !open ? 'Reconnect to Dudes before creating a ticket.' : ticket.sending ? 'Wait for the current request to finish.'
+    : title.trim() === '' ? 'Enter a title.' : titleLong !== null ? titleLong : tooLong !== null ? tooLong
+      : project === null ? 'Choose a project.' : check === null ? 'Choose a completion check.'
+        : chosen?.full === true ? `${chosen.name} already has ${QUEUE_CAP} tickets waiting. Choose another agent or Not yet.` : null;
+  const ready = reason === null;
 
-  async function submit(event: FormEvent): Promise<void> {
-    event.preventDefault();
+  useEffect(() => {
+    const timer = setTimeout(() => setTyped(title), 200);
+    return () => clearTimeout(timer);
+  }, [title]);
+  const similar = useMemo(() => similarTickets(floor.cards, project, typed), [floor.cards, project, typed]);
+  useEffect(() => {
+    if (made === null) return undefined;
+    const fade = setTimeout(() => setMade((current) => current === null ? null : { ...current, fading: true }), 4000);
+    const gone = setTimeout(() => setMade(null), 5000);
+    return () => { clearTimeout(fade); clearTimeout(gone); };
+  }, [made?.title, made?.card]);
+
+  async function submit(event?: FormEvent): Promise<void> {
+    event?.preventDefault();
     if (!ready || project === null || check === null) return;
     const sent = draft;
-    const made = await createTicket({
+    const given = agent === '' || !usable.some((row) => row.id === agent) ? null : agent;
+    const result = await createTicket({
       title, note: toLf(note), project,
       check: { id: check.id, revision: check.revision },
-      agent: agent === '' || !usable.some((row) => row.id === agent) ? null : agent,
+      agent: given,
       priority,
     });
-    if (!made.saved) return;
+    if (!result.saved) return;
+    writeLastTicketProject(project);
     clearNewTicketDraft(sent);
     if (!mounted.current || draftNow.current !== sent) return;
+    if (createMore) {
+      const kept = { ...EMPTY_TICKET_DRAFT, project, check: check.id, agent: given ?? '', priority };
+      draftNow.current = kept;
+      writeNewTicketDraft(kept);
+      setDraft(kept);
+      replaceNote('');
+      setMade({ title: sent.title.trim(), card: result.card, fading: false });
+      form.current?.querySelector<HTMLElement>('input[name="title"]')?.focus();
+      return;
+    }
     setDraft(EMPTY_TICKET_DRAFT);
-    setPriority('none');
-    setNoteStart({ generation: noteStart.generation + 1, text: '' });
-    if (made.card !== null) onCreated(made.card);
+    replaceNote('');
+    if (result.card !== null) onCreated(result.card);
   }
 
-  return <form className="ticket-form flex flex-col gap-4" aria-label="New ticket" onSubmit={(event) => { void submit(event); }}>
-    <Field label="Title" id={`${ids}-title`}>
-      <Input name="title" type="text" required maxLength={256} value={title} autoFocus
-        onChange={(event) => editDraft({ title: event.target.value })} />
-    </Field>
-    <Field label="Note (optional)" id={`${ids}-note`}>
-      <div data-ticket-note="">
-        <NoteField key={noteStart.generation} initial={noteStart.text} value={note} onNote={(text) => editDraft({ note: text })} />
+  function discard(): void {
+    clearNewTicketDraft(draftNow.current);
+    const fresh = openingDraft(floor, projects);
+    draftNow.current = fresh;
+    setDraft(fresh);
+    replaceNote('');
+  }
+
+  function keys(event: KeyboardEvent<HTMLFormElement>): void {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      void submit();
+      return;
+    }
+    const chip = CHIP_KEYS[event.key];
+    if (chip === undefined || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (isTypingTarget(event.target as HTMLElement)) return;
+    const trigger = event.currentTarget.querySelector<HTMLButtonElement>(`[data-field="${chip}"]`);
+    if (trigger === null || trigger.disabled) return;
+    event.preventDefault();
+    setAsked((now) => ({ ...now, [chip]: now[chip as keyof typeof now] + 1 }));
+  }
+
+  function pasted(event: ClipboardEvent<HTMLInputElement>): void {
+    if (title !== '') return;
+    const split = splitPaste(event.clipboardData.getData('text'));
+    if (split === null) return;
+    event.preventDefault();
+    undo.current = { split, note };
+    const joined = note.trim() === '' ? split.note : `${note.trimEnd()}\n\n${split.note}`;
+    editDraft({ title: split.title, note: joined });
+    replaceNote(joined);
+  }
+
+  function undoPaste(event: KeyboardEvent<HTMLInputElement>): void {
+    const back = undo.current;
+    if (back === null || event.key.toLowerCase() !== 'z' || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
+    if (draftNow.current.title !== back.split.title) return;
+    event.preventDefault();
+    undo.current = null;
+    editDraft({ title: back.split.plain.slice(0, 256), note: back.note });
+    replaceNote(back.note);
+  }
+
+  function openSimilar(card: string): void {
+    if (armed === card) onCreated(card);
+    else setArmed(card);
+  }
+
+  const mac = isMac();
+  const projectChip = projects.length > 1 || chosenProject !== null && project === null
+    ? <Select name="project" aria-label="Project" value={project ?? ''} placeholder="Choose a project" className={cn(CHIP, 'bg-transparent')} listClassName={CHIP_LIST}
+      onValueChange={(value) => { editDraft({ project: value, check: null, agent: '' }); }}
+      options={projects.map((entry) => ({ value: entry.id, label: entry.label }))} />
+    : <span className="text-small font-medium text-muted">{projects[0]?.label ?? 'New ticket'}</span>;
+  const outcome = project === null || check === null ? null
+    : outcomeSentence(floor, { choice: agent === '' ? null : chosen, priority, mayAlreadyPass: check.mayAlreadyPass });
+
+  return <form ref={form} className="ticket-form flex flex-col" aria-label="New ticket" onSubmit={(event) => { void submit(event); }} onKeyDownCapture={keys}>
+    <header className="flex items-center gap-2 px-6 pt-4 pb-2">
+      {projectChip}
+      <span aria-hidden="true" className="text-muted">›</span>
+      <span className="text-small font-medium text-ink">New ticket</span>
+      {onCancel === undefined ? null : <IconButton label="Close ticket dialog" className="ticket-dialog-close ml-auto" icon={<X {...ICON} />} onClick={onCancel} />}
+    </header>
+    <div className="flex flex-col gap-3 px-6 pb-4">
+      {hasText(opened) && !requested && draft === opened
+        ? <p className="ticket-draft-kept m-0 flex flex-wrap items-center gap-2 text-small text-muted" role="status">Draft kept.
+          <Button variant="ghost" size="sm" className="ticket-draft-discard" onClick={discard}>Discard</Button></p> : null}
+      <div className="flex flex-col gap-1">
+        <Input name="title" type="text" required maxLength={256} value={title} autoFocus aria-label="Title" placeholder="Ticket title"
+          aria-invalid={titleLong === null ? undefined : true}
+          className="h-auto border-transparent bg-transparent px-0 py-1 text-page font-semibold hover:border-transparent focus-visible:border-transparent"
+          onChange={(event) => { undo.current = null; setArmed(null); editDraft({ title: event.target.value }); }}
+          onPaste={pasted} onKeyDown={undoPaste} />
+        {titleLong !== null ? <p className="ticket-title-count m-0 text-small text-danger" role="alert">{titleLong}</p>
+          : bytes >= TITLE_COUNT_FROM ? <p className="ticket-title-count m-0 text-small text-muted">{bytes} of {TITLE_LIMIT_BYTES} bytes</p> : null}
       </div>
-    </Field>
-    {projects.length > 1 || chosenProject !== null && project === null ? <Field label="Project" id={`${ids}-project`}>
-      <Select id={`${ids}-project`} name="project" value={project ?? ''} placeholder="Choose a project"
-        onValueChange={(value) => { editDraft({ project: value, check: null, agent: '' }); }}
-        options={projects.map((entry) => ({ value: entry.id, label: entry.label }))} />
-    </Field> : null}
-    {checks.length > 0 ? <Field label="Done when" id={`${ids}-check`}>
-      <Select id={`${ids}-check`} name="check" value={check?.id ?? ''} placeholder="Choose a check"
-        onValueChange={(value) => editDraft({ check: value })}
-        options={checks.map((entry) => ({ value: entry.id, label: choiceLabel(entry) }))} />
-    </Field> : null}
-    <Field label="Priority" id={`${ids}-priority`}>
-      <Select id={`${ids}-priority`} name="priority" value={priority} options={PRIORITY_OPTIONS}
-        onValueChange={(value) => setPriority(priorityOf(value) ?? 'none')} />
-    </Field>
-    {chosenCheck !== null && check === null && project !== null ? <p className={HINT} role="status">The saved check is no longer available. Choose a check before creating this ticket.</p> : null}
-    {chosenProject !== null && project === null ? <p className={HINT} role="status">The saved project is no longer available. Choose a project before creating this ticket.</p> : null}
-    {noProjects(floor) ? <NoTicketProjectHint floor={floor} />
-      : project === null ? <p className={HINT}>Project choices are unavailable. Open Setup to check the project and its completion check.</p>
-      : usable.length === 0 ? <div className="flex flex-col items-start gap-2 rounded-lg border border-line bg-surface-2 p-3" data-no-agent="true">
-      <p className={HINT}>{agentChoiceSentence(floor, project)}</p>
-      {onHire !== undefined && hireSwitchOn(floor)
-        ? <Button size="sm" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</Button>
-        : <p className={HINT}>Open Settings to check whether hiring is available.</p>}
-    </div> : <Field label="Give to agent (optional)" id={`${ids}-agent`}>
-      <Select id={`${ids}-agent`} name="agent" value={agent} onValueChange={(value) => editDraft({ agent: value })}
-        options={[{ value: '', label: 'Not yet' },
-          ...usable.map((row) => ({ value: row.id, label: row.name })),
-          ...unrecorded.map((row) => ({ value: row.id, label: `${row.name} (hired before projects were recorded)`, disabled: true }))]} />
-    </Field>}
-    {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
-    <div className={FORM_ACTIONS}>
-      <Button type="submit" variant="primary" className="ticket-create" aria-disabled={!ready || undefined} disabled={!ready}
-        title={ready ? undefined : ticket.sending ? 'Wait for the current request to finish.' : !open
-          ? 'Reconnect to Dudes before creating a ticket.' : title.trim() === '' ? 'Enter a title.'
-            : tooLong !== null ? tooLong : project === null ? 'Choose a project.' : 'Choose a completion check.'}>Create ticket</Button>
-      {onCancel === undefined ? null : <Button className="ticket-form-cancel" onClick={onCancel}>Cancel</Button>}
+      {similar.length === 0 ? null : <ul className="ticket-similar m-0 flex list-none flex-col gap-1 p-0" aria-label="Similar open tickets">
+        {similar.map((card) => <li key={card.id} className="flex flex-wrap items-center gap-x-2 text-small text-muted">
+          <span className="min-w-0 truncate">Similar open ticket: <span className="text-ink">{card.title}</span> · {stateName(card.status)}</span>
+          <Button variant="ghost" size="sm" className="ticket-similar-open" onClick={() => openSimilar(card.id)}>{armed === card.id ? 'Leave draft and open' : 'Open'}</Button>
+          {armed === card.id ? <span>Your draft is kept for when you come back.</span> : null}
+        </li>)}
+      </ul>}
+      <div data-ticket-note="">
+        <NoteField key={noteStart.generation} initial={noteStart.text} value={note} onNote={(text) => editDraft({ note: text })}
+          bare placeholder="Add a note (Markdown)" />
+      </div>
+      <div className="ticket-chips flex flex-wrap items-center gap-2" role="group" aria-label="Ticket properties">
+        <Select name="priority" aria-label="Priority" value={priority} openRequest={asked.priority} className={CHIP} listClassName={CHIP_LIST}
+          onValueChange={(value) => editDraft({ priority: priorityOf(value) ?? 'none' })}
+          options={PRIORITY_OPTIONS.map((entry) => ({
+            value: entry.value, label: entry.label, short: entry.value === 'none' ? 'Priority' : entry.label,
+            icon: <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-pill', DOT[entry.value])} />,
+          }))} />
+        {checks.length > 0 ? <Select name="check" aria-label="Done when" value={check?.id ?? ''} openRequest={asked.check} placeholder="Done when: choose a check" className={cn(CHIP, 'max-w-80')} listClassName={CHIP_LIST}
+          onValueChange={(value) => editDraft({ check: value })}
+          options={checks.map((entry) => ({ value: entry.id, label: choiceLabel(entry), short: `Done when: ${choiceLabel(entry)}` }))} /> : null}
+        {project === null || noProjects(floor) || usable.length === 0 ? null
+          : <Select name="agent" aria-label="Agent" value={agent} openRequest={asked.agent} className={cn(CHIP, chosen?.full === true && 'border-danger text-danger')} listClassName={CHIP_LIST}
+            onValueChange={(value) => editDraft({ agent: value })}
+            options={[{ value: '', label: 'Not yet', short: 'Agent: Not yet' },
+              ...choices.map((choice) => ({
+                value: choice.id, disabled: choice.full,
+                label: `${choice.name} · ${stateWords(choice)} · ${choice.own ? 'Own copy' : 'Shared folder'}${choice.id === suggested ? ' · Suggested' : ''}`,
+                short: `Agent: ${choice.name}${choice.full ? ' (queue full)' : ''}`,
+              })),
+              ...unrecorded.map((row) => ({ value: row.id, label: `${row.name} (hired before projects were recorded)`, disabled: true }))]} />}
+      </div>
+      {chosenCheck !== null && check === null && project !== null ? <p className={HINT} role="status">The saved check is no longer available. Choose a check before creating this ticket.</p> : null}
+      {chosenProject !== null && project === null ? <p className={HINT} role="status">The saved project is no longer available. Choose a project before creating this ticket.</p> : null}
+      {noProjects(floor) ? <NoTicketProjectHint floor={floor} />
+        : project === null ? <p className={HINT}>Project choices are unavailable. Open Setup to check the project and its completion check.</p>
+          : usable.length === 0 ? <div className="flex flex-wrap items-center gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2" data-no-agent="true">
+            <p className={cn(HINT, 'min-w-0 flex-1')}>{agentChoiceSentence(floor, project)}</p>
+            {onHire !== undefined && hireSwitchOn(floor)
+              ? <Button size="sm" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</Button>
+              : <p className={HINT}>Open Settings to check whether hiring is available.</p>}
+          </div> : null}
+      {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
     </div>
+    <footer className="ticket-form-foot sticky bottom-0 flex flex-col gap-3 border-t border-line bg-surface px-6 py-3">
+      {made === null ? null : <p className={cn('ticket-made m-0 flex items-center gap-2 text-small text-ink transition-opacity duration-700', made.fading && 'opacity-0')} role="status">
+        <span className="min-w-0 truncate">Created: {made.title}</span>
+        {made.card === null ? null : <>
+          <span aria-hidden="true">·</span>
+          <Button variant="ghost" size="sm" className="ticket-made-open" onClick={() => { if (made.card !== null) onCreated(made.card); }}>Open</Button></>}
+      </p>}
+      {outcome === null ? null : <p className="ticket-outcome m-0 text-small text-ink" role="status">{outcome}</p>}
+      {ready ? null : <p className={cn('ticket-create-reason m-0 text-small', titleLong !== null || tooLong !== null || chosen?.full === true ? 'text-danger' : 'text-muted')}>{reason}</p>}
+      <div className={cn(FORM_ACTIONS, 'justify-between')}>
+        <Switch label="Create more" checked={createMore} className="ticket-create-more items-center gap-3"
+          onCheckedChange={(on) => { setCreateMore(on); writeCreateMore(on); }} />
+        <div className="flex items-center gap-2">
+          {onCancel === undefined ? null : <Button className="ticket-form-cancel" onClick={onCancel}>Cancel</Button>}
+          <Button type="submit" variant="primary" className="ticket-create" aria-disabled={!ready || undefined} disabled={!ready}
+            aria-keyshortcuts={mac ? 'Meta+Enter' : 'Control+Enter'} title={reason ?? undefined}>
+            Create ticket<kbd className="ml-2 rounded-sm bg-accent-fg/20 px-1.5 font-sans text-caption font-medium">{mac ? '⌘↵' : 'Ctrl+↵'}</kbd></Button>
+        </div>
+      </div>
+    </footer>
   </form>;
 }
 
@@ -381,9 +556,13 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
         const inColumn = columns[column.key];
         return <section className="flex min-w-0 flex-col gap-3 rounded-lg bg-surface-2 p-3" key={column.key} data-column={COLUMN_TONE[column.key]}
           data-ticket-column={column.key} aria-label={column.title}>
-          <h3 className="m-0 flex items-center gap-2 text-small font-semibold text-ink">
-            <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-pill', COLUMN_DOT[column.key])} />
-            {column.title} ({inColumn.length})</h3>
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="m-0 flex items-center gap-2 text-small font-semibold text-ink">
+              <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-pill', COLUMN_DOT[column.key])} />
+              {column.title} ({inColumn.length})</h3>
+            {column.key === 'todo' && floor.ticket ? <IconButton label="New ticket in To do" size="sm" className="ticket-column-new"
+              icon={<Plus {...ICON} />} disabled={!ticketActionsOpen(floor)} aria-haspopup="dialog" onClick={(event) => onNewTicket(event.currentTarget)} /> : null}
+          </div>
           <ul className="m-0 flex list-none flex-col gap-3 p-0">{inColumn.map(draw)}</ul>
           {inColumn.length === 0 ? <p className="ticket-empty m-0 rounded-md border border-dashed border-line-strong px-3 py-4 text-small text-muted">{filtered
             ? 'No tickets match the search or filters.' : (floor.ticket ? EMPTY_COLUMN : EMPTY_COLUMN_CARDS)[column.key]}</p> : null}

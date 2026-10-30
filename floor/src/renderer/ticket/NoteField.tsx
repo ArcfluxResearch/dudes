@@ -19,6 +19,9 @@ export function NoteView({ text }: { readonly text: string }) {
   return <div className={cn('ticket-text md', MARKDOWN)}><AgentMarkdown text={text} links /></div>;
 }
 
+/** A bare note says its size only once it is getting long. */
+const NOTE_QUIET_BYTES = 4_096;
+
 const UNFIT = 'This note uses Markdown the rich editor cannot keep as written, so it opens as text.';
 
 type Mode =
@@ -26,11 +29,15 @@ type Mode =
   | { readonly kind: 'rich'; readonly editor: Editor }
   | { readonly kind: 'plain'; readonly why: string | null };
 
-export function NoteField({ initial, value, onNote }: {
+export function NoteField({ initial, value, onNote, bare = false, placeholder }: {
   /** The note as it was read; the editor starts from it and a save of an untouched note sends it back unchanged. */
   readonly initial: string;
   readonly value: string;
   readonly onNote: (value: string) => void;
+  /** No box around the text and no formatting bar until the note has focus, for a note that sits under a title. */
+  readonly bare?: boolean;
+  /** Shown while the note is empty. */
+  readonly placeholder?: string;
 }) {
   const field = useFieldControl();
   const [mode, setMode] = useState<Mode>({ kind: 'loading' });
@@ -48,9 +55,11 @@ export function NoteField({ initial, value, onNote }: {
 
   const tooLong = noteTooLong(value);
   const bytes = noteBytes(toLf(value));
-  return <div className="flex flex-col gap-2">
+  return <div className={cn('group/note relative flex flex-col gap-2')}>
+    {placeholder === undefined || value !== '' || mode.kind !== 'rich' ? null
+      : <p aria-hidden="true" className={cn('pointer-events-none absolute m-0 text-base text-subtle', bare ? 'top-2 left-0' : 'top-14 left-3')}>{placeholder}</p>}
     {mode.kind === 'loading' ? <p className="m-0 text-muted" role="status">Loading the editor…</p> : null}
-    {mode.kind === 'rich' ? mode.editor.richEditor({ id: field.id, original: initial, onNote, onUnfit: () => { setMode({ kind: 'plain', why: UNFIT }); } }) : null}
+    {mode.kind === 'rich' ? mode.editor.richEditor({ id: field.id, original: initial, onNote, bare, onUnfit: () => { setMode({ kind: 'plain', why: UNFIT }); } }) : null}
     {mode.kind === 'plain' ? <>
       {mode.why === null ? null : <p className="m-0 text-small text-muted" role="note">{mode.why}</p>}
       <TabList label="Note view">
@@ -59,9 +68,10 @@ export function NoteField({ initial, value, onNote }: {
       </TabList>
       {preview
         ? (value.trim() === '' ? <p className="m-0 text-muted">Nothing to preview.</p> : <NoteView text={toLf(value)} />)
-        : <Textarea rows={6} value={value} onChange={(event) => onNote(event.target.value)} />}
+        : <Textarea rows={bare ? 3 : 6} value={value} placeholder={placeholder} onChange={(event) => onNote(event.target.value)}
+          className={cn(bare && 'border-transparent bg-transparent px-0 hover:border-transparent focus-visible:border-transparent')} />}
     </> : null}
-    {tooLong === null
+    {tooLong === null && bare && bytes < NOTE_QUIET_BYTES ? null : tooLong === null
       ? <p className="m-0 text-small text-muted">{bytes.toLocaleString('en-US')} of {NOTE_LIMIT_BYTES.toLocaleString('en-US')} bytes</p>
       : <p className="m-0 text-small text-danger" role="alert">{tooLong}</p>}
   </div>;
