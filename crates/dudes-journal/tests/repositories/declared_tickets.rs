@@ -18,12 +18,25 @@ fn append(writer: &mut dudes_journal::Writer, record: Record) -> Lsn {
     writer.append(&entry(record)).unwrap()
 }
 
+fn seed(journal: &std::path::Path) -> (RepositoryTicketStarted, RepositoryTicketCreated) {
+    seed_authority(journal, plural_authority(), false)
+}
+
+pub(super) fn seed_recovery(
+    journal: &std::path::Path,
+) -> (RepositoryTicketStarted, RepositoryTicketCreated) {
+    seed_authority(journal, super::recovery::authority(), true)
+}
+
 #[expect(
     clippy::too_many_lines,
-    reason = "one fixture records all preceding catalog, trust, hire and ticket joins"
+    reason = "one fixture records catalog, trust, hire and frozen ticket joins"
 )]
-fn seed(journal: &std::path::Path) -> (RepositoryTicketStarted, RepositoryTicketCreated) {
-    let (prefix, mut hire) = plural_authority();
+fn seed_authority(
+    journal: &std::path::Path,
+    (prefix, mut hire): (Vec<Entry>, dudes_proto::repository::RepositoryHire),
+    subset: bool,
+) -> (RepositoryTicketStarted, RepositoryTicketCreated) {
     let (mut writer, _) = open(journal, options()).unwrap();
     let catalog_lsn = append(&mut writer, prefix[0].record.clone());
     let mut trust = std::collections::BTreeMap::new();
@@ -80,6 +93,7 @@ fn seed(journal: &std::path::Path) -> (RepositoryTicketStarted, RepositoryTicket
                 copies[0].repo_id.clone(),
                 copies
                     .iter()
+                    .take(if subset { 2 } else { copies.len() })
                     .map(|copy| RepositoryEntry {
                         repo_id: copy.repo_id.clone(),
                         value: copy.value.origin.clone(),
@@ -162,7 +176,7 @@ fn seed(journal: &std::path::Path) -> (RepositoryTicketStarted, RepositoryTicket
 )]
 fn a_version_66_cache_rebuilds_original_pins_instead_of_using_the_latest_grant() {
     use dudes_proto::repository::{HireRepositories, RepositoryTurnGrant, RepositoryTurnIssued};
-    assert_eq!(dudes_journal::PROJECTION_VERSION, 70);
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 71);
     let dir = tempfile::tempdir().unwrap();
     let journal = dir.path().join("journal");
     let cache = dir.path().join("state.redb");

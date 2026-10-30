@@ -7,7 +7,7 @@ use dudes_proto::repository::{HireRepositories, RepositoryEntry};
 use dudes_providers::adapter::AgentCtx;
 use dudes_providers::scoped::{ScopedLaunchInputs, ScopedPlatform, ScopedPrivatePaths};
 use dudes_supervisor::{Clock, Input, ManagedSpawn, ProcessHost, Rng, Supervisor};
-use dudes_types::{Lsn, Mode, Provider, TurnId};
+use dudes_types::{AgentId, Lsn, Mode, Provider, TurnId};
 
 use super::{Ctx, Daemon, PredicateRunner, Shared};
 use crate::chat_launch::{ScopedCompletion, ScopedPreparation};
@@ -27,6 +27,32 @@ pub(crate) enum ScopedReservation {
         attempt: Attempt,
         browser_generation: Option<u64>,
     },
+}
+
+impl ScopedReservation {
+    pub(super) fn attempt(&self) -> Attempt {
+        match self {
+            Self::Preparing { attempt, .. } | Self::Dispatching { attempt, .. } => *attempt,
+            Self::Ready { prepared, .. } => prepared.attempt,
+        }
+    }
+
+    pub(super) fn matches_candidate(
+        &self,
+        indexed: TurnId,
+        world: &dudes_supervisor::World,
+        candidate: Option<AgentId>,
+        expected: Option<Attempt>,
+    ) -> bool {
+        expected.is_some_and(|expected| {
+            indexed == expected.turn
+                && self.attempt() == expected
+                && matches!(expected.owner, InstructionObservationOwner::Managed { agent, turn, .. }
+                    if Some(agent) == candidate && turn == expected.turn
+                        && world.turns.get(&turn).is_some_and(|row| row.agent == agent))
+                && current_attempt(world, expected)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -105,6 +131,32 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
+    pub(super) fn scoped_browser_candidate<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        turn: TurnId,
+    ) -> Option<Attempt> {
+        let reservation = self.scoped_launches.get(&turn)?;
+        let ScopedReservation::Ready {
+            browser_generation,
+            prepared,
+            ..
+        } = reservation
+        else {
+            return None;
+        };
+        let agent = sup.world().turns.get(&turn)?.agent;
+        (self.resolved_browser_turn == Some((turn, *browser_generation))
+            && self.scoped_prepared_current(sup, prepared)
+            && reservation.matches_candidate(
+                turn,
+                sup.world(),
+                Some(agent),
+                Some(prepared.attempt),
+            ))
+        .then_some(prepared.attempt)
+    }
+
     pub(super) fn prepare_scoped_turn<R: Rng>(
         &mut self,
         turn: TurnId,
@@ -144,6 +196,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             started,
             owner: physical.owner,
         };
+        if self.scoped_launches.contains_key(&turn) {
+            preparation_failed(
+                queue,
+                attempt,
+                "scoped launch already has a preparation reservation",
+            );
+            return;
+        }
         if let Some(row) = sup.world().turns.get(&turn)
             && let Err(refusal) = self.admit_prior_attempt(sup, row.agent, Some(turn))
         {
@@ -157,14 +217,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
         if !self.repository_turn_allowed(sup.world(), turn) {
             preparation_failed(queue, attempt, "scoped repository admission is unavailable");
-            return;
-        }
-        if self.scoped_launches.contains_key(&turn) {
-            preparation_failed(
-                queue,
-                attempt,
-                "scoped launch already has a preparation reservation",
-            );
             return;
         }
         let prepared = self.scoped_request(attempt, launch, mcp_grant, sup);
@@ -325,7 +377,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             return Ok(());
         }
         let agent = sup.world().turns[&attempt.turn].agent;
-        if let Err(refusal) = self.admit_prior_attempt(sup, agent, Some(attempt.turn)) {
+        if let Err(refusal) =
+            self.admit_prior_attempt_with_candidate(sup, agent, Some(attempt.turn), Some(attempt))
+        {
             self.scoped_launches.remove(&attempt.turn);
             queue.push_back(Input::LaunchAdmissionRefused {
                 agent,
@@ -335,7 +389,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             });
             return Ok(());
         }
-        if !self.recovery_dispatch_allowed(sup, attempt.turn) {
+        if !self.recovery_dispatch_allowed_for(sup, attempt.turn, Some(attempt)) {
             self.scoped_launches.remove(&attempt.turn);
             preparation_failed(
                 queue,
@@ -428,7 +482,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             return Ok(());
         }
         let agent = sup.world().turns[&attempt.turn].agent;
-        if let Err(refusal) = self.admit_prior_attempt(sup, agent, Some(attempt.turn)) {
+        if let Err(refusal) =
+            self.admit_prior_attempt_with_candidate(sup, agent, Some(attempt.turn), Some(attempt))
+        {
             self.scoped_launches.remove(&attempt.turn);
             queue.push_back(Input::LaunchAdmissionRefused {
                 agent,
@@ -438,7 +494,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             });
             return Ok(());
         }
-        if !self.recovery_dispatch_allowed(sup, attempt.turn)
+        if !self.recovery_dispatch_allowed_for(sup, attempt.turn, Some(attempt))
             || !self.scoped_prepared_current(sup, prepared)
         {
             self.scoped_launches.remove(&attempt.turn);
