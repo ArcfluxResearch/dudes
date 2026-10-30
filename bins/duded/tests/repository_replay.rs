@@ -81,6 +81,10 @@ impl PredicateRunner for RealRunner {
     }
 }
 
+/// How long a real git or check process may run before a test gives up on it. It only catches a
+/// hang: a loaded runner starves a child for seconds, and the tests finish in well under one.
+const PROCESS_BOUND: Duration = Duration::from_secs(10);
+
 fn git_path() -> Option<OsString> {
     static GIT_PATH: OnceLock<Option<OsString>> = OnceLock::new();
     GIT_PATH.get_or_init(|| std::env::var_os("PATH")).clone()
@@ -90,10 +94,10 @@ fn git(cwd: &Path, args: &[&str]) -> String {
     let git = duded::worktree::git::Git::new(
         Arc::new(RealRunner(OneShot::new())),
         git_path(),
-        Duration::from_secs(3),
+        PROCESS_BOUND,
     );
     let args: Vec<_> = args.iter().map(std::ffi::OsStr::new).collect();
-    git.exec(cwd, &args, Duration::from_secs(3)).unwrap()
+    git.exec(cwd, &args, PROCESS_BOUND).unwrap()
 }
 
 fn identity(path: &Path) -> FileIdentity {
