@@ -113,6 +113,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     pub(super) fn decide_conversation(&mut self, agent: AgentId) {
+        if self.world.agents.get(&agent).is_some_and(|row| {
+            matches!(
+                row.repositories,
+                dudes_proto::repository::HireRepositories::Scoped(_)
+            )
+        }) && self.hold_for_issue_baseline(agent)
+        {
+            return;
+        }
         let Some(input) = self.conversation_input_for(agent) else {
             return;
         };
