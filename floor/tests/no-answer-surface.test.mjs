@@ -510,7 +510,7 @@ const ADMITTED_HANDLERS = [
     expression: "(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelModel(); } }" },
   { file: MODEL_PANEL, tag: 'input', handler: 'onChange', expression: '() => editModel(choice)' },
   { file: MODEL_PANEL, tag: 'input', handler: 'onChange', expression: '(event) => editModel(event.currentTarget.value)' },
-  { file: 'src/renderer/AgentDetail.tsx', tag: 'h2', handler: 'onDoubleClick', expression: '() => beginRename(`detail:${row.id}`, row)' },
+  { file: 'src/renderer/AgentHeader.tsx', tag: 'h2', handler: 'onDoubleClick', expression: '() => beginRename(`detail:${row.id}`, row)' },
   { file: LOOK_FIELDS, tag: 'input', handler: 'onChange', expression: '() => onChange(null)' },
   { file: LOOK_FIELDS, tag: 'input', handler: 'onChange', expression: '() => onChange(accent)' },
   ...HIRE_FIELDS.map(({ tag, change }) => ({ file: HIRE_FORM, tag, handler: tag === 'select' ? 'onValueChange' : 'onChange', expression: change })),
@@ -1226,7 +1226,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     clicks.push(...[...text.matchAll(/\bonclick\s*=/gi)].map(() => relative));
   }
   const expected = [
-    ...Array(4).fill('src/renderer/AgentDetail.tsx'),
+    'src/renderer/AgentDetail.tsx',
+    ...Array(4).fill('src/renderer/AgentHeader.tsx'),
     ...Array(3).fill('src/renderer/AgentOverview.tsx'),
     ...Array(4).fill('src/renderer/Roster.tsx'),
     'src/renderer/OverviewDialog.tsx',
@@ -1355,13 +1356,14 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.deepEqual(clicksIn(await readFile(resolve(source, 'renderer/AgentOverview.tsx'), 'utf8')), [
     '() => onOpenTicket(card.id)', '() => onOpenTicket(ticket.id)', '() => onOpenTicket(ticket.id)',
   ]);
-  assert.deepEqual(clicksIn(await readFile(resolve(source, 'renderer/AgentDetail.tsx'), 'utf8')).filter((click) => click !== '() => onTabChange(id)'), [
+  assert.deepEqual(clicksIn(await readFile(resolve(source, 'renderer/AgentDetail.tsx'), 'utf8')), ['() => onTabChange(id)']);
+  assert.deepEqual(clicksIn(await readFile(resolve(source, 'renderer/AgentHeader.tsx'), 'utf8')), [
     `(event) => {
       const question = event.currentTarget.closest('.agent-detail')?.querySelector<HTMLElement>('.agent-detail-question');
       question?.focus();
       question?.scrollIntoView({ block: 'nearest' });
     }`,
-    '() => onOpenTicket(action.card)', "() => onTabChange('chat')",
+    '() => onOpenTicket(action.card)', 'onTalk', '() => setTaskOpen(!taskOpen)',
   ]);
   assert.deepEqual(clicksIn(readError), ['onRetry']);
   assert.match(readError, /onRetry = refreshFloorSnapshot/);
@@ -1375,7 +1377,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     'cancelLook', '() => { void checkLook(browserLookDeps); }',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, MODEL_PANEL), 'utf8')), [
-    '() => { void removeOverride(row, browserModelDeps); }', 'cancelModel', '() => beginModel(row)',
+    '() => { if (editing) cancelModel(); else beginModel(row); }', '() => { void removeOverride(row, browserModelDeps); }', 'cancelModel',
     '() => { void checkModel(browserModelDeps); }',
   ]);
   const archiveSyntax = parsedByExtension(archive, ARCHIVED_AGENTS);
@@ -2809,7 +2811,9 @@ test('only the control module names the Floor’s stop: no route or member elsew
         const attempt = { verb: paused ? 'resume' : 'pause',
           payload: { request_id: 'A'.repeat(43), agent: ADA, control_lsn: LSN }, body: '{}', turnsAtSend: 3 };
         for (const control of [idle, { ...idle, attempt, sending: true }]) {
-          collect(renderToStaticMarkup(createElement(ControlStripView, { control, floor: state, row })));
+          for (const [part, resumeFirst] of [['primary', true], ['rest', false]]) {
+            collect(renderToStaticMarkup(createElement(ControlStripView, { control, floor: state, row, session: 1, part, resumeFirst })));
+          }
         }
         const outcomes = [{ kind: 'applied' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },
           { kind: 'refused', reason: 'agent_halted' }, { kind: 'conflict' }, { kind: 'forbidden' },
@@ -3110,7 +3114,7 @@ test('with the same rows but no control sibling, no Pause or Resume renders', ()
   const none = /control-pause|control-resume|data-control-|>Pause<|>Resume<|Check status/;
   const paused = center(floorWith(working({ paused: true }), undefined, undefined));
   // The paused row is on screen, so the absence below is the gate's, not a missing panel's.
-  assert.match(paused, /<p class="agent-detail-pause" role="status" data-pause-state="pausing">Pausing — /,
+  assert.match(paused, /<p class="agent-detail-state-text agent-detail-pause" role="status" data-pause-state="pausing">Pausing after this turn/,
     'the paused row is not drawn, so this proves nothing');
   assert.doesNotMatch(paused, none);
   const running = center(floorWith(working(), undefined, undefined));

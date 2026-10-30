@@ -371,6 +371,42 @@ pub fn files_changed(
     hired_roots: &[std::path::PathBuf],
     timeout: Duration,
 ) -> io::Result<Option<(bool, Evidence)>> {
+    files_changed_or_committed(
+        runner,
+        argv,
+        directories,
+        env,
+        path,
+        hired_roots,
+        timeout,
+        None,
+    )
+}
+
+/// What an unconfined hire adds to [`files_changed`]: for the declared directory at an index, whether
+/// its checkout holds a commit that changes a path since the round's baseline. `None` is an
+/// unanswered query.
+pub type CommittedSince<'a> = &'a dyn Fn(usize) -> Option<bool>;
+
+/// [`files_changed`], where `committed` also counts work an agent committed. A directory with no
+/// uncommitted change is asked; one with an uncommitted change already passes and is not.
+///
+/// # Errors
+/// As [`files_changed`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "files_changed's arguments plus the one query only an unconfined hire adds"
+)]
+pub fn files_changed_or_committed(
+    runner: &dyn PredicateRunner,
+    argv: &[String],
+    directories: &[std::path::PathBuf],
+    env: &[EnvVar],
+    path: Option<&OsStr>,
+    hired_roots: &[std::path::PathBuf],
+    timeout: Duration,
+    committed: Option<CommittedSince<'_>>,
+) -> io::Result<Option<(bool, Evidence)>> {
     if directories.is_empty() {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -378,7 +414,7 @@ pub fn files_changed(
     let mut changed = 0;
     let mut complete = true;
     let mut program = None;
-    for directory in directories {
+    for (index, directory) in directories.iter().enumerate() {
         let (resolved, spec) = spec_for_repositories(argv, directory, env, path, hired_roots)?;
         if program.as_ref().is_some_and(|program| program != &resolved) {
             return Err(io::ErrorKind::InvalidData.into());
@@ -394,7 +430,15 @@ pub fn files_changed(
                 timed_out: false,
                 ..
             }) if exit == 0 || exit == 1 => {
-                changed += usize::from(exit == 0);
+                if exit == 0 {
+                    changed += 1;
+                } else if let Some(committed) = committed {
+                    match committed(index) {
+                        Some(true) => changed += 1,
+                        Some(false) => {}
+                        None => complete = false,
+                    }
+                }
             }
             Ok(PredicateOutcome::Swept) => return Ok(None),
             Ok(_) | Err(_) => complete = false,
@@ -409,8 +453,13 @@ pub fn files_changed(
                 program,
                 exit: Some(i32::from(!pass)),
                 output_tail: format!(
-                    "Queried all {} declared repositories; {changed} contain uncommitted changes.",
-                    directories.len()
+                    "Queried all {} declared repositories; {changed} contain {}.",
+                    directories.len(),
+                    if committed.is_some() {
+                        "uncommitted changes or commits since the round baseline"
+                    } else {
+                        "uncommitted changes"
+                    }
                 ),
             },
         )

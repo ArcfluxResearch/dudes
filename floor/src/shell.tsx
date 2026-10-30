@@ -615,7 +615,7 @@ function SignedInShell() {
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className={cn('office-slot col-[3/-1] flex min-w-0 flex-col', STAGE_ROW, 'max-[801px]:order-first max-[801px]:min-h-80 max-[801px]:flex-1',
           drawerOpen && !focused && 'col-[3/4]', (focused || fullPanel) && 'hidden')}>
-          <div className="office-area relative flex min-h-0 flex-auto flex-col [&>[data-office]]:relative [&>[data-office]]:isolate [&>[data-office]]:min-h-72 [&>[data-office]]:flex-auto [&>[data-office]]:overflow-hidden [&>[data-office]]:bg-(--studio-background)">
+          <div className="office-area relative flex min-h-0 flex-auto flex-col [&:has(.office-failure)>[data-office]]:min-h-0 [&>[data-office]]:relative [&>[data-office]]:isolate [&>[data-office]]:min-h-72 [&>[data-office]]:flex-auto [&>[data-office]]:overflow-hidden [&>[data-office]]:bg-(--studio-background)">
             {page === null ? <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
               onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} /> : null}
             <FirstTask floor={floor} onHire={openHire} />
