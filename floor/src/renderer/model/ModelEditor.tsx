@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useSyncExternalStore } from 'react';
+import type { ReactNode } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
 import { Button, Field, Input } from '../../ui/index.ts';
@@ -14,7 +15,7 @@ import { ENGINE_OWN, REFUSAL_WORDS, browserModelDeps, beginModel, cancelModel, c
   modelAvailable, modelBlocked, modelProblem, modelView, removeOverride, submitModel, subscribeToModel } from './model.ts';
 
 /** Which model the agent runs, and, where the operator may, a way to change it for the next turn. */
-export function ModelEditor({ row }: { readonly row: AgentRow }) {
+export function ModelEditor({ row, children }: { readonly row: AgentRow; readonly children?: ReactNode }) {
   const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
   const state = useSyncExternalStore(subscribeToModel, getModelState, getModelState);
   const view = modelView(floor, row);
@@ -27,18 +28,24 @@ export function ModelEditor({ row }: { readonly row: AgentRow }) {
   const blocked = modelBlocked(state, floorSessionGeneration());
   const editing = available && state.editor === row.id && !blocked;
   const next = view.next === null ? ENGINE_OWN : view.next;
-  return <section className="agent-model flex flex-wrap items-center gap-x-3 gap-y-1 font-sans text-base text-muted" aria-label={`Model for ${name}`} data-agent-model={row.id}>
-    <p className="agent-model-line m-0" data-model-current={view.current ?? ''} data-model-next={view.next ?? ''}>
-      {view.current === null
-        ? <>Model: <strong>{next}</strong></>
-        : <>Model this turn: <strong>{view.current}</strong>{view.differs ? <> · next turn: <strong>{next}</strong></> : null}</>}
-      {view.pinned ? ' (set in the configuration, so the next turn uses it)' : ''}
-    </p>
+  const model = view.current === null
+    ? <>Model: <strong>{next}</strong></>
+    : <>Model this turn: <strong>{view.current}</strong>{view.differs ? <> · next turn: <strong>{next}</strong></> : null}</>;
+  return <section className="agent-model flex flex-wrap items-center gap-x-3 gap-y-1 font-sans text-small text-muted" aria-label={`Model for ${name}`} data-agent-model={row.id}>
+    {available && !view.pinned
+      ? <Button variant="ghost" size="sm" className="agent-model-line -ml-2 text-small" disabled={blocked} title={editing ? 'Close the model list' : 'Change model'}
+        aria-expanded={editing} data-model-current={view.current ?? ''} data-model-next={view.next ?? ''}
+        onClick={() => { if (editing) cancelModel(); else beginModel(row); }}>{model}</Button>
+      : <p className="agent-model-line m-0" data-model-current={view.current ?? ''} data-model-next={view.next ?? ''}>
+        {model}{view.pinned ? ' (set in the configuration, so the next turn uses it)' : ''}
+      </p>}
     {ran.length === 0 ? null : <p className="agent-model-line m-0" data-model-ran={ran.join(' ')}>
       {ran.length === 1 ? <>In use: <strong>{visibleFailure(ran[0])}</strong></> : <>Ran: <strong>{ran.map(visibleFailure).join(', ')}</strong></>}
     </p>}
-    {!available ? null : view.pinned ? <Button variant="ghost" size="sm" disabled={blocked}
-      onClick={() => { void removeOverride(row, browserModelDeps); }}>Remove my override</Button> : editing ? <form className="mt-[0.4rem] grid basis-full gap-3 rounded-lg border border-line bg-surface p-4" onSubmit={(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }}
+    {available && view.pinned ? <Button variant="ghost" size="sm" disabled={blocked}
+      onClick={() => { void removeOverride(row, browserModelDeps); }}>Remove my override</Button> : null}
+    {children}
+    {available && !view.pinned && editing ? <form className="mt-[0.4rem] grid basis-full gap-3 rounded-lg border border-line bg-surface p-4" onSubmit={(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }}
       onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelModel(); } }}>
       <fieldset className="model-choices m-0 grid max-h-56 min-w-0 gap-1.5 overflow-y-auto border-0 p-0">
         <legend className={`mb-1.5 p-0 ${LABEL}`}>Model for the next turn</legend>
@@ -61,7 +68,7 @@ export function ModelEditor({ row }: { readonly row: AgentRow }) {
       </div>
       <small className={NOTE}>A run already under way keeps its model. Dudes checks only the spelling; the app reports a name it does not know when the agent next runs.</small>
       {modelProblem(state.draft) === null ? null : <small role="status" className="text-small text-danger">{modelProblem(state.draft)}</small>}
-    </form> : <Button variant="ghost" size="sm" disabled={blocked} onClick={() => beginModel(row)}>Change model</Button>}
+    </form> : null}
     {mine && state.sending ? <small className={`basis-full ${NOTE}`} role="status">Saving model…</small> : null}
     {mine && state.outcome === 'changed' ? <small className={`basis-full ${NOTE}`} role="status">Saved. It applies from the next turn.</small> : null}
     {mine && state.outcome === 'refused' && state.reason !== null ? <small className={`basis-full ${NOTE}`} role="status">{REFUSAL_WORDS[state.reason]}</small> : null}

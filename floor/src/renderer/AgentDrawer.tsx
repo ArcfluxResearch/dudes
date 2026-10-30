@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { Disclosure } from '../ui/index.ts';
 import { AgentDetail } from './AgentDetail.tsx';
 import { AnswerForm, AnswerStatus } from './answer/AnswerPanel.tsx';
-import { ControlStatus, ControlStrip } from './control/ControlPanel.tsx';
+import { ControlStatus, ControlStrip, useControlNote } from './control/ControlPanel.tsx';
 import { ChatPanel } from './chat/ChatPanel.tsx';
 import { chatGate } from './chat/chat.ts';
 import { PauseAllReceipt } from './control/PauseAllControl.tsx';
@@ -15,6 +15,7 @@ import type { FloorState } from './floor/store.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from './focus.ts';
 import { GitPanel } from './git/GitPanel.tsx';
 import { goalGate } from './goal/goal.ts';
+import { controlGate } from './control/control.ts';
 import { FirstTaskForm, ticketActionsOpen } from './ticket/TicketBoard.tsx';
 import { freeTaskAgents } from './setup/nextStep.ts';
 import { GoalForm, GoalStatus } from './goal/GoalPanel.tsx';
@@ -30,7 +31,7 @@ import { RESUME_SWITCH } from './ticket/stuck.ts';
 import { RecoveryPanel, RecoveryReceipts } from './recovery/RecoveryPanel.tsx';
 import { switchedOffControls, UnavailableControls } from './settings/SettingsView.tsx';
 import type { AgentRow } from './scene/cast.ts';
-import { TerminalAttach } from './terminal/TerminalPanel.tsx';
+import { TerminalAttach, TerminalNote } from './terminal/TerminalPanel.tsx';
 import { readDetailTab, writeDetailTab } from './view.ts';
 import { Notice, cn } from '../ui/index.ts';
 
@@ -64,8 +65,7 @@ const DRAWER = cn('agent-drawer m-0 box-border flex min-w-0 flex-col overflow-hi
   'max-[801px]:has-[[data-detail-tab=chat]]:top-[var(--chat-viewport-top,0px)] max-[801px]:has-[[data-detail-tab=chat]]:bottom-auto',
   'max-[801px]:has-[[data-detail-tab=chat]]:h-[var(--chat-viewport-height,100dvh)]',
   'max-[801px]:has-[[data-detail-tab=chat]]:pb-[calc(max(1rem,env(safe-area-inset-bottom,0px))+var(--notice-room,0px))]',
-  '[&_[class~=agent-detail]]:border-0 [&_[class~=agent-detail]]:bg-transparent [&_[class~=agent-detail]]:p-0 [&_[class~=agent-detail]]:shadow-none',
-  '[&_[class~=agent-detail-identity]]:pr-8');
+  '[&_[class~=agent-detail]]:border-0 [&_[class~=agent-detail]]:bg-transparent [&_[class~=agent-detail]]:p-0 [&_[class~=agent-detail]]:shadow-none');
 const DOCKED = 'min-[801px]:relative min-[801px]:z-(--layer-panels) min-[801px]:w-[min(var(--side-width),45vw)] min-[801px]:flex-none min-[801px]:border-l min-[801px]:p-4';
 const IN_FOCUS = 'min-[801px]:relative min-[801px]:z-(--layer-panels) min-[801px]:w-auto min-[801px]:flex-none min-[801px]:rounded-[10px] min-[801px]:border min-[801px]:p-4';
 
@@ -84,6 +84,7 @@ export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, 
   readonly onReadRecoveryReceipt?: (request: string) => void;
   readonly onOpenTicket?: (id: string) => void;
 }) {
+  const controlNote = useControlNote(floor, row);
   const chatAvailable = chatGate(floor, row).open;
   const [detailTab, setDetailTab] = useState<DetailTab>(chatAvailable ? 'chat' : 'overview');
   useEffect(() => { setDetailTab(readDetailTab(undefined, chatAvailable ? 'chat' : 'overview')); }, [chatAvailable]);
@@ -124,6 +125,8 @@ export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, 
   const attachOff = switchedOffControls(floor).includes('terminal');
   const taskAgents = ticketActionsOpen(floor) && row !== null
     ? freeTaskAgents(floor).filter((agent) => agent.id === row.id) : [];
+  const gate = controlGate(floor, row);
+  const resumeOffered = gate.open && gate.offer === 'resume';
   const changeGoal = row !== null && goalGate(floor, row).open;
   return (
     <div className={cn(DRAWER, inFocus ? IN_FOCUS : DOCKED)} id="selected-agent-detail" key={selectedId ?? 'none'}
@@ -150,15 +153,18 @@ export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, 
               agents={floor.agents} retiredAgents={floor.retiredAgents} /> : null}
           git={floor.git ? <GitPanel row={row} active={detailTab === 'git'} /> : null}
           memory={<MemoryPanel agent={row.id} active={detailTab === 'memory'} crew={floor} />}
-          control={floor.settings && !floor.control && automaticHoldOf(row) !== null
-            ? <Notice tone="warn">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</Notice>
-            : <ControlStrip floor={floor} row={row} />}
+          control={(part, resumeFirst) => <ControlStrip floor={floor} row={row} part={part} resumeFirst={resumeFirst} />}
+          controlNote={controlNote}
+          resumeOffered={resumeOffered}
+          resumeOff={floor.settings && !floor.control && automaticHoldOf(row) !== null
+            ? <Notice tone="warn" className="basis-full p-2 text-small">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</Notice> : null}
           recovery={<RecoveryPanel floor={floor} row={row} onReadReceipt={onReadRecoveryReceipt} />}
           retire={switchedOff.includes('retire') ? null : <RetireMenuItem floor={floor} row={row} />}
           terminal={attachOff ? null : <TerminalAttach floor={floor} row={row} />}
+          terminalNote={attachOff ? null : <TerminalNote floor={floor} row={row} />}
           attachNote={attachOff && row.provider === 'claude'
             ? <p className="agent-attach-note m-0 text-small text-muted">To open the real CLI, turn on Attach terminals in Settings.</p> : null}
-          enable={switchedOff.length === 0 ? null : <Disclosure className="enable-controls"
+          enable={switchedOff.length === 0 ? null : <Disclosure className="enable-controls text-small open:basis-full" summaryClassName="text-small"
             summary={<>Enable more controls <span className="enable-controls-count text-small text-subtle">{switchedOff.length}</span></>}>
             {switchedOff.map((control) => <UnavailableControls key={control} floor={floor} control={control} />)}
           </Disclosure>}
