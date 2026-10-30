@@ -88,7 +88,10 @@ pub(super) fn apply(
     let project = match &entry.record {
         Record::ProjectRepositoriesRecorded { project, .. }
         | Record::RepositoryTrustSet { project, .. } => Some(project.as_str()),
-        Record::AgentHiredWithRepositories(hire) => Some(hire.repositories.project.id.as_str()),
+        Record::AgentHiredWithRepositories(hire)
+        | Record::AgentHiredWithUnconfinedRepositories(hire) => {
+            Some(hire.repositories.project.id.as_str())
+        }
         _ => entry
             .record
             .ticket_created()
@@ -125,24 +128,22 @@ pub(super) fn apply(
         })
         .transpose()?
         .flatten();
-    let trust_rows: Vec<RepositoryTrust> =
-        if matches!(entry.record, Record::AgentHiredWithRepositories(_))
-            || entry.record.ticket_start().is_some()
-            || matches!(entry.record, Record::TurnIssuedWithRepositories(_))
-        {
-            rows(trust)?
-        } else {
-            Vec::new()
-        };
-    let lease_rows: Vec<WorktreeRow> =
-        if matches!(entry.record, Record::AgentHiredWithRepositories(_))
-            || entry.record.ticket_start().is_some()
-            || matches!(entry.record, Record::TurnIssuedWithRepositories(_))
-        {
-            all_rows(leases)?
-        } else {
-            Vec::new()
-        };
+    let trust_rows: Vec<RepositoryTrust> = if entry.record.repository_hire().is_some()
+        || entry.record.ticket_start().is_some()
+        || matches!(entry.record, Record::TurnIssuedWithRepositories(_))
+    {
+        rows(trust)?
+    } else {
+        Vec::new()
+    };
+    let lease_rows: Vec<WorktreeRow> = if entry.record.repository_hire().is_some()
+        || entry.record.ticket_start().is_some()
+        || matches!(entry.record, Record::TurnIssuedWithRepositories(_))
+    {
+        all_rows(leases)?
+    } else {
+        Vec::new()
+    };
     let leases: Vec<_> = lease_rows
         .iter()
         .map(|row| RepositoryLease {

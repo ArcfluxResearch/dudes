@@ -272,6 +272,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let dudes_proto::repository::HireRepositories::Scoped(hire) = &row.repositories else {
             return Err(TicketReason::ProjectUnavailable);
         };
+        if hire.policy.require_confined().is_err() {
+            return Err(TicketReason::ProjectUnavailable);
+        }
         let check_root = hire
             .repositories
             .get(check_repo)

@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::Record;
 use crate::record::{TrustPin, TrustedRepository};
 use crate::repository::{
-    CatalogRepository, HireRepositories, HiredRepository, RepoId, RepositoryEntry, RepositorySet,
-    ScopedHireRepositories, ScopedRepositories, SingletonRepository, TicketDeclaration,
-    TicketRepositories,
+    CatalogRepository, Confinement, HireRepositories, HiredRepository, RepoId, RepositoryEntry,
+    RepositorySet, ScopedHireRepositories, ScopedRepositories, SingletonRepository,
+    TicketDeclaration, TicketRepositories,
 };
 
 /// Immutable observed revisions and permanent id bindings for one project.
@@ -168,6 +168,8 @@ pub enum RepositoryStateError {
     Review,
     /// Issue does not match the exact hire, active ticket round and selected copies.
     Issue,
+    /// The hire record kind does not match the confinement of its recorded policy.
+    Policy,
 }
 
 impl std::fmt::Display for RepositoryStateError {
@@ -185,6 +187,7 @@ impl std::fmt::Display for RepositoryStateError {
             Self::Start => "ticket start repository authority does not match",
             Self::Issue => "turn repository grant does not match",
             Self::Review => "repository review evidence does not match",
+            Self::Policy => "hire record kind does not match its repository policy",
         })
     }
 }
@@ -198,6 +201,7 @@ pub const fn is_kind(kind: crate::RecordKind) -> bool {
         crate::RecordKind::ProjectRepositoriesRecorded
             | crate::RecordKind::RepositoryTrustSet
             | crate::RecordKind::AgentHiredWithRepositories
+            | crate::RecordKind::AgentHiredWithUnconfinedRepositories
             | crate::RecordKind::TicketCreatedWithRepositories
             | crate::RecordKind::TicketEditedWithRepositories
             | crate::RecordKind::TicketStartedWithRepositories
@@ -242,7 +246,14 @@ pub fn validate_shape(record: &Record) -> Result<(), RepositoryStateError> {
             }
             validate_origins(std::iter::once(origin))
         }
-        Record::AgentHiredWithRepositories(hire) => validate_hire_shape(&hire.repositories),
+        Record::AgentHiredWithRepositories(hire) => {
+            validate_kind_policy(&hire.repositories, Confinement::Confined)?;
+            validate_hire_shape(&hire.repositories)
+        }
+        Record::AgentHiredWithUnconfinedRepositories(hire) => {
+            validate_kind_policy(&hire.repositories, Confinement::Unconfined)?;
+            validate_hire_shape(&hire.repositories)
+        }
         Record::TurnIssuedWithRepositories(issued) => {
             let grant = &issued.grant;
             if grant.project.is_empty() || grant.hired_lsn == Lsn::ZERO {
@@ -283,6 +294,17 @@ pub fn validate_shape(record: &Record) -> Result<(), RepositoryStateError> {
             validate_ticket_goal(&start.goal, &start.repositories.check)
         }
         _ => Ok(()),
+    }
+}
+
+fn validate_kind_policy(
+    scope: &ScopedRepositories,
+    kind: Confinement,
+) -> Result<(), RepositoryStateError> {
+    if scope.policy.confinement() == kind {
+        Ok(())
+    } else {
+        Err(RepositoryStateError::Policy)
     }
 }
 
@@ -631,6 +653,9 @@ fn validate_start(
     let Some(HireRepositories::Scoped(hire)) = before.hire else {
         return Err(RepositoryStateError::Start);
     };
+    if hire.policy.require_confined().is_err() {
+        return Err(RepositoryStateError::Start);
+    }
     if !ticket.queued
         || ticket.seq != start.expected_seq
         || ticket.status != CardStatus::Claimed

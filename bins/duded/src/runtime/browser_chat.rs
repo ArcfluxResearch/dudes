@@ -20,10 +20,19 @@ fn managed_launch_cwd<'a>(
         .ok_or_else(|| std::io::Error::other("managed repository authority is unavailable"))?;
     match launch {
         ManagedSpawn::Composed { spec, .. } if authority.singleton().is_some() => Ok(&spec.cwd),
-        ManagedSpawn::Scoped { .. } => authority
-            .grant()
-            .map(|grant| grant.repositories.primary().execution.directory.as_path())
-            .ok_or_else(|| std::io::Error::other("scoped repository authority is unavailable")),
+        ManagedSpawn::Scoped { .. } => {
+            let grant = authority.grant().ok_or_else(|| {
+                std::io::Error::other("scoped repository authority is unavailable")
+            })?;
+            match grant.policy.confinement() {
+                dudes_proto::repository::Confinement::Confined => {
+                    Ok(grant.repositories.primary().execution.directory.as_path())
+                }
+                dudes_proto::repository::Confinement::Unconfined => Err(std::io::Error::other(
+                    "unconfined repository hires cannot launch yet",
+                )),
+            }
+        }
         ManagedSpawn::Composed { .. } => Err(std::io::Error::other(
             "managed launch authority differs from its issue",
         )),
@@ -800,7 +809,8 @@ pub(super) fn attribution_session(
             browser_onboarding: Some(meta),
             ..
         } => Some(meta.session_digest),
-        Record::AgentHiredWithRepositories(hire) => hire
+        Record::AgentHiredWithRepositories(hire)
+        | Record::AgentHiredWithUnconfinedRepositories(hire) => hire
             .browser_onboarding
             .as_ref()
             .map(|meta| meta.session_digest),

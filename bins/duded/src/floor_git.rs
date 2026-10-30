@@ -152,6 +152,9 @@ impl GitTarget {
                 _ => Some(Self::Refused(GitState::InvalidSelection)),
             },
             HireRepositories::Scoped(hire) => {
+                if hire.policy.require_confined().is_err() {
+                    return Some(Self::Refused(GitState::InvalidSelection));
+                }
                 let full_hire = hire.recorded();
                 let ids = match &request.repositories {
                     None if hire.repositories.entries().len() == 1 => hire
@@ -521,6 +524,33 @@ mod tests {
     use super::*;
 
     const AGENT: &str = "01J00000000000000000000000";
+
+    #[test]
+    fn an_unconfined_hire_is_refused_a_git_view_while_a_confined_one_is_read() {
+        let (mut world, confined, agent) = crate::classify::scoped_socket::tests::pending_hire();
+        world
+            .apply_checked(Lsn::from_parts(1, 256).unwrap(), &confined)
+            .unwrap();
+        let request = GitRequest::singleton(agent);
+        assert!(!matches!(
+            GitTarget::selected(&world, &request),
+            Some(GitTarget::Refused(_))
+        ));
+        let (mut world, _, _) = crate::classify::scoped_socket::tests::pending_hire();
+        let unconfined = Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record: dudes_proto::record::samples::record(
+                dudes_proto::RecordKind::AgentHiredWithUnconfinedRepositories,
+            ),
+        };
+        world
+            .apply_checked(Lsn::from_parts(1, 256).unwrap(), &unconfined)
+            .unwrap();
+        assert!(matches!(
+            GitTarget::selected(&world, &request),
+            Some(GitTarget::Refused(GitState::InvalidSelection))
+        ));
+    }
 
     #[test]
     fn a_singleton_request_is_one_object_with_one_agent_id() {

@@ -259,6 +259,9 @@ fn repository_subjects(
     let dudes_proto::repository::HireRepositories::Scoped(hire) = &row.repositories else {
         return None;
     };
+    if hire.policy.require_confined().is_err() {
+        return None;
+    }
     let full_hire = hire.recorded();
     capture
         .grant

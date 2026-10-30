@@ -4707,6 +4707,123 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
+          "description": "Atomically assigns every recorded owned copy to one hire that may write all of them.",
+          "properties": {
+            "accent": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AccentColour"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Named accent, when selected."
+            },
+            "at": {
+              "$ref": "#/$defs/Timestamp",
+              "description": "The daemon's wall clock as `Clock::now()` reported it when the supervisor emitted the\n`Persist` that carried this record, UTC milliseconds. `lsn` orders; `at` labels —\nprojections tolerate a non-monotone `at` (clock steps, NTP) and never sort by it, and it\nis never an input to `decide()` (invariant 5)."
+            },
+            "browser_onboarding": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BrowserOnboardingHire"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Browser retry and session association for this complete atomic hire."
+            },
+            "budget": {
+              "$ref": "#/$defs/AgentBudget",
+              "description": "Daily admission ceilings."
+            },
+            "character": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CastCharacter"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Authored appearance, when selected."
+            },
+            "department": {
+              "description": "Floor department.",
+              "type": "string"
+            },
+            "id": {
+              "$ref": "#/$defs/AgentId",
+              "description": "New agent identity."
+            },
+            "max_budget": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Usd"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Recorded provider budget backstop."
+            },
+            "max_turns": {
+              "description": "Recorded provider turn limit.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ModelName"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Recorded model selection."
+            },
+            "name": {
+              "description": "Display name.",
+              "type": "string"
+            },
+            "provider": {
+              "$ref": "#/$defs/Provider",
+              "description": "Selected engine."
+            },
+            "repositories": {
+              "$ref": "#/$defs/ScopedRepositories",
+              "description": "Complete atomic copy assignment."
+            },
+            "role": {
+              "description": "Display role.",
+              "type": "string"
+            },
+            "t": {
+              "const": "agent_hired_with_unconfined_repositories",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "id",
+            "name",
+            "role",
+            "department",
+            "provider",
+            "budget",
+            "repositories"
+          ],
+          "type": "object"
+        },
+        {
           "description": "`agent.hire`. Creates a managed agent; there is no attached-by-default option.",
           "properties": {
             "accent": {
@@ -20280,6 +20397,11 @@
         {
           "const": "working_tree_v1",
           "description": "Working tree edits only; Git metadata remains protected.",
+          "type": "string"
+        },
+        {
+          "const": "operator_trust_v1",
+          "description": "Every hired copy is writable with the trust of a single-repository agent.",
           "type": "string"
         }
       ]

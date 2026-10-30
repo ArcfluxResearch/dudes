@@ -752,7 +752,9 @@ fn validate_recap(
         let source = prior(history, facts, *at)?;
         let eligible = match (source.reference().kind, source.reference().owner) {
             (
-                RecordKind::AgentHired | RecordKind::AgentHiredWithRepositories,
+                RecordKind::AgentHired
+                | RecordKind::AgentHiredWithRepositories
+                | RecordKind::AgentHiredWithUnconfinedRepositories,
                 RecoveryWitnessOwner::Agent(agent),
             ) => agent == work.agent && *at == record.binding.hired_lsn,
             (RecordKind::AgentLookChanged, RecoveryWitnessOwner::Agent(agent)) => {

@@ -3161,27 +3161,35 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Err(refusal) => return ManagedLaunch::Refused(LaunchError::McpServer(refusal)),
         };
         let agent_dir = self.agent_dir(agent);
-        let IssueRepositories::Legacy(repository) = repositories else {
-            if !mcp_servers.is_empty() || row.mcp.first_edit.is_some() {
-                return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
-            }
-            let mut env = self.config.daemon_env.clone();
-            if let Some(dir) = &self.config.agent_bin {
-                prepend_agent_bin(&mut env, dir);
-            }
-            return ManagedLaunch::Ready(Box::new(PreparedLaunch {
-                spawn: ManagedSpawn::Scoped {
-                    task: task.to_owned(),
-                    session: session.clone(),
-                    selection: selection.clone(),
-                    env,
-                },
-                repositories: repositories.clone(),
-                policy_lsn: row.mcp.revision,
-                task: task.to_owned(),
-                session: session.clone(),
-                selection: selection.clone(),
-            }));
+        let repository = match repositories {
+            IssueRepositories::Legacy(repository) => repository,
+            IssueRepositories::Scoped(grant) => match grant.policy.confinement() {
+                dudes_proto::repository::Confinement::Confined => {
+                    if !mcp_servers.is_empty() || row.mcp.first_edit.is_some() {
+                        return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
+                    }
+                    let mut env = self.config.daemon_env.clone();
+                    if let Some(dir) = &self.config.agent_bin {
+                        prepend_agent_bin(&mut env, dir);
+                    }
+                    return ManagedLaunch::Ready(Box::new(PreparedLaunch {
+                        spawn: ManagedSpawn::Scoped {
+                            task: task.to_owned(),
+                            session: session.clone(),
+                            selection: selection.clone(),
+                            env,
+                        },
+                        repositories: repositories.clone(),
+                        policy_lsn: row.mcp.revision,
+                        task: task.to_owned(),
+                        session: session.clone(),
+                        selection: selection.clone(),
+                    }));
+                }
+                dudes_proto::repository::Confinement::Unconfined => {
+                    return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
+                }
+            },
         };
         let ctx = AgentCtx {
             agent,
@@ -4698,7 +4706,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
             Command::HireWithRepositories(mut hire) => {
                 hire.id = AgentId::from_ulid(self.rng.ulid());
-                self.persist(Record::AgentHiredWithRepositories(hire), Then::Fold);
+                self.persist(hire.into_record(), Then::Fold);
             }
             Command::SetWorkspaceTrust {
                 workspace_id,

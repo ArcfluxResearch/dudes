@@ -685,6 +685,8 @@ pub enum Record {
     },
     /// Atomically assigns every recorded owned copy to one restricted hire.
     AgentHiredWithRepositories(Box<crate::repository::RepositoryHire>),
+    /// Atomically assigns every recorded owned copy to one hire that may write all of them.
+    AgentHiredWithUnconfinedRepositories(Box<crate::repository::RepositoryHire>),
     /// `agent.hire`. Creates a managed agent; there is no attached-by-default option.
     AgentHired {
         /// The new agent.
@@ -2406,6 +2408,16 @@ pub struct WorktreeLease<'a> {
 }
 
 impl Record {
+    /// The repository hire a confined or an unconfined hire record carries.
+    #[must_use]
+    pub const fn repository_hire(&self) -> Option<&crate::repository::RepositoryHire> {
+        match self {
+            Self::AgentHiredWithRepositories(hire)
+            | Self::AgentHiredWithUnconfinedRepositories(hire) => Some(hire),
+            _ => None,
+        }
+    }
+
     /// Normalize both lease carriers without inventing cleanup authority for older records.
     #[must_use]
     pub fn worktree_lease(&self) -> Option<WorktreeLease<'_>> {
@@ -2733,6 +2745,9 @@ impl Record {
             Self::ProjectRepositoriesRecorded { .. } => RecordKind::ProjectRepositoriesRecorded,
             Self::RepositoryTrustSet { .. } => RecordKind::RepositoryTrustSet,
             Self::AgentHiredWithRepositories(_) => RecordKind::AgentHiredWithRepositories,
+            Self::AgentHiredWithUnconfinedRepositories(_) => {
+                RecordKind::AgentHiredWithUnconfinedRepositories
+            }
             Self::TicketCreatedWithRepositories(_) => RecordKind::TicketCreatedWithRepositories,
             Self::TicketEditedWithRepositories(_) => RecordKind::TicketEditedWithRepositories,
             Self::TicketStartedWithRepositories(_) => RecordKind::TicketStartedWithRepositories,
@@ -2995,6 +3010,8 @@ pub enum RecordKind {
     InstructionObservationBatchFinished = 111,
     /// [`Record::WorktreeLeasedWithIdentity`].
     WorktreeLeasedWithIdentity = 112,
+    /// [`Record::AgentHiredWithUnconfinedRepositories`].
+    AgentHiredWithUnconfinedRepositories = 113,
 }
 
 impl RecordKind {
@@ -3051,8 +3068,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 112] {
-        let mut kinds = [Self::AgentHired; 112];
+    const fn known_kinds() -> [Self; 113] {
+        let mut kinds = [Self::AgentHired; 113];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -3124,6 +3141,7 @@ impl RecordKind {
         kinds[109] = Self::InstructionObservationBatchStarted;
         kinds[110] = Self::InstructionObservationBatchFinished;
         kinds[111] = Self::WorktreeLeasedWithIdentity;
+        kinds[112] = Self::AgentHiredWithUnconfinedRepositories;
         kinds
     }
 
@@ -3189,6 +3207,7 @@ impl RecordKind {
                 | Self::InstructionObservationBatchStarted
                 | Self::InstructionObservationBatchFinished
                 | Self::WorktreeLeasedWithIdentity
+                | Self::AgentHiredWithUnconfinedRepositories
         )
     }
 
@@ -3685,6 +3704,11 @@ pub mod samples {
                     project: "service".into(), repo_id: crate::repository::RepoId::parse("primary").unwrap(),
                     catalog_lsn: Lsn::from_parts(1, 0).unwrap(), origin: repository_catalog().primary().origin.clone(), pin,
                 }
+            }
+            RecordKind::AgentHiredWithUnconfinedRepositories => {
+                let Record::AgentHiredWithRepositories(mut hire) = record(RecordKind::AgentHiredWithRepositories) else { unreachable!() };
+                hire.repositories.policy = crate::repository::RepositoryPolicy::OperatorTrustV1;
+                Record::AgentHiredWithUnconfinedRepositories(hire)
             }
             RecordKind::AgentHiredWithRepositories => Record::AgentHiredWithRepositories(Box::new(crate::repository::RepositoryHire {
                 id: agent(), name: "Kim".into(), character: None, accent: None, role: "engineer".into(),
@@ -4809,7 +4833,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 112);
+        assert_eq!(RecordKind::KNOWN.len(), 113);
         for &kind in RecordKind::KNOWN[46..66]
             .iter()
             .chain(&RecordKind::KNOWN[94..100])
@@ -5336,6 +5360,27 @@ mod tests {
     }
 
     #[test]
+    fn the_unconfined_hire_kind_is_a_required_frame_with_the_confined_hires_fields() {
+        let kind = RecordKind::AgentHiredWithUnconfinedRepositories;
+        assert_eq!(kind.tag(), 113);
+        assert_eq!(RecordKind::from_tag(113), Some(kind));
+        assert!(kind.requires_required_frame());
+        let record = samples::record(kind);
+        let encoded = serde_json::to_value(&record).unwrap();
+        assert_eq!(encoded["repositories"]["policy"], "operator_trust_v1");
+        assert_eq!(
+            serde_json::from_value::<Record>(encoded.clone()).unwrap(),
+            record
+        );
+        let confined =
+            serde_json::to_value(samples::record(RecordKind::AgentHiredWithRepositories)).unwrap();
+        assert_eq!(
+            encoded.as_object().unwrap().keys().collect::<Vec<_>>(),
+            confined.as_object().unwrap().keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn record_kinds_are_unique_and_invertible() {
         let mut tags: Vec<u16> = RecordKind::KNOWN.iter().map(|k| k.tag()).collect();
         tags.sort_unstable();
@@ -5348,7 +5393,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            112,
+            113,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -6429,7 +6474,7 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 112);
+        assert_eq!(RecordKind::KNOWN.len(), 113);
         assert_eq!(RecordKind::from_tag(1000), None);
     }
 

@@ -5,6 +5,12 @@ use std::time::Instant;
 
 use super::*;
 
+#[derive(Clone, Copy)]
+enum Change {
+    BrowserField,
+    UnconfinedKind,
+}
+
 struct PreviousReader {
     fixture: Fixture,
     story: Story,
@@ -93,7 +99,7 @@ impl PreviousReader {
         );
     }
 
-    fn add_browser_association(&self) {
+    fn rewrite_last_hire(&self, change: Change) {
         use dudes_journal::frame::{HEADER_LEN, Header, encode_required};
         let path = dudes_journal::segment::segment_path(
             &self.fixture.journal_dir(),
@@ -105,31 +111,41 @@ impl PreviousReader {
         assert_eq!(header.kind, RecordKind::AgentHiredWithRepositories.tag());
         assert_eq!(offset + header.frame_len(), bytes.len());
         let mut hire = self.story.hire.clone();
-        hire.browser_onboarding = Some(Box::new(dudes_proto::record::BrowserOnboardingHire {
-            attempt_id: dudes_proto::record::Hex32::new([1; 32]),
-            request_digest: dudes_proto::record::Hex32::new([2; 32]),
-            profile_id: "service".into(),
-            session_digest: dudes_proto::record::Hex32::new([3; 32]),
-            intended_goal: None,
-            trust_lsn: None,
-        }));
+        let (record, newest) = match change {
+            Change::BrowserField => {
+                hire.browser_onboarding =
+                    Some(Box::new(dudes_proto::record::BrowserOnboardingHire {
+                        attempt_id: dudes_proto::record::Hex32::new([1; 32]),
+                        request_digest: dudes_proto::record::Hex32::new([2; 32]),
+                        profile_id: "service".into(),
+                        session_digest: dudes_proto::record::Hex32::new([3; 32]),
+                        intended_goal: None,
+                        trust_lsn: None,
+                    }));
+                (Record::AgentHiredWithRepositories(Box::new(hire)), 103)
+            }
+            Change::UnconfinedKind => {
+                hire.repositories.policy =
+                    dudes_proto::repository::RepositoryPolicy::OperatorTrustV1;
+                (
+                    Record::AgentHiredWithUnconfinedRepositories(Box::new(hire)),
+                    113,
+                )
+            }
+        };
+        let kind = record.kind();
         let payload = serde_json::to_vec(&Entry {
             at: Timestamp::from_unix_millis(1_000),
-            record: Record::AgentHiredWithRepositories(Box::new(hire)),
+            record,
         })
         .unwrap();
         let mut changed = bytes[..offset].to_vec();
-        encode_required(
-            RecordKind::AgentHiredWithRepositories,
-            &payload,
-            &mut changed,
-        )
-        .unwrap();
+        encode_required(kind, &payload, &mut changed).unwrap();
         fs::write(path, changed).unwrap();
         let (reader, _) = Reader::open(&self.fixture.journal_dir()).unwrap();
         for item in reader.iter_from(Lsn::ZERO).unwrap() {
             let (_, entry) = item.unwrap();
-            assert!(entry.record.kind().tag() <= 103);
+            assert!(entry.record.kind().tag() <= newest);
         }
     }
 
@@ -155,8 +171,8 @@ impl PreviousReader {
             .collect()
     }
 
-    fn refuses(&self) {
-        self.add_browser_association();
+    fn refuses(&self, change: Change) {
+        self.rewrite_last_hire(change);
         let before = self.state_bytes();
         let mut child = self.start();
         let until = Instant::now() + Duration::from_secs(2);
@@ -168,7 +184,7 @@ impl PreviousReader {
                 child.kill().unwrap();
                 child.wait().unwrap();
                 panic!(
-                    "previous release served the new browser field: {}",
+                    "previous release served the changed hire record: {}",
                     self.logs()
                 );
             }
@@ -176,11 +192,18 @@ impl PreviousReader {
         };
         let logs = self.logs();
         assert!(!status.success() && !logs.contains("panicked"), "{logs}");
-        assert!(
-            logs.contains(&format!("journal record at {}", self.story.hired_lsn))
-                && logs.contains("unknown field `browser_onboarding`"),
-            "{logs}"
-        );
+        let lsn = self.story.hired_lsn;
+        let (located, message) = match change {
+            Change::BrowserField => (
+                format!("journal record at {lsn}"),
+                "unknown field `browser_onboarding`".to_owned(),
+            ),
+            Change::UnconfinedKind => (
+                "journal required record kind 113".to_owned(),
+                format!("record kind 113 at {lsn} is not understood"),
+            ),
+        };
+        assert!(logs.contains(&located) && logs.contains(&message), "{logs}");
         assert!(!self.path("old-run/duded.sock").exists());
         assert_eq!(self.state_bytes(), before);
     }
@@ -189,7 +212,7 @@ impl PreviousReader {
 #[test]
 #[ignore = "requires DUDES_PREVIOUS_DAEMON pointing to the actual previous release"]
 fn previous_release_refuses_only_the_browser_group_field_cold() {
-    PreviousReader::new().refuses();
+    PreviousReader::new().refuses(Change::BrowserField);
 }
 
 #[test]
@@ -197,7 +220,21 @@ fn previous_release_refuses_only_the_browser_group_field_cold() {
 fn previous_release_refuses_only_the_browser_group_field_with_a_warm_projection() {
     let previous = PreviousReader::new();
     previous.boot_control();
-    previous.refuses();
+    previous.refuses(Change::BrowserField);
+}
+
+#[test]
+#[ignore = "requires DUDES_PREVIOUS_DAEMON pointing to the actual previous release"]
+fn previous_release_refuses_the_unconfined_hire_kind_cold() {
+    PreviousReader::new().refuses(Change::UnconfinedKind);
+}
+
+#[test]
+#[ignore = "requires DUDES_PREVIOUS_DAEMON pointing to the actual previous release"]
+fn previous_release_refuses_the_unconfined_hire_kind_with_a_warm_projection() {
+    let previous = PreviousReader::new();
+    previous.boot_control();
+    previous.refuses(Change::UnconfinedKind);
 }
 
 #[test]

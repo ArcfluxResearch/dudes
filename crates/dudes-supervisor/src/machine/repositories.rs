@@ -72,6 +72,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 Some(IssueRepositories::Legacy(repository.clone()))
             }
             HireRepositories::Scoped(hire) => {
+                if hire.policy.require_confined().is_err() {
+                    return None;
+                }
                 let round = self.world.active_repository_round(agent).ok()?;
                 if round.is_some_and(|round| !self.repository_baseline_ready(round.goal)) {
                     return None;

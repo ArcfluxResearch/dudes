@@ -189,6 +189,48 @@ pub struct OwnedRepository {
 pub enum RepositoryPolicy {
     /// Working tree edits only; Git metadata remains protected.
     WorkingTreeV1,
+    /// Every hired copy is writable with the trust of a single-repository agent.
+    OperatorTrustV1,
+}
+
+/// Whether a policy keeps an agent out of the hired copies a ticket does not declare.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Confinement {
+    /// The provider sandbox enforces the declared write set.
+    Confined,
+    /// No write boundary is claimed inside the project.
+    Unconfined,
+}
+
+/// An unconfined policy reached a path that only a confined policy may take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnconfinedPolicy;
+
+impl std::fmt::Display for UnconfinedPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("unconfined repository hires are not enabled yet")
+    }
+}
+
+impl std::error::Error for UnconfinedPolicy {}
+
+impl RepositoryPolicy {
+    /// The one switch every site that branches on a multi-repository hire matches on.
+    #[must_use]
+    pub const fn confinement(self) -> Confinement {
+        match self {
+            Self::WorkingTreeV1 => Confinement::Confined,
+            Self::OperatorTrustV1 => Confinement::Unconfined,
+        }
+    }
+
+    /// The gate for a path that has no unconfined arm yet.
+    pub const fn require_confined(self) -> Result<(), UnconfinedPolicy> {
+        match self.confinement() {
+            Confinement::Confined => Ok(()),
+            Confinement::Unconfined => Err(UnconfinedPolicy),
+        }
+    }
 }
 
 /// The complete repository authority owned by one scoped hire.
@@ -295,6 +337,17 @@ pub struct RepositoryHire {
     pub browser_onboarding: Option<Box<crate::record::BrowserOnboardingHire>>,
     /// Complete atomic copy assignment.
     pub repositories: ScopedRepositories,
+}
+
+impl RepositoryHire {
+    /// The hire record whose kind matches this hire's recorded policy.
+    #[must_use]
+    pub fn into_record(self: Box<Self>) -> crate::Record {
+        match self.repositories.policy.confinement() {
+            Confinement::Confined => crate::Record::AgentHiredWithRepositories(self),
+            Confinement::Unconfined => crate::Record::AgentHiredWithUnconfinedRepositories(self),
+        }
+    }
 }
 
 /// The one repository an older hire recorded. Missing enrollment remains unknown.
@@ -683,6 +736,9 @@ impl RepositoryTurnGrant {
         if hired_lsn == Lsn::ZERO {
             return Err(Error::Issue);
         }
+        if hire.policy.require_confined().is_err() {
+            return Err(Error::Policy);
+        }
         let repositories = match ticket {
             None => hire.recorded().repositories,
             Some(round) => {
@@ -830,6 +886,83 @@ impl TurnRepositories {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_hire(policy: RepositoryPolicy) -> RepositoryHire {
+        let crate::Record::AgentHiredWithRepositories(mut hire) =
+            crate::record::samples::record(crate::RecordKind::AgentHiredWithRepositories)
+        else {
+            unreachable!()
+        };
+        hire.repositories.policy = policy;
+        *hire
+    }
+
+    #[test]
+    fn the_policy_switch_picks_the_record_kind_the_grant_and_the_task_set() {
+        for (policy, confinement, kind) in [
+            (
+                RepositoryPolicy::WorkingTreeV1,
+                Confinement::Confined,
+                crate::RecordKind::AgentHiredWithRepositories,
+            ),
+            (
+                RepositoryPolicy::OperatorTrustV1,
+                Confinement::Unconfined,
+                crate::RecordKind::AgentHiredWithUnconfinedRepositories,
+            ),
+        ] {
+            assert_eq!(policy.confinement(), confinement);
+            let hire = sample_hire(policy);
+            assert_eq!(Box::new(hire.clone()).into_record().kind(), kind);
+            let mut value = serde_json::to_value(policy).unwrap();
+            assert_eq!(
+                value.take(),
+                serde_json::json!(match confinement {
+                    Confinement::Confined => "working_tree_v1",
+                    Confinement::Unconfined => "operator_trust_v1",
+                })
+            );
+            let scoped = ScopedHireRepositories {
+                project: hire.repositories.project.clone(),
+                catalog_lsn: hire.repositories.catalog_lsn,
+                policy,
+                repositories: RepositorySet::new(
+                    hire.repositories.repositories.primary_id().clone(),
+                    hire.repositories
+                        .repositories
+                        .entries()
+                        .iter()
+                        .map(|entry| RepositoryEntry {
+                            repo_id: entry.repo_id.clone(),
+                            value: HiredRepository::new(
+                                entry.value.clone(),
+                                crate::record::TrustPin {
+                                    claude_tree: None,
+                                    mcp_json: None,
+                                    attributes: crate::record::Hex32::new([7; 32]),
+                                    config: crate::record::Hex32::new([8; 32]),
+                                },
+                            ),
+                        })
+                        .collect(),
+                )
+                .unwrap(),
+            };
+            let granted =
+                RepositoryTurnGrant::select(Lsn::from_parts(1, 1).unwrap(), &scoped, None);
+            match confinement {
+                Confinement::Confined => assert_eq!(granted.unwrap().policy, policy),
+                Confinement::Unconfined => assert_eq!(
+                    granted,
+                    Err(crate::repository_state::history::RepositoryStateError::Policy)
+                ),
+            }
+            assert_eq!(
+                crate::task::TaskCommandSet::for_hire(&HireRepositories::Scoped(scoped)),
+                crate::task::TaskCommandSet::ScopedFileMail
+            );
+        }
+    }
 
     #[test]
     fn a_repository_hire_refuses_unknown_fields_in_records_and_entries() {

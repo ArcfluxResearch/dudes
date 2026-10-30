@@ -45,7 +45,11 @@ impl TaskCommandSet {
     pub const fn for_hire(hire: &crate::repository::HireRepositories) -> Self {
         match hire {
             crate::repository::HireRepositories::Legacy(_) => Self::Legacy,
-            crate::repository::HireRepositories::Scoped(_) => Self::ScopedFileMail,
+            // No task is composed for an unconfined hire while its launch is refused.
+            crate::repository::HireRepositories::Scoped(hire) => match hire.policy.confinement() {
+                crate::repository::Confinement::Confined
+                | crate::repository::Confinement::Unconfined => Self::ScopedFileMail,
+            },
         }
     }
 

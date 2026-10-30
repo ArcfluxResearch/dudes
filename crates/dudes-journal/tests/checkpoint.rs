@@ -193,6 +193,7 @@ fn placement(kind: RecordKind) -> Placement {
         RecordKind::ProjectRepositoriesRecorded
         | RecordKind::RepositoryTrustSet
         | RecordKind::AgentHiredWithRepositories
+        | RecordKind::AgentHiredWithUnconfinedRepositories
         | RecordKind::TicketCreatedWithRepositories
         | RecordKind::TicketEditedWithRepositories
         | RecordKind::TicketStartedWithRepositories

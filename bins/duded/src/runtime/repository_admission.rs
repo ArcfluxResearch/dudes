@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result, anyhow, ensure};
 use dudes_proto::record::TrustedRepository;
 use dudes_proto::repository::{
-    CatalogRepository, HireRepositories, RepoId, RepositoryEntry, RepositorySet,
+    CatalogRepository, Confinement, HireRepositories, RepoId, RepositoryEntry, RepositorySet,
 };
 use dudes_proto::{Entry, Record};
 use dudes_supervisor::{Clock, ProcessHost, RepositoryAdmission, Rng, World};
@@ -213,12 +213,21 @@ impl<'a> CurrentHireAdmission<'a> {
             reason = "tests may admit a provider capability through this admission instance"
         )
     )]
-    pub(super) fn require_repository_capability(&self) -> Result<()> {
-        #[cfg(test)]
-        if self.current.test_hire_capability {
-            return Ok(());
+    pub(super) fn require_repository_capability(&self, confinement: Confinement) -> Result<()> {
+        match confinement {
+            Confinement::Confined => {
+                #[cfg(test)]
+                if self.current.test_hire_capability {
+                    return Ok(());
+                }
+                anyhow::bail!(
+                    "restricted repository execution has no verified provider capability yet"
+                );
+            }
+            Confinement::Unconfined => {
+                anyhow::bail!("unconfined repository execution is not enabled yet");
+            }
         }
-        anyhow::bail!("restricted repository execution has no verified provider capability yet");
     }
 
     pub(super) fn require_current_hire(
