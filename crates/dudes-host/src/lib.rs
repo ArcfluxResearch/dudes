@@ -1645,6 +1645,61 @@ mod spawn_failure_tests {
         ));
     }
 
+    struct CountFailures(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl crate::ChildStreams for CountFailures {
+        fn watch(
+            &self,
+            _key: Option<&dudes_supervisor::host::AdoptionKey>,
+        ) -> Box<dyn crate::ChildStream> {
+            panic!("no stream in the protocol row fixture");
+        }
+        fn protocol_failed(&self, _key: &dudes_supervisor::host::AdoptionKey) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn acknowledged_protocol_row(
+        end_stream: bool,
+    ) -> (RealHost, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let streams: std::sync::Arc<dyn crate::ChildStreams> =
+            std::sync::Arc::new(CountFailures(std::sync::Arc::clone(&failures)));
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let key = completed_query_target(&mut host);
+        let writer = crate::ProtocolWriter::prepare(key.clone(), &streams, Instant::now());
+        host.children.get_mut(&key.pid).unwrap().protocol = Some(writer.clone());
+        if end_stream {
+            writer.finished();
+        }
+        let receipt = observed_absence(&host, &key)
+            .native_absence_receipt
+            .expect("an observed absence carries its receipt");
+        let before = failures.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &receipt),
+            NativeBoundaryAcknowledgement::Acknowledged
+        );
+        assert_eq!(
+            failures.load(std::sync::atomic::Ordering::SeqCst),
+            before,
+            "acknowledgement must not fail the protocol"
+        );
+        (host, failures)
+    }
+
+    #[test]
+    fn an_acknowledged_row_with_a_live_protocol_stream_is_kept() {
+        let (host, failures) = acknowledged_protocol_row(false);
+        assert_eq!(host.owned(), 1, "a live stream keeps its row");
+        assert_eq!(failures.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_acknowledged_row_with_an_ended_protocol_stream_is_released() {
+        let (host, _failures) = acknowledged_protocol_row(true);
+        assert_eq!(host.owned(), 0, "an ended stream lets its row go");
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_acknowledged_killed_child_releases_its_row() {
@@ -3307,10 +3362,16 @@ impl RealHost {
     /// process handle, descriptor and keeper lifeline for every finished turn. The row goes only
     /// when a fresh query still finds its leader reaped and its whole group empty, which is what
     /// the acknowledgement rested on; anything else stays for shutdown. A later kill or liveness
-    /// query for the key then takes the adopted path and re-validates.
+    /// query for the key then takes the adopted path and re-validates. A row whose protocol stream
+    /// is still live stays: dropping it would fail the protocol and rewrite a finished turn as a
+    /// transport failure.
     fn release_settled_row(&mut self, pid: u32) {
         let settled = self.children.get(&pid).is_some_and(|owned| {
             owned.exit.reaped()
+                && owned
+                    .protocol
+                    .as_ref()
+                    .is_none_or(ProtocolWriter::is_terminal)
                 && owned_target_state(
                     owned.boundary,
                     None,
