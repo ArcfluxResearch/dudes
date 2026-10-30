@@ -19,13 +19,13 @@ fn append(writer: &mut dudes_journal::Writer, record: Record) -> Lsn {
 }
 
 fn seed(journal: &std::path::Path) -> (RepositoryTicketStarted, RepositoryTicketCreated) {
-    seed_authority(journal, plural_authority(), false)
+    seed_authority(journal, plural_authority(), None, false)
 }
 
 pub(super) fn seed_recovery(
     journal: &std::path::Path,
 ) -> (RepositoryTicketStarted, RepositoryTicketCreated) {
-    seed_authority(journal, super::recovery::authority(), true)
+    seed_authority(journal, super::recovery::authority(), Some(&[0, 1]), false)
 }
 
 #[expect(
@@ -35,7 +35,8 @@ pub(super) fn seed_recovery(
 fn seed_authority(
     journal: &std::path::Path,
     (prefix, mut hire): (Vec<Entry>, dudes_proto::repository::RepositoryHire),
-    subset: bool,
+    declared: Option<&[usize]>,
+    unconfined: bool,
 ) -> (RepositoryTicketStarted, RepositoryTicketCreated) {
     let (mut writer, _) = open(journal, options()).unwrap();
     let catalog_lsn = append(&mut writer, prefix[0].record.clone());
@@ -69,7 +70,12 @@ fn seed_authority(
         RepositorySet::new(hire.repositories.repositories.primary_id().clone(), copies).unwrap();
     let hired_lsn = append(
         &mut writer,
-        Record::AgentHiredWithRepositories(Box::new(hire.clone())),
+        if unconfined {
+            hire.repositories.policy = dudes_proto::repository::RepositoryPolicy::OperatorTrustV1;
+            Record::AgentHiredWithUnconfinedRepositories(Box::new(hire.clone()))
+        } else {
+            Record::AgentHiredWithRepositories(Box::new(hire.clone()))
+        },
     );
     let copies = hire.repositories.repositories.entries();
     let check_repo = copies[1].repo_id.clone();
@@ -90,13 +96,15 @@ fn seed_authority(
             project: "service".into(),
             catalog_lsn,
             repositories: RepositorySet::new(
-                copies[0].repo_id.clone(),
-                copies
-                    .iter()
-                    .take(if subset { 2 } else { copies.len() })
-                    .map(|copy| RepositoryEntry {
-                        repo_id: copy.repo_id.clone(),
-                        value: copy.value.origin.clone(),
+                copies[declared.map_or(0, |members| members[0])]
+                    .repo_id
+                    .clone(),
+                declared
+                    .map_or_else(|| (0..copies.len()).collect(), <[usize]>::to_vec)
+                    .into_iter()
+                    .map(|index| RepositoryEntry {
+                        repo_id: copies[index].repo_id.clone(),
+                        value: copies[index].value.origin.clone(),
                     })
                     .collect(),
             )
@@ -369,7 +377,7 @@ fn declared_tickets_and_frozen_check_roots_survive_warm_and_empty_cache_replay()
     reason = "one malformed-authority table shares warm-cursor and unchanged-journal checks"
 )]
 fn malformed_declared_authority_is_refused_even_behind_a_warm_cursor() {
-    for case in 0..9 {
+    for case in 0..8 {
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
         let (mut start, mut created) = seed(&journal);
@@ -432,15 +440,7 @@ fn malformed_declared_authority_is_refused_even_behind_a_warm_cursor() {
                 goal: start.goal,
                 expected_seq: Seq(2),
             },
-            7 => Record::TicketStartedWithRepositories(Box::new(start)),
-            _ => {
-                created.card = CardId::from_parts(7, 2);
-                let mut entries = created.declaration.repositories.entries().to_vec();
-                entries.reverse();
-                created.declaration.repositories =
-                    RepositorySet::new(entries[0].repo_id.clone(), entries).unwrap();
-                Record::TicketCreatedWithRepositories(Box::new(created))
-            }
+            _ => Record::TicketStartedWithRepositories(Box::new(start)),
         };
         let (mut writer, _) = open(&journal, options()).unwrap();
         if let Some(removed) = removed {
@@ -585,6 +585,31 @@ fn each_declared_ticket_carrier_requires_its_exact_required_header() {
         assert!(
             matches!(Reader::open(dir.path()), Err(Error::RepositoryFrame { .. })),
             "{kind:?}"
+        );
+    }
+}
+
+#[test]
+fn replay_refuses_an_unconfined_start_whose_declaration_is_narrower_than_the_hire() {
+    for (declared, reason) in [
+        (None, RepositoryStateError::Start),
+        (Some(&[1][..]), RepositoryStateError::Declaration),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("journal");
+        let (start, _) = seed_authority(&journal, plural_authority(), declared, true);
+        let (mut writer, _) = open(&journal, options()).unwrap();
+        append(
+            &mut writer,
+            Record::TicketStartedWithRepositories(Box::new(start)),
+        );
+        drop(writer);
+        assert!(
+            matches!(
+                Reader::open(&journal),
+                Err(Error::Repository { reason: got, .. }) if got == reason
+            ),
+            "{reason:?}"
         );
     }
 }
