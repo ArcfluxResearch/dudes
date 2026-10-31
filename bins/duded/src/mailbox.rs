@@ -18,11 +18,11 @@ use dudes_proto::rpc::system::{MailboxDiagnostic, MailboxProblem};
 use dudes_proto::{Entry, Record};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use dudes_proto::{MailAct, MailFrom, MailTo};
-use dudes_types::AgentId;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use dudes_types::MailState;
+use dudes_types::{AgentId, MailId};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use dudes_types::{Lsn, MailId, ThreadId, Timestamp};
+use dudes_types::{Lsn, ThreadId, Timestamp};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use serde::{Deserialize, Serialize};
 
