@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { askATeammate } from './ask-smoke.mjs';
 import { Journey } from './journey.mjs';
 
 const execute = promisify(execFile);
@@ -621,16 +622,36 @@ exec /bin/sleep 120
   }
 }
 
-// A newcomer's whole path on a second scratch home, sharing the install: quickstart, open, then
-// only the page, up to an accepted ticket.
-async function newcomerJourney(first, chrome) {
+// A second scratch home sharing the install and the one Chrome: a wrapper that admits one proof
+// browser at a time would refuse a second.
+async function secondRun(first, chrome) {
   const root = await mkdtemp(join(tmpdir(), 'dudes-jrny-'));
   await chmod(root, 0o700);
   const second = new ScratchRun(root, first.workspace, first.xtask, first.version, chrome, first.prefix);
-  // The same Chrome: a wrapper that admits one proof browser at a time would refuse a second.
   Object.assign(second, { chrome: first.chrome, chromeChild: first.chromeChild, chromeIdentity: first.chromeIdentity,
     chromeChildren: first.chromeChildren, cdp: first.cdp });
   journeyRun = second;
+  return second;
+}
+
+// Two agents on a stand-in engine: one is asked in chat to ask the other, and the loop closes on
+// the page. Chrome stays open for the journey that follows.
+async function askRun(first, chrome) {
+  const second = await secondRun(first, chrome);
+  second.closeChrome = async () => [];
+  try {
+    await second.prepare();
+    await askATeammate(second);
+    await second.stop();
+  } finally {
+    await second.cleanup();
+  }
+}
+
+// A newcomer's whole path on a second scratch home, sharing the install: quickstart, open, then
+// only the page, up to an accepted ticket.
+async function newcomerJourney(first, chrome) {
+  const second = await secondRun(first, chrome);
   try {
     await second.prepare();
     await new Journey(second).walk();
@@ -668,6 +689,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       await stage('hire and live activity', () => run.hire());
     } else console.log('SKIP browser (Chrome absent)');
     await stage('stop', () => run.stop());
+    if (chrome) await stage('ask a teammate through chat and read the report', () => askRun(run, chrome));
     if (chrome) await stage('journey from quickstart to an accepted ticket', () => newcomerJourney(run, chrome));
   } catch (error) {
     console.error(`smoke: ${error.message}`);
