@@ -561,6 +561,38 @@ pub fn recognize_identified_mail_wake_task(
     ((1..=32).contains(&parsed) && count == parsed.to_string()).then_some((line, parsed))
 }
 
+/// Construct the task of a mail turn: the line, the count of mail it covers, then the memory and
+/// mail teaching.
+#[must_use]
+pub fn identified_mail_turn_task(line: &IdentityLine, covered: u8) -> Option<String> {
+    if !(1..=32).contains(&covered) {
+        return None;
+    }
+    Some(format!(
+        "{}{IDENTITY_SEPARATOR}[{covered} new mail]{}{}",
+        line.as_str(),
+        line.command_set().memory_instruction(),
+        line.command_set().mail_teaching(),
+    ))
+}
+
+/// Recognize the exact mail turn task and return its line and covered-mail count.
+#[must_use]
+pub fn recognize_identified_mail_turn_task(
+    task: &str,
+    agent: Option<AgentId>,
+) -> Option<(IdentityLine, u8)> {
+    let (line, rest) = IdentityLine::split(task, agent)?;
+    let count = line
+        .command_set()
+        .strip_teaching(rest.strip_prefix(IDENTITY_SEPARATOR)?)?
+        .strip_prefix('[')?
+        .strip_suffix(" new mail]")?;
+    let parsed = count.parse::<u8>().ok()?;
+    (count == parsed.to_string() && identified_mail_turn_task(&line, parsed).as_deref() == Some(task))
+        .then_some((line, parsed))
+}
+
 /// The task a Chat turn carries: the line, a blank line, then the note as typed, then the mail
 /// teaching. For an answer continuation, which ends in [`ANSWER_CLOSING`], the line follows the
 /// answer text instead.
@@ -833,6 +865,15 @@ pub(crate) fn schema_teaching_suffix(commands: TaskCommandSet) -> String {
         schema_escape(&format!("{memory}{}", commands.mail_teaching())),
         schema_escape(&format!("{memory}{}", commands.mail_instruction())),
     )
+}
+
+/// The memory teaching and the current mail wording, the only ending a mail turn task has.
+pub(crate) fn schema_current_teaching_suffix(commands: TaskCommandSet) -> String {
+    schema_escape(&format!(
+        "{}{}",
+        commands.memory_instruction(),
+        commands.mail_teaching()
+    ))
 }
 
 /// Bytes the longest memory and mail teaching a note or mail wake task ends with.

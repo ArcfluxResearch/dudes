@@ -1918,6 +1918,10 @@ pub enum Record {
         #[serde(deserialize_with = "crate::mail_wake::identified_issue")]
         crate::mail_wake::MailWakeIssue,
     ),
+    /// Required decision for the wake-worthy mail of one thread that an idle chat agent has.
+    MailTurnDecided(crate::mail_turn::MailTurnDecision),
+    /// Required managed issue of a mail turn, under its exact decision.
+    MailTurnIssued(crate::mail_turn::MailTurnIssue),
     /// A git worktree leased for one agent, appended and fsynced before
     /// `git worktree add` runs, so a crash after the add leaves a recorded tree rather than an
     /// unrecorded one. The lease is pending until an `AgentHired` names it.
@@ -2708,6 +2712,8 @@ impl Record {
             Self::IdentifiedMailWakeOnlyTurnIssued(_) => {
                 RecordKind::IdentifiedMailWakeOnlyTurnIssued
             }
+            Self::MailTurnDecided(_) => RecordKind::MailTurnDecided,
+            Self::MailTurnIssued(_) => RecordKind::MailTurnIssued,
             Self::WorktreeLeased { .. } => RecordKind::WorktreeLeased,
             Self::WorktreeLeasedWithIdentity { .. } => RecordKind::WorktreeLeasedWithIdentity,
             Self::WorktreeRemoved { .. } => RecordKind::WorktreeRemoved,
@@ -3012,6 +3018,10 @@ pub enum RecordKind {
     WorktreeLeasedWithIdentity = 112,
     /// [`Record::AgentHiredWithUnconfinedRepositories`].
     AgentHiredWithUnconfinedRepositories = 113,
+    /// [`Record::MailTurnDecided`].
+    MailTurnDecided = 114,
+    /// [`Record::MailTurnIssued`].
+    MailTurnIssued = 115,
 }
 
 impl RecordKind {
@@ -3068,8 +3078,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 113] {
-        let mut kinds = [Self::AgentHired; 113];
+    const fn known_kinds() -> [Self; 115] {
+        let mut kinds = [Self::AgentHired; 115];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -3142,6 +3152,8 @@ impl RecordKind {
         kinds[110] = Self::InstructionObservationBatchFinished;
         kinds[111] = Self::WorktreeLeasedWithIdentity;
         kinds[112] = Self::AgentHiredWithUnconfinedRepositories;
+        kinds[113] = Self::MailTurnDecided;
+        kinds[114] = Self::MailTurnIssued;
         kinds
     }
 
@@ -3208,6 +3220,8 @@ impl RecordKind {
                 | Self::InstructionObservationBatchFinished
                 | Self::WorktreeLeasedWithIdentity
                 | Self::AgentHiredWithUnconfinedRepositories
+                | Self::MailTurnDecided
+                | Self::MailTurnIssued
         )
     }
 
@@ -3866,6 +3880,41 @@ pub mod samples {
                     answers: Vec::new(),
                 })
             }
+            RecordKind::MailTurnDecided => {
+                let task = crate::MailTurnTask::new(&identity(), 1).unwrap();
+                Record::MailTurnDecided(crate::MailTurnDecision {
+                    agent: agent(),
+                    thread: dudes_types::ThreadId::from_parts(1, 7),
+                    covered: vec![crate::MailRef {
+                        id: dudes_types::MailId::from_parts(1, 8),
+                        lsn: Lsn::from_parts(1, 100).unwrap(),
+                    }],
+                    inspection_digest: Hex32::new([4; 32]),
+                    input_digest: Hex32::new([5; 32]),
+                    gate_trace: Gate::ORDER
+                        .into_iter()
+                        .map(|gate| GateStep {
+                            gate,
+                            fired: gate == Gate::Work,
+                            note: None,
+                        })
+                        .collect(),
+                    decision: crate::MailTurnAdmission::Issue { task },
+                })
+            }
+            RecordKind::MailTurnIssued => Record::MailTurnIssued(crate::MailTurnIssue {
+                agent: agent(),
+                turn: turn(),
+                thread: dudes_types::ThreadId::from_parts(1, 7),
+                covered: vec![crate::MailRef {
+                    id: dudes_types::MailId::from_parts(1, 8),
+                    lsn: Lsn::from_parts(1, 100).unwrap(),
+                }],
+                task: crate::MailTurnTask::new(&identity(), 1).unwrap(),
+                session: None,
+                model_selection: ModelSelection::default(),
+                lsn_of_decision: Lsn::from_parts(1, 300).unwrap(),
+            }),
             RecordKind::TaughtNoteTurnDecided => Record::TaughtNoteTurnDecided {
                 agent: agent(),
                 goal: goal(),
@@ -4833,7 +4882,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 113);
+        assert_eq!(RecordKind::KNOWN.len(), 115);
         for &kind in RecordKind::KNOWN[46..66]
             .iter()
             .chain(&RecordKind::KNOWN[94..100])
@@ -5393,7 +5442,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            113,
+            115,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -6474,7 +6523,7 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 113);
+        assert_eq!(RecordKind::KNOWN.len(), 115);
         assert_eq!(RecordKind::from_tag(1000), None);
     }
 

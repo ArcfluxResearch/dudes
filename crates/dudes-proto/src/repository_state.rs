@@ -515,6 +515,16 @@ impl Record {
                 Some(&issue.model_selection),
                 &[][..],
             ),
+            crate::issue::ManagedIssueRef::MailTurn(issue) => (
+                issue.agent,
+                issue.turn,
+                None,
+                Mode::Managed,
+                issue.task.as_str(),
+                issue.session.as_ref(),
+                Some(&issue.model_selection),
+                &[][..],
+            ),
         };
         Some(TurnIssue {
             source: self,
@@ -688,6 +698,7 @@ mod tests {
             RecordKind::IdentifiedConversationTurnIssued,
             RecordKind::MailWakeOnlyTurnIssued,
             RecordKind::IdentifiedMailWakeOnlyTurnIssued,
+            RecordKind::MailTurnIssued,
         ];
         for kind in kinds {
             let record = samples::record(kind);

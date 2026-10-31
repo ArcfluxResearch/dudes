@@ -33,6 +33,7 @@ pub mod instruction;
 pub mod instruction_state;
 pub mod issue;
 pub mod mail_answer;
+pub mod mail_turn;
 pub mod mail_wake;
 pub mod messages;
 pub mod projection;
@@ -104,6 +105,7 @@ pub use instruction::{
     PriorRunLeader, TicketCoverageNote, validate_instruction_record,
 };
 pub use mail_answer::{MailFact, request_answer};
+pub use mail_turn::{MailTurnAdmission, MailTurnDecision, MailTurnIssue, MailTurnTask};
 pub use mail_wake::{
     MailRef, MailWakeAdmission, MailWakeDecision, MailWakeDigest, MailWakeDigestDomain,
     MailWakeIssue, MailWakePlan, MailWakePurpose, MailWakeTarget, MailWakeTask,

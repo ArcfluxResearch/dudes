@@ -13,8 +13,8 @@ use crate::record::Hex32;
 use crate::task::TaskContract;
 use crate::{Entry, ExhaustedReason, Gate, GateStep, HoldReason, MailTo, Record};
 
-const CARRIER_BYTES: usize = crate::rpc::MAX_FRAME_BYTES / 16;
-const TRACE_NOTE_BYTES: usize = 512;
+pub(crate) const CARRIER_BYTES: usize = crate::rpc::MAX_FRAME_BYTES / 16;
+pub(crate) const TRACE_NOTE_BYTES: usize = 512;
 
 /// The canonical item identity and its original receipt position.
 #[derive(
@@ -550,7 +550,7 @@ impl TryFrom<IssueFields> for MailWakeIssue {
     }
 }
 
-struct CarrierSchema;
+pub(crate) struct CarrierSchema;
 impl JsonSchema for CarrierSchema {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "MailWakeCarrierText".into()
@@ -561,7 +561,7 @@ impl JsonSchema for CarrierSchema {
     }
 }
 
-struct ModelSchema;
+pub(crate) struct ModelSchema;
 impl JsonSchema for ModelSchema {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "MailWakeModelSelection".into()
@@ -572,7 +572,7 @@ impl JsonSchema for ModelSchema {
     }
 }
 
-struct DigestSchema;
+pub(crate) struct DigestSchema;
 impl JsonSchema for DigestSchema {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "MailWakeDigestHex".into()
@@ -582,7 +582,7 @@ impl JsonSchema for DigestSchema {
     }
 }
 
-struct TraceSchema;
+pub(crate) struct TraceSchema;
 impl JsonSchema for TraceSchema {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "MailWakeGateTrace".into()
@@ -594,7 +594,7 @@ impl JsonSchema for TraceSchema {
     }
 }
 
-struct ManagedSchema;
+pub(crate) struct ManagedSchema;
 impl JsonSchema for ManagedSchema {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "MailWakeManagedMode".into()
@@ -604,7 +604,7 @@ impl JsonSchema for ManagedSchema {
     }
 }
 
-fn positive_lsn<'de, D: Deserializer<'de>>(d: D) -> Result<Lsn, D::Error> {
+pub(crate) fn positive_lsn<'de, D: Deserializer<'de>>(d: D) -> Result<Lsn, D::Error> {
     let lsn = Lsn::deserialize(d)?;
     if lsn == Lsn::ZERO {
         return Err(serde::de::Error::custom(
@@ -665,7 +665,7 @@ pub(crate) fn identified_issue<'de, D: Deserializer<'de>>(d: D) -> Result<MailWa
     })
 }
 
-fn bounded_session<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SessionId>, D::Error> {
+pub(crate) fn bounded_session<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SessionId>, D::Error> {
     let session = Option::<SessionId>::deserialize(d)?;
     if session
         .as_ref()
@@ -678,7 +678,7 @@ fn bounded_session<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SessionId>,
     Ok(session)
 }
 
-fn bounded_model<'de, D: Deserializer<'de>>(d: D) -> Result<ModelSelection, D::Error> {
+pub(crate) fn bounded_model<'de, D: Deserializer<'de>>(d: D) -> Result<ModelSelection, D::Error> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Fields {
@@ -700,7 +700,7 @@ fn bounded_model<'de, D: Deserializer<'de>>(d: D) -> Result<ModelSelection, D::E
     })
 }
 
-fn bounded_trace<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<GateStep>, D::Error> {
+pub(crate) fn bounded_trace<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<GateStep>, D::Error> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Step {

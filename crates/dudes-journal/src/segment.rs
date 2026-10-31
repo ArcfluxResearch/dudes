@@ -227,6 +227,10 @@ mod tests {
                         lsn_of_decision,
                         ..
                     } => refs.extend([*note_lsn, *context_lsn, *lsn_of_decision]),
+                    I::MailTurn(issue) => {
+                        refs.extend(issue.covered.iter().map(|mail| mail.lsn));
+                        refs.push(issue.lsn_of_decision);
+                    }
                     I::MailWake(issue) | I::IdentifiedMailWake(issue) => {
                         refs.extend([issue.completion_lsn, issue.root_lsn, issue.lsn_of_decision]);
                     }
@@ -477,6 +481,18 @@ mod tests {
                 if let dudes_proto::MailWakeAdmission::Wait { question_lsn } = decision.decision {
                     refs.push(question_lsn);
                 }
+                refs
+            }
+            Record::MailTurnDecided(decision) => {
+                let mut refs: Vec<Lsn> = decision.covered.iter().map(|mail| mail.lsn).collect();
+                if let dudes_proto::MailTurnAdmission::Wait { question_lsn } = decision.decision {
+                    refs.push(question_lsn);
+                }
+                refs
+            }
+            Record::MailTurnIssued(issue) => {
+                let mut refs: Vec<Lsn> = issue.covered.iter().map(|mail| mail.lsn).collect();
+                refs.push(issue.lsn_of_decision);
                 refs
             }
             Record::MailWakeOnlyTurnIssued(issue)
