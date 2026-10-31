@@ -2825,14 +2825,16 @@ impl World {
         dudes_policy::MailTurnUse {
             thread: self.mail_turns.issues_for_thread(agent, thread),
             sender_today: self.mail_turns.issues_for_sender_day(agent, sender, day),
-            agent_today: self
-                .mail_turns
-                .issues_on_day(agent, day)
-                .saturating_add(u32::from(self.mail_wake_count(agent, day))),
+            agent_today: u32::from(self.mail_issues_today(agent, day)),
         }
     }
-    pub(crate) fn mail_turn_day_count(&self, agent: AgentId, day: dudes_types::UtcDay) -> u32 {
-        self.mail_turns.issues_on_day(agent, day)
+    /// Mail wakes and mail turns issued for the agent on `day`, which share one daily limit.
+    pub(crate) fn mail_issues_today(&self, agent: AgentId, day: dudes_types::UtcDay) -> u8 {
+        u8::try_from(
+            u32::from(self.mail_wake_count(agent, day))
+                .saturating_add(self.mail_turns.issues_on_day(agent, day)),
+        )
+        .unwrap_or(u8::MAX)
     }
     pub(crate) fn mail_turn_origin(&self, turn: TurnId) -> bool {
         self.mail_turns.origin(turn)

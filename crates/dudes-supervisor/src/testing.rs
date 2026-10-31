@@ -1008,6 +1008,7 @@ impl Harness {
     }
 
     /// Append `entry` the way the mailbox does and fold it through [`Input::Journaled`].
+    #[cfg(test)]
     pub(crate) fn journaled(&mut self, entry: Entry) -> Vec<Seen> {
         let lsn = self.append_entry(entry.clone());
         self.step(Input::Journaled {

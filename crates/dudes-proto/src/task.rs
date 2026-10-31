@@ -589,8 +589,9 @@ pub fn recognize_identified_mail_turn_task(
         .strip_prefix('[')?
         .strip_suffix(" new mail]")?;
     let parsed = count.parse::<u8>().ok()?;
-    (count == parsed.to_string() && identified_mail_turn_task(&line, parsed).as_deref() == Some(task))
-        .then_some((line, parsed))
+    (count == parsed.to_string()
+        && identified_mail_turn_task(&line, parsed).as_deref() == Some(task))
+    .then_some((line, parsed))
 }
 
 /// The task a Chat turn carries: the line, a blank line, then the note as typed, then the mail
@@ -1053,6 +1054,50 @@ mod tests {
         assert!(taught_note_task("hello").unwrap().contains(REQUEST_LINE));
         assert!(mail_wake_task(1).unwrap().contains(RELAY_LINE));
         assert!(!MAIL_INSTRUCTION.contains(REQUEST_LINE));
+    }
+
+    #[test]
+    fn a_mail_turn_task_is_exactly_the_line_the_count_and_the_current_teaching() {
+        let agent = AgentId::parse("01JBK3Q8M4X7Z2V9N5T6R1W0YA").unwrap();
+        for commands in [TaskCommandSet::Legacy, TaskCommandSet::ScopedFileMail] {
+            let line = IdentityLine::for_commands(agent, "Kim", "engineer", commands);
+            let task = identified_mail_turn_task(&line, 3).unwrap();
+            assert_eq!(
+                task,
+                format!(
+                    "{}\n\n[3 new mail]{}{}",
+                    line.as_str(),
+                    commands.memory_instruction(),
+                    commands.mail_teaching()
+                )
+            );
+            assert!(task.contains("`dudes mail send --reply-to <id> --act message --body <text>`"));
+            let (found, count) = recognize_identified_mail_turn_task(&task, Some(agent)).unwrap();
+            assert_eq!((found.as_str(), count), (line.as_str(), 3));
+            assert!(recognize_identified_mail_turn_task(&task, Some(AgentId::NIL)).is_none());
+            // The teaching a mail wake carried before the reply lines is not this contract.
+            let older = format!(
+                "{}\n\n[3 new mail]{}{}",
+                line.as_str(),
+                commands.memory_instruction(),
+                commands.mail_instruction()
+            );
+            assert!(recognize_identified_mail_turn_task(&older, None).is_none());
+            assert!(recognize_identified_mail_turn_task(&format!("{task} extra"), None).is_none());
+            assert!(
+                recognize_identified_mail_turn_task(&task.replace("[3 new", "[03 new"), None)
+                    .is_none()
+            );
+            assert!(
+                recognize_identified_mail_turn_task(&task.replace("[3 new", "[33 new"), None)
+                    .is_none()
+            );
+        }
+        let line = IdentityLine::new(agent, "Kim", "engineer");
+        assert!(identified_mail_turn_task(&line, 0).is_none());
+        assert!(identified_mail_turn_task(&line, 33).is_none());
+        let wake = identified_mail_wake_task(&line, 3).unwrap();
+        assert!(recognize_identified_mail_turn_task(&wake, None).is_none());
     }
 
     const SAMPLE_ID: &str = "01JBK3Q8M4X7Z2V9N5T6R1W0YA";

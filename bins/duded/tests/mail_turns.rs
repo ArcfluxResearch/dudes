@@ -12,7 +12,9 @@ use duded::ExitCause;
 use duded::ports::Ask;
 use duded::settings::{FloorSettings, Settings};
 use duded::startup::Witness;
-use dudes_proto::{ExhaustedReason, HoldReason, MailAct, MailFrom, MailTo, MailTurnAdmission, Record};
+use dudes_proto::{
+    ExhaustedReason, HoldReason, MailAct, MailFrom, MailTo, MailTurnAdmission, Record,
+};
 use dudes_providers::launch::EnvVar;
 use dudes_supervisor::{Input, ProcessHost};
 use dudes_types::{AgentId, MailId, ThreadId, TurnId, Usd};
@@ -43,7 +45,11 @@ impl Rig {
         Self::start(Fixture::new(), |_| {}, Arc::new(TestClock::new()))
     }
 
-    fn start(fixture: Fixture, configure: impl FnOnce(&mut Settings), clock: Arc<TestClock>) -> Self {
+    fn start(
+        fixture: Fixture,
+        configure: impl FnOnce(&mut Settings),
+        clock: Arc<TestClock>,
+    ) -> Self {
         let host = SharedHost::with_native_evidence(fixture.journal_dir());
         Self::start_on(fixture, configure, clock, host.clone(), host)
     }
@@ -102,7 +108,12 @@ impl Rig {
     fn hire_without_ceiling(&self) -> AgentId {
         let mut params = common::hire_params(self.fixture.state.path());
         params.budget.usd_per_day = None;
-        match self.running.handle.ask(Ask::Hire(Box::new(params))).unwrap() {
+        match self
+            .running
+            .handle
+            .ask(Ask::Hire(Box::new(params)))
+            .unwrap()
+        {
             duded::ports::Answered::Hired(hired) => hired.agent,
             other => panic!("hire answered {other:?}"),
         }
@@ -154,11 +165,19 @@ impl Rig {
     }
 
     fn reply(&mut self, from: AgentId, to_mail: MailId, act: &str) -> MailId {
-        self.send(from, json!({"in_reply_to": to_mail, "act": act, "body": "4"}))
+        self.send(
+            from,
+            json!({"in_reply_to": to_mail, "act": act, "body": "4"}),
+        )
     }
 
     /// The journaled mail of `act` to `to`, newest first excluded: the `nth` one.
-    fn mail_to(&self, to: AgentId, act: MailAct, nth: usize) -> (MailId, MailFrom, Option<ThreadId>) {
+    fn mail_to(
+        &self,
+        to: AgentId,
+        act: MailAct,
+        nth: usize,
+    ) -> (MailId, MailFrom, Option<ThreadId>) {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             let found: Vec<_> = self
@@ -227,14 +246,21 @@ impl Rig {
             .filter_map(|record| match record {
                 Record::MailTurnDecided(decision) if decision.agent == agent => Some((
                     decision.decision,
-                    decision.gate_trace.last().and_then(|step| step.note.clone()),
+                    decision
+                        .gate_trace
+                        .last()
+                        .and_then(|step| step.note.clone()),
                 )),
                 _ => None,
             })
             .collect()
     }
 
-    fn await_decisions(&self, agent: AgentId, count: usize) -> Vec<(MailTurnAdmission, Option<String>)> {
+    fn await_decisions(
+        &self,
+        agent: AgentId,
+        count: usize,
+    ) -> Vec<(MailTurnAdmission, Option<String>)> {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             let found = self.decisions(agent);
@@ -259,14 +285,13 @@ impl Rig {
     }
 
     fn chat_turn(&self, agent: AgentId) -> TurnId {
-        self.fixture.await_record("chat turn", |record| match record {
-            Record::IdentifiedConversationTurnIssued { agent: found, turn, .. }
-                if *found == agent =>
-            {
-                Some(*turn)
-            }
-            _ => None,
-        })
+        self.fixture
+            .await_record("chat turn", |record| match record {
+                Record::IdentifiedConversationTurnIssued {
+                    agent: found, turn, ..
+                } if *found == agent => Some(*turn),
+                _ => None,
+            })
     }
 
     /// Let mailbox passes and the loop run, then move the loop one beat.
@@ -310,6 +335,7 @@ fn a_request_starts_the_teammates_turn_and_the_answer_starts_the_askers() {
     assert!(task.starts_with("[You are "), "{task}");
     assert!(task.contains("[1 new mail]"));
     assert!(task.ends_with(dudes_proto::TaskCommandSet::Legacy.mail_teaching()));
+    assert!(task.contains("`dudes mail send --reply-to <id> --act message --body <text>`"));
     rig.spawned(b_turn);
 
     rig.reply(b, delivered, "message");
@@ -552,7 +578,11 @@ fn a_crash_between_issue_and_spawn_reissues_the_turn_once() {
     assert_eq!(covered.len(), 1);
     assert_eq!(host.children(), 0);
     let fixture = rig.stop();
-    assert!(!fixture.records().iter().any(|record| matches!(record, Record::TurnSpawned { turn: found, .. } if *found == turn)));
+    assert!(
+        !fixture.records().iter().any(
+            |record| matches!(record, Record::TurnSpawned { turn: found, .. } if *found == turn)
+        )
+    );
 
     let rig = Rig::start(fixture, |_| {}, Arc::new(TestClock::new()));
     rig.spawned(turn);
@@ -562,7 +592,9 @@ fn a_crash_between_issue_and_spawn_reissues_the_turn_once() {
         records.iter().filter(|record| wanted(record, turn)).count()
     };
     assert_eq!(
-        count(|record, turn| matches!(record, Record::TurnSpawned { turn: found, .. } if *found == turn)),
+        count(
+            |record, turn| matches!(record, Record::TurnSpawned { turn: found, .. } if *found == turn)
+        ),
         1
     );
     assert_eq!(
@@ -591,7 +623,11 @@ fn a_pause_between_the_crash_and_the_restart_keeps_the_turn_unlaunched_until_res
 
     let rig = Rig::start(fixture, |_| {}, Arc::new(TestClock::new()));
     rig.settle();
-    assert!(!rig.fixture.records().iter().any(|record| matches!(record, Record::TurnSpawned { turn: found, .. } if *found == turn)));
+    assert!(
+        !rig.fixture.records().iter().any(
+            |record| matches!(record, Record::TurnSpawned { turn: found, .. } if *found == turn)
+        )
+    );
     rig.running.handle.ask(Ask::Resume(b)).unwrap();
     rig.spawned(turn);
     rig.stop();

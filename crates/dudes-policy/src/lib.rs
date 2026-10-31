@@ -46,13 +46,13 @@ pub use input::{
     HeldCardContext, LoopInput, PredicateInput, ReverseDependent, WorkInput,
 };
 pub use r#loop::{
-    admit_completed_note, admit_conversation, admit_mail_turn, admit_mail_wake, closing_input, decide,
-    decide_closing, decide_with_browser_note, decision, supplemental_context,
+    admit_completed_note, admit_conversation, admit_mail_turn, admit_mail_wake, closing_input,
+    decide, decide_closing, decide_with_browser_note, decision, supplemental_context,
     supplemental_context_for_commands,
 };
+pub use mail::{MailWakeDecided, MailWakeFacts, MailWakeInput, MailWakeWork};
 pub use mail_turn::{
     AGENT_DAY_TURN_CAP, MailTurnDecided, MailTurnInput, MailTurnUse, SENDER_DAY_TURN_CAP,
     THREAD_TURN_CAP,
 };
-pub use mail::{MailWakeDecided, MailWakeFacts, MailWakeInput, MailWakeWork};
 pub use predicate::judge;

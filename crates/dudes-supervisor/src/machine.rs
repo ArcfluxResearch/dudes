@@ -2826,8 +2826,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             && !(self.consented_issues.contains(&turn)
                 && self.world.instructions.current_for_turn(turn).is_some())
             && !launch_begun
-            && !self.world.mail_wake_origin(turn)
-            && !self.world.mail_turn_origin(turn)
+            && !(self.world.mail_wake_origin(turn) || self.world.mail_turn_origin(turn))
             && (self.world.instructions.current_for_turn(turn).is_none()
                 || self.no_host_attempt(agent, Some(turn)).is_some())
             && self.world.browser_issue(turn).is_none_or(|issue| {

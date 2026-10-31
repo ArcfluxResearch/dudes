@@ -665,7 +665,9 @@ pub(crate) fn identified_issue<'de, D: Deserializer<'de>>(d: D) -> Result<MailWa
     })
 }
 
-pub(crate) fn bounded_session<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SessionId>, D::Error> {
+pub(crate) fn bounded_session<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<SessionId>, D::Error> {
     let session = Option::<SessionId>::deserialize(d)?;
     if session
         .as_ref()

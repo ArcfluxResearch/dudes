@@ -392,8 +392,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         };
         if latest.lsn != decision_lsn
-            || MailTurnTask::new(&line, u8::try_from(latest.decision.covered.len()).unwrap_or(0))
-                .as_ref()
+            || MailTurnTask::new(
+                &line,
+                u8::try_from(latest.decision.covered.len()).unwrap_or(0),
+            )
+            .as_ref()
                 != Some(task)
             || !self
                 .world
@@ -470,9 +473,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Input;
     use crate::input::SpendView;
     use crate::testing::{Harness, Seen};
-    use crate::Input;
     use dudes_proto::{Entry, RecordKind};
     use dudes_types::ThreadId;
 
@@ -506,7 +509,12 @@ mod tests {
             }
         }
 
-        fn mail(&mut self, from: serde_json::Value, act: &str, members: &[AgentId]) -> (MailId, Vec<Seen>) {
+        fn mail(
+            &mut self,
+            from: &serde_json::Value,
+            act: &str,
+            members: &[AgentId],
+        ) -> (MailId, Vec<Seen>) {
             let id = MailId::from_parts(5, self.next);
             self.next += 1;
             let record: Record = serde_json::from_value(serde_json::json!({
@@ -523,7 +531,7 @@ mod tests {
 
         fn agent_mail(&mut self, act: &str, members: &[AgentId]) -> (MailId, Vec<Seen>) {
             let from = serde_json::json!({"kind": "agent", "agent": self.a});
-            self.mail(from, act, members)
+            self.mail(&from, act, members)
         }
     }
 
@@ -542,7 +550,7 @@ mod tests {
         let mut f = Flow::new();
         let (a, b) = (f.a, f.b);
         let operator = serde_json::json!({"kind": "human"});
-        let (_, effects) = f.mail(operator, "request", &[a, b]);
+        let (_, effects) = f.mail(&operator, "request", &[a, b]);
         assert!(inspects(&effects).is_empty(), "operator mail");
         let c = AgentId::from_parts(1, 77);
         let (_, effects) = f.agent_mail("request", &[a, b, c]);
@@ -553,7 +561,10 @@ mod tests {
         assert!(inspects(&effects).is_empty(), "a card");
         let (direct, effects) = f.agent_mail("request", &[a, b]);
         assert_eq!(
-            inspects(&effects).into_iter().map(|(_, mail)| mail).collect::<Vec<_>>(),
+            inspects(&effects)
+                .into_iter()
+                .map(|(_, mail)| mail)
+                .collect::<Vec<_>>(),
             vec![vec![direct]]
         );
     }
@@ -577,7 +588,11 @@ mod tests {
             .find_map(|seen| match seen {
                 Seen::Persist {
                     token,
-                    entry: Entry { record: Record::MailTurnDecided(_), .. },
+                    entry:
+                        Entry {
+                            record: Record::MailTurnDecided(_),
+                            ..
+                        },
                 } => Some(*token),
                 _ => None,
             })
@@ -586,12 +601,18 @@ mod tests {
         let decided = |h: &Harness| {
             h.journal
                 .iter()
-                .filter(|entry| matches!(&entry.record, Record::MailTurnDecided(d)
-                    if matches!(d.decision, dudes_proto::MailTurnAdmission::Issue { .. })))
+                .filter(|entry| {
+                    matches!(&entry.record, Record::MailTurnDecided(d)
+                    if matches!(d.decision, dudes_proto::MailTurnAdmission::Issue { .. }))
+                })
                 .count()
         };
         assert_eq!(decided(&f.h), 1);
-        assert!(!f.h.journal.iter().any(|entry| matches!(entry.record, Record::MailTurnIssued(_))));
+        assert!(
+            !f.h.journal
+                .iter()
+                .any(|entry| matches!(entry.record, Record::MailTurnIssued(_)))
+        );
 
         f.h.restart();
         f.spend();
@@ -627,13 +648,21 @@ mod tests {
             .find_map(|seen| match seen {
                 Seen::Persist {
                     token,
-                    entry: Entry { record: Record::MailTurnDecided(_), .. },
+                    entry:
+                        Entry {
+                            record: Record::MailTurnDecided(_),
+                            ..
+                        },
                 } => Some(*token),
                 _ => None,
             })
             .expect("a decision");
         f.h.acknowledge(token);
-        assert!(f.h.journal.iter().any(|entry| matches!(entry.record, Record::MailTurnIssued(_))));
+        assert!(
+            f.h.journal
+                .iter()
+                .any(|entry| matches!(entry.record, Record::MailTurnIssued(_)))
+        );
         let world = f.h.supervisor.world();
         assert!(world.mail_turn_covered(mail));
         assert!(world.mail_turn_candidates(b).is_empty());

@@ -244,7 +244,10 @@ impl Fold {
                 let day = entry.at.utc_day();
                 self.covered
                     .extend(issue.covered.iter().map(|mail| mail.id));
-                *self.per_thread.entry((issue.agent, issue.thread)).or_default() += 1;
+                *self
+                    .per_thread
+                    .entry((issue.agent, issue.thread))
+                    .or_default() += 1;
                 *self
                     .per_sender_day
                     .entry((issue.agent, sender, day))

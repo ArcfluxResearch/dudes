@@ -9,6 +9,7 @@ use super::*;
 enum Change {
     BrowserField,
     UnconfinedKind,
+    MailTurnKind,
 }
 
 struct PreviousReader {
@@ -132,6 +133,10 @@ impl PreviousReader {
                     113,
                 )
             }
+            Change::MailTurnKind => (
+                dudes_proto::record::samples::record(RecordKind::MailTurnDecided),
+                115,
+            ),
         };
         let kind = record.kind();
         let payload = serde_json::to_vec(&Entry {
@@ -202,6 +207,10 @@ impl PreviousReader {
                 "journal required record kind 113".to_owned(),
                 format!("record kind 113 at {lsn} is not understood"),
             ),
+            Change::MailTurnKind => (
+                "journal required record kind 114".to_owned(),
+                format!("record kind 114 at {lsn} is not understood"),
+            ),
         };
         assert!(logs.contains(&located) && logs.contains(&message), "{logs}");
         assert!(!self.path("old-run/duded.sock").exists());
@@ -235,6 +244,20 @@ fn previous_release_refuses_the_unconfined_hire_kind_with_a_warm_projection() {
     let previous = PreviousReader::new();
     previous.boot_control();
     previous.refuses(Change::UnconfinedKind);
+}
+
+#[test]
+#[ignore = "requires DUDES_PREVIOUS_DAEMON pointing to the actual previous release"]
+fn previous_release_refuses_the_mail_turn_kind_cold() {
+    PreviousReader::new().refuses(Change::MailTurnKind);
+}
+
+#[test]
+#[ignore = "requires DUDES_PREVIOUS_DAEMON pointing to the actual previous release"]
+fn previous_release_refuses_the_mail_turn_kind_with_a_warm_projection() {
+    let previous = PreviousReader::new();
+    previous.boot_control();
+    previous.refuses(Change::MailTurnKind);
 }
 
 #[test]
