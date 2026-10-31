@@ -34,7 +34,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use dudes_proto::goal::Evidence;
 use dudes_providers::launch::{EnvVar, LaunchSpec};
@@ -371,7 +371,7 @@ pub fn files_changed(
     hired_roots: &[std::path::PathBuf],
     timeout: Duration,
 ) -> io::Result<Option<(bool, Evidence)>> {
-    files_changed_or_committed(
+    files_changed_in_round(
         runner,
         argv,
         directories,
@@ -388,16 +388,32 @@ pub fn files_changed(
 /// unanswered query.
 pub type CommittedSince<'a> = &'a dyn Fn(usize) -> Option<bool>;
 
-/// [`files_changed`], where `committed` also counts work an agent committed. A directory with no
-/// uncommitted change is asked; one with an uncommitted change already passes and is not.
+/// What a round's recorded start adds to [`files_changed`], so the check counts what the round
+/// changed and not what an earlier round left in the same checkouts.
+pub struct RoundStart<'a> {
+    /// For the declared directory at an index, when its baseline was taken. A file last written at
+    /// or before that moment was there when the round began and does not count, and a file written
+    /// after it does, whatever it held before. `None` counts every uncommitted file.
+    pub began: Vec<Option<SystemTime>>,
+    /// Whether the directory's checkout holds work the agent committed since the baseline.
+    pub committed: Option<CommittedSince<'a>>,
+}
+
+/// The most listing bytes read from one directory. A longer listing counts as changed: that many
+/// files cannot be told apart cheaply, and the operator reviews the change before accepting it.
+const LISTING_CAP: usize = 1 << 20;
+
+/// [`files_changed`], where `round` makes the check count only what changed since the round began
+/// and what the agent committed. A directory with no such change is asked about commits; one
+/// that has a change already passes and is not.
 ///
 /// # Errors
 /// As [`files_changed`].
 #[expect(
     clippy::too_many_arguments,
-    reason = "files_changed's arguments plus the one query only an unconfined hire adds"
+    reason = "files_changed's arguments plus the round's start"
 )]
-pub fn files_changed_or_committed(
+pub fn files_changed_in_round(
     runner: &dyn PredicateRunner,
     argv: &[String],
     directories: &[std::path::PathBuf],
@@ -405,7 +421,7 @@ pub fn files_changed_or_committed(
     path: Option<&OsStr>,
     hired_roots: &[std::path::PathBuf],
     timeout: Duration,
-    committed: Option<CommittedSince<'_>>,
+    round: Option<&RoundStart<'_>>,
 ) -> io::Result<Option<(bool, Evidence)>> {
     if directories.is_empty() {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -415,7 +431,13 @@ pub fn files_changed_or_committed(
     let mut complete = true;
     let mut program = None;
     for (index, directory) in directories.iter().enumerate() {
-        let (resolved, spec) = spec_for_repositories(argv, directory, env, path, hired_roots)?;
+        let began = round.and_then(|round| round.began.get(index).copied().flatten());
+        let asked = if began.is_some() {
+            dudes_config::check::changed_listing()
+        } else {
+            argv.to_vec()
+        };
+        let (resolved, spec) = spec_for_repositories(&asked, directory, env, path, hired_roots)?;
         if program.as_ref().is_some_and(|program| program != &resolved) {
             return Err(io::ErrorKind::InvalidData.into());
         }
@@ -424,15 +446,14 @@ pub fn files_changed_or_committed(
         if remaining.is_zero() {
             return Ok(None);
         }
-        match runner.run(&spec, remaining) {
-            Ok(PredicateOutcome::Finished {
-                exit: Some(exit),
-                timed_out: false,
-                ..
-            }) if exit == 0 || exit == 1 => {
-                if exit == 0 {
-                    changed += 1;
-                } else if let Some(committed) = committed {
+        let answer = match began {
+            Some(began) => changed_since(runner, &spec, directory, began, remaining),
+            None => changed_by_exit(runner, &spec, remaining),
+        };
+        match answer {
+            Answer::Changed => changed += 1,
+            Answer::Unchanged => {
+                if let Some(committed) = round.and_then(|round| round.committed) {
                     match committed(index) {
                         Some(true) => changed += 1,
                         Some(false) => {}
@@ -440,12 +461,19 @@ pub fn files_changed_or_committed(
                     }
                 }
             }
-            Ok(PredicateOutcome::Swept) => return Ok(None),
-            Ok(_) | Err(_) => complete = false,
+            Answer::Unknown => complete = false,
+            Answer::Swept => return Ok(None),
         }
     }
     Ok(complete.then(|| {
         let pass = changed > 0;
+        let counted = match round {
+            Some(RoundStart {
+                committed: Some(_), ..
+            }) => "uncommitted changes or commits since the round baseline",
+            Some(_) => "uncommitted changes since the round baseline",
+            None => "uncommitted changes",
+        };
         (
             pass,
             Evidence::Command {
@@ -453,17 +481,103 @@ pub fn files_changed_or_committed(
                 program,
                 exit: Some(i32::from(!pass)),
                 output_tail: format!(
-                    "Queried all {} declared repositories; {changed} contain {}.",
+                    "Queried all {} declared repositories; {changed} contain {counted}.",
                     directories.len(),
-                    if committed.is_some() {
-                        "uncommitted changes or commits since the round baseline"
-                    } else {
-                        "uncommitted changes"
-                    }
                 ),
             },
         )
     }))
+}
+
+/// What the check learned about one directory.
+enum Answer {
+    Changed,
+    Unchanged,
+    Unknown,
+    Swept,
+}
+
+/// The exit status of the check itself: 0 names a file, 1 names none.
+fn changed_by_exit(runner: &dyn PredicateRunner, spec: &LaunchSpec, timeout: Duration) -> Answer {
+    match runner.run(spec, timeout) {
+        Ok(PredicateOutcome::Finished {
+            exit: Some(0),
+            timed_out: false,
+            ..
+        }) => Answer::Changed,
+        Ok(PredicateOutcome::Finished {
+            exit: Some(1),
+            timed_out: false,
+            ..
+        }) => Answer::Unchanged,
+        Ok(PredicateOutcome::Swept) => Answer::Swept,
+        Ok(_) | Err(_) => Answer::Unknown,
+    }
+}
+
+/// Whether any file the listing names was written after `began`. A runner that cannot capture
+/// output is asked the plain question instead, which counts every uncommitted file.
+fn changed_since(
+    runner: &dyn PredicateRunner,
+    spec: &LaunchSpec,
+    directory: &Path,
+    began: SystemTime,
+    timeout: Duration,
+) -> Answer {
+    match runner.run_captured(spec, timeout, LISTING_CAP) {
+        Ok(PredicateCaptured::Finished {
+            exit: Some(0),
+            stdout,
+            truncated,
+            timed_out: false,
+        }) => {
+            if truncated
+                || stdout
+                    .split(|byte| *byte == 0)
+                    .filter(|name| !name.is_empty())
+                    .any(|name| written_after(directory, name, began))
+            {
+                Answer::Changed
+            } else {
+                Answer::Unchanged
+            }
+        }
+        Ok(PredicateCaptured::Swept) => Answer::Swept,
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+            let mut plain = spec.clone();
+            plain.argv.truncate(1);
+            plain.argv.extend(
+                dudes_config::check::changed_check()
+                    .into_iter()
+                    .skip(1)
+                    .map(OsString::from),
+            );
+            changed_by_exit(runner, &plain, timeout)
+        }
+        Ok(_) | Err(_) => Answer::Unknown,
+    }
+}
+
+/// Whether the file named `name`, relative to `directory`, was last written after `began`. A file
+/// that is gone was removed when its nearest folder that still exists last changed. Whatever
+/// cannot be read counts as written, so an unreadable file is never hidden.
+fn written_after(directory: &Path, name: &[u8], began: SystemTime) -> bool {
+    #[cfg(unix)]
+    let relative = Path::new(<OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
+    #[cfg(not(unix))]
+    let relative = Path::new(std::str::from_utf8(name).unwrap_or_default());
+    let mut path = directory.join(relative);
+    loop {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => return metadata.modified().map_or(true, |at| at > began),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && path != directory => {
+                if !path.pop() {
+                    return true;
+                }
+            }
+            Err(_) => return true,
+        }
+    }
 }
 
 #[cfg(test)]

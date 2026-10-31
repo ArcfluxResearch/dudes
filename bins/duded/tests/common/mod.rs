@@ -1642,20 +1642,21 @@ impl PredicateRunner for ScriptedRunner {
         let Some(real) = &self.real else {
             return Err(io::ErrorKind::Unsupported.into());
         };
-        real.run_captured(spec, timeout, stdout_cap).map(|outcome| match outcome {
-            dudes_host::CapturedOutcome::Finished {
-                exit,
-                stdout,
-                truncated,
-                timed_out,
-            } => duded::predicate::PredicateCaptured::Finished {
-                exit,
-                stdout,
-                truncated,
-                timed_out,
-            },
-            dudes_host::CapturedOutcome::Swept => duded::predicate::PredicateCaptured::Swept,
-        })
+        real.run_captured(spec, timeout, stdout_cap)
+            .map(|outcome| match outcome {
+                dudes_host::CapturedOutcome::Finished {
+                    exit,
+                    stdout,
+                    truncated,
+                    timed_out,
+                } => duded::predicate::PredicateCaptured::Finished {
+                    exit,
+                    stdout,
+                    truncated,
+                    timed_out,
+                },
+                dudes_host::CapturedOutcome::Swept => duded::predicate::PredicateCaptured::Swept,
+            })
     }
 
     fn run(&self, spec: &LaunchSpec, timeout: Duration) -> io::Result<PredicateOutcome> {

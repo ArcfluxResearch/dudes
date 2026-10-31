@@ -21,6 +21,7 @@ struct Round {
     runner: RealRunner,
     queries: Vec<PathBuf>,
     probes: Vec<(Tree, BaselineCapture)>,
+    began: std::time::SystemTime,
 }
 
 impl Round {
@@ -65,6 +66,7 @@ impl Round {
             })
             .collect();
         Self {
+            began: std::time::SystemTime::now(),
             service,
             runner: RealRunner(OneShot::new()),
             queries: copies
@@ -97,7 +99,7 @@ impl Round {
     }
 
     fn run(&self, committed: Option<duded::predicate::CommittedSince<'_>>) -> Option<bool> {
-        duded::predicate::files_changed_or_committed(
+        duded::predicate::files_changed_in_round(
             &self.runner,
             &dudes_config::check::changed_check(),
             &self.queries,
@@ -105,7 +107,10 @@ impl Round {
             git_path().as_deref(),
             &self.queries,
             Duration::from_secs(3),
-            committed,
+            Some(&duded::predicate::RoundStart {
+                began: vec![Some(self.began); self.queries.len()],
+                committed,
+            }),
         )
         .unwrap()
         .map(|(pass, _)| pass)

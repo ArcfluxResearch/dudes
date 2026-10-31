@@ -1015,12 +1015,13 @@ fn recovery_stop_for_append<'stop>(
     Some((stop, stage, target, point))
 }
 
-/// The declared directories a files-changed check asks about, and for an unconfined hire the probes
-/// that ask each copy about committed work.
-type ChangeQueries = (
-    Vec<PathBuf>,
-    Option<Vec<Option<ticket_capture::CommitProbe>>>,
-);
+/// The declared directories a files-changed check asks about, when the round's baseline of each was
+/// taken, and for an unconfined hire the probes that ask each copy about committed work.
+struct ChangeQueries {
+    directories: Vec<PathBuf>,
+    began: Vec<Option<std::time::SystemTime>>,
+    probes: Option<Vec<Option<ticket_capture::CommitProbe>>>,
+}
 
 #[cfg(test)]
 type RecoveryRecordHook = Box<dyn FnMut(&Record) + Send>;
@@ -9431,15 +9432,25 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             let probes = (hire.policy.confinement()
                 == dudes_proto::repository::Confinement::Unconfined)
                 .then(|| ticket_capture::commit_probes(sup.world(), goal, hire, &grant));
-            Some((
-                grant
+            Some(ChangeQueries {
+                directories: grant
                     .repositories
                     .entries()
                     .iter()
                     .map(|entry| entry.value.execution.directory.clone())
                     .collect::<Vec<_>>(),
+                began: ticket_capture::baseline_times(sup.world(), goal, &grant),
                 probes,
-            ))
+            })
+        } else if matches!(predicate, Predicate::Command { argv, .. } if *argv == dudes_config::check::changed_check())
+            && let Some(began) = ticket_capture::legacy_baseline_time(sup.world(), goal)
+            && let Some(directory) = shared_folder::canonical_folder(cwd)
+        {
+            Some(ChangeQueries {
+                directories: vec![directory],
+                began: vec![Some(began)],
+                probes: None,
+            })
         } else {
             None
         };
@@ -9549,7 +9560,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         folder: cwd.clone(),
                         verdict: None,
                     };
-                    if let Some((queries, probes)) = queries {
+                    if let Some(ChangeQueries { directories: queries, began, probes }) = queries {
                         let committed = probes.map(|probes| {
                             move |index: usize| {
                                 probes
@@ -9558,7 +9569,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                                     .committed_since(&service, Arc::clone(&cancelled))
                             }
                         });
-                        match predicate::files_changed_or_committed(&*runner, &argv, &queries, &env, path.as_deref(), &repositories, timeout, committed.as_ref().map(|query| query as predicate::CommittedSince<'_>)) {
+                        let round = predicate::RoundStart {
+                            began,
+                            committed: committed.as_ref().map(|query| query as predicate::CommittedSince<'_>),
+                        };
+                        match predicate::files_changed_in_round(&*runner, &argv, &queries, &env, path.as_deref(), &repositories, timeout, Some(&round)) {
                             Ok(verdict) => end.verdict = verdict,
                             Err(error) => tracing::warn!(%error, ?goal, "declared change check could not complete"),
                         }

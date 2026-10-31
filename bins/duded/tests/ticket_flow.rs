@@ -4025,20 +4025,23 @@ fn two_agents_sharing_the_folder_still_take_turns() {
 }
 
 fn git_in(repo: &Path, args: &[&str]) {
-    let output = std::process::Command::new("/usr/bin/git")
-        .args([
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "git {args:?}: {output:?}");
+    let timeout = std::time::Duration::from_secs(10);
+    let git = duded::worktree::git::Git::new(
+        Arc::new(ScriptedRunner::real()),
+        std::env::var_os("PATH"),
+        timeout,
+    );
+    let mut full = vec![
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "commit.gpgsign=false",
+    ];
+    full.extend_from_slice(args);
+    let full: Vec<_> = full.iter().map(std::ffi::OsStr::new).collect();
+    git.exec(repo, &full, timeout).unwrap();
 }
 
 /// A real repository, enrolled with the default "files changed" check.
@@ -4085,7 +4088,10 @@ fn predicate_verdict(fixture: &Fixture, turn: TurnId) -> bool {
 
 /// The first ticket leaves `tracked.txt` edited and uncommitted. The next ticket's turn changes
 /// nothing, so its check must not pass on the file the first one left behind.
-fn leftover_from_an_earlier_ticket(end_second: impl FnOnce(&mut Flow, &Fixture, TurnId)) {
+fn leftover_from_an_earlier_ticket(
+    end_second: impl FnOnce(&mut Flow, &Fixture, TurnId),
+    then: impl FnOnce(&mut Flow, &Fixture, CardId),
+) {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled_with_changed_check(&fixture);
     let mut flow = Flow::boot_with(
@@ -4122,29 +4128,50 @@ fn leftover_from_an_earlier_ticket(end_second: impl FnOnce(&mut Flow, &Fixture, 
         !predicate_verdict(&fixture, turn),
         "the second ticket changed nothing, so its check must fail"
     );
-    assert_eq!(flow.card(second).status, CardStatus::Doing);
+    then(&mut flow, &fixture, second);
     flow.stop();
 }
 
 #[test]
 fn a_file_an_earlier_ticket_left_uncommitted_does_not_pass_the_next_tickets_check() {
-    leftover_from_an_earlier_ticket(|flow, fixture, turn| {
-        flow.end_turn(fixture, turn, Some("Nothing to change."));
-    });
+    leftover_from_an_earlier_ticket(
+        |flow, fixture, turn| {
+            flow.end_turn(fixture, turn, Some("Nothing to change."));
+        },
+        |flow, _, card| assert_eq!(flow.card(card).status, CardStatus::Doing),
+    );
 }
 
 #[test]
 fn a_vanished_turn_does_not_pass_on_a_file_an_earlier_ticket_left_uncommitted() {
-    leftover_from_an_earlier_ticket(|flow, fixture, turn| {
-        flow.running.handle.input(Input::Liveness {
-            turn,
-            liveness: Liveness::Gone,
-        });
-        fixture.await_record("the vanished end", |record| {
+    leftover_from_an_earlier_ticket(
+        |flow, fixture, turn| {
+            flow.running.handle.input(Input::Liveness {
+                turn,
+                liveness: Liveness::Gone,
+            });
+            fixture.await_record("the vanished end", |record| {
             matches!(record, Record::TurnEnded { turn: ended, outcome: Some(TurnOutcome::Vanished), .. } if *ended == turn)
                 .then_some(())
         });
-    });
+        },
+        |_, fixture, _| {
+            let done = fixture
+                .records()
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record,
+                        Record::LoopDecided {
+                            decision: LoopDecision::Done,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            assert_eq!(done, 1, "only the first ticket's goal was judged done");
+        },
+    );
 }
 
 /// Work done again in a later round still counts, whatever an earlier ticket left behind.
