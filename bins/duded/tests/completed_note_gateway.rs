@@ -149,7 +149,7 @@ fn taught_issue(fixture: &Fixture, completed: &Completed, note_lsn: Lsn, note: &
     assert_eq!(mode, Mode::Managed);
     assert!(answers.is_empty());
     let line = identity_line(fixture, completed.agent);
-    assert_eq!(task.len(), 5_019 + line.as_str().len() + 2);
+    assert_eq!(task.len(), 5_047 + line.as_str().len() + 2);
     assert_eq!(
         task,
         format!(
