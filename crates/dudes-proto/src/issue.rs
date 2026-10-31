@@ -335,6 +335,15 @@ impl Record {
     pub fn mail_issue(&self) -> Option<(&MailWakeIssue, crate::task::TaskContract)> {
         self.issue_payload()?.mail_wake()
     }
+
+    /// Mail turn payload, whichever physical carrier holds it.
+    #[must_use]
+    pub fn mail_turn_issue(&self) -> Option<&MailTurnIssue> {
+        match self.issue_payload()? {
+            ManagedIssueRef::MailTurn(issue) => Some(issue),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
