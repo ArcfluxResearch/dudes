@@ -202,3 +202,13 @@ export function decodeChat(value: unknown, agents: readonly { readonly id: strin
   return Object.freeze({ enabled: true, max_text_bytes: 4096, pending: Object.freeze(pending),
     turns: Object.freeze(turns), context_sent: Object.freeze(context) });
 }
+
+/**
+ * A mail subject as a chat line shows it: every leading "Re:" a reply chain added is dropped, since the line
+ * already says whose mail it was, and a subject with nothing left is not shown.
+ */
+export function shownSubject(subject: string | null): string | null {
+  if (subject === null) return null;
+  const rest = subject.replace(/^(?:\s*re:\s*)+/i, '').trim();
+  return rest === '' ? null : rest;
+}

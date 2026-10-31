@@ -15,6 +15,7 @@ import { advanceStopAndSend, browserChatDeps, canStopAndSend, cancelChat, stopAn
 import { formatBytes } from './chatFiles.ts';
 import type { ChatState } from './chat.ts';
 import type { ChatCause, ChatNotice, ChatReason, ChatTurn, NoticeReason, PendingNote } from './model.ts';
+import { shownSubject } from './model.ts';
 import type { CardRow } from '../board.ts';
 import { requiresInstructionReview } from '../ticket/model.ts';
 import { conversationEntries } from './thread.ts';
@@ -386,12 +387,14 @@ function causeName(cause: ChatCause, names: ReadonlyMap<string, string>): string
 
 function causeText(cause: ChatCause, names: ReadonlyMap<string, string>): string {
   const from = `After mail from ${causeName(cause, names)}`;
-  return cause.subject === null ? from : `${from} · ${cause.subject}`;
+  const subject = shownSubject(cause.subject);
+  return subject === null ? from : `${from} · ${subject}`;
 }
 
 function causeLine(cause: ChatCause, names: ReadonlyMap<string, string>) {
   const from = `After mail from ${causeName(cause, names)}`;
-  return cause.subject === null ? from : <>{from} · <bdi data-chat-mail-subject>{cause.subject}</bdi></>;
+  const subject = shownSubject(cause.subject);
+  return subject === null ? from : <>{from} · <bdi data-chat-mail-subject>{subject}</bdi></>;
 }
 
 function noticeText(notice: ChatNotice, sender: string, recipient: string): string {
