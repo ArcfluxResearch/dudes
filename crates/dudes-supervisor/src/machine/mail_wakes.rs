@@ -83,6 +83,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     pub(super) fn request_mail_wake(&mut self, agent: AgentId) {
+        self.request_mail_turn(agent);
         self.request_mail_refresh(agent, MailRefreshPhase::Inspect);
     }
 
@@ -244,7 +245,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 open_turn: row.open_turn,
                 browser_note_priority: false,
                 question_lsn: row.question_lsn,
-                wakes_today: self.world.mail_wake_count(agent, at.utc_day()),
+                wakes_today: u8::try_from(
+                    u32::from(self.world.mail_wake_count(agent, at.utc_day()))
+                        .saturating_add(self.world.mail_turn_day_count(agent, at.utc_day())),
+                )
+                .unwrap_or(u8::MAX),
                 fifth_crossing: state.fifth_crossing,
                 fifth_consumed: state.fifth_consumed,
             },

@@ -7641,6 +7641,8 @@ fn mail_acknowledged_by_effect(effect: &Effect) -> bool {
                     | Record::MailState { .. }
                     | Record::MailWakeTurnDecided(_)
                     | Record::IdentifiedMailWakeTurnDecided(_)
+                    | Record::MailTurnDecided(_)
+                    | Record::MailTurnIssued(_)
             ) || entry.record.mail_issue().is_some()
         })
 }
@@ -8339,6 +8341,24 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     result,
                 });
             }
+            Effect::MailTurnInspect {
+                agent,
+                request,
+                mail,
+            } => {
+                let result = if self.mail_progression_fenced() {
+                    Err(MailWakeRefreshFailure::JournalUnresolved)
+                } else {
+                    crate::mailbox::Mailbox::inbox_present(self.mailbox.as_ref(), *agent, mail)
+                        .map(|present| (self.clock.now(), present))
+                        .ok_or(MailWakeRefreshFailure::JournalUnresolved)
+                };
+                queue.push_back(Input::MailTurnInspected {
+                    agent: *agent,
+                    request: *request,
+                    result,
+                });
+            }
             Effect::MailWakeNotify {
                 agent,
                 root_lsn,
@@ -8541,7 +8561,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             Effect::SampleInstructions { .. } | Effect::SampleRepositoryInstructions { .. } => {
                 self.sample_instructions(effect, queue, sup)?;
             }
-            Effect::MailWakeRefresh { .. } | Effect::MailWakeNotify { .. } => {
+            Effect::MailWakeRefresh { .. }
+            | Effect::MailWakeNotify { .. }
+            | Effect::MailTurnInspect { .. } => {
                 self.execute_mail_wake(effect, queue, sup)?;
             }
             Effect::PrepareBrowserLaunch {
@@ -8945,6 +8967,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 | Record::MailState { .. }
                 | Record::MailWakeTurnDecided(_)
                 | Record::IdentifiedMailWakeTurnDecided(_)
+                | Record::MailTurnDecided(_)
+                | Record::MailTurnIssued(_)
         ) || entry.record.mail_issue().is_some()
         {
             anyhow::ensure!(

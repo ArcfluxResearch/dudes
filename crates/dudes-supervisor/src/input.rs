@@ -524,6 +524,15 @@ pub enum Input {
         /// One clock sample, its spend and a volatile projection cursor, or failure.
         result: Result<(dudes_types::Timestamp, SpendView, Lsn), MailWakeRefreshFailure>,
     },
+    /// What the mailbox found in one agent's inbox for one still-owned inspection.
+    MailTurnInspected {
+        /// Recipient.
+        agent: AgentId,
+        /// Volatile request identity.
+        request: MailWakeRequest,
+        /// One clock sample and the requested mail that sits in the inbox, or failure.
+        result: Result<(dudes_types::Timestamp, Vec<dudes_types::MailId>), MailWakeRefreshFailure>,
+    },
     /// The agents whose recorded worktree the daemon found gone or no longer a worktree,
     /// computed from the file system before [`Input::Started`]. It appends nothing
     /// and only remembers the set: `Started`'s first step holds each of these agents, so the first

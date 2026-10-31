@@ -314,6 +314,24 @@ impl Mailbox {
         }
     }
 
+    /// Which of the given mail items sit unread in the agent's inbox, or none when the mailbox
+    /// cannot say.
+    pub(crate) fn inbox_present(
+        mailbox: Option<&Self>,
+        agent: AgentId,
+        ids: &[MailId],
+    ) -> Option<Vec<MailId>> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            mailbox?.unix_inbox_present(agent, ids).ok()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = (mailbox, agent, ids);
+            None
+        }
+    }
+
     pub(crate) fn report(&self) -> Arc<Mutex<MailboxReport>> {
         Arc::clone(&self.report)
     }
