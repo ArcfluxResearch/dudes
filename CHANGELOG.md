@@ -47,7 +47,7 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 - **The first start after the upgrade rebuilds the saved views once.** The projection version moves from 73 to 74. Nothing is lost, and the rebuild runs once.
 - **Reload the browser page after the upgrade.** The browser wire version moves from 10 to 11, so a Floor page left open from 0.102.0 must be reloaded.
-DOWNGRADE_PLACEHOLDER
+- **Going back to 0.102.0 works only until you send a chat message to an agent.** 0.102.0 starts on a 0.103.0 journal that holds no chat message, including one with tickets, notes, priorities and agents, also when it has to rebuild the saved views, and what you write there is read when you come forward again. This release adds the same two mail lines to the instructions of every chat turn, and 0.102.0 cannot read them. After a chat message on 0.103.0, 0.102.0 refuses to start on that data. The daemon exits with status 1 before it answers or serves the Floor, changes nothing in the journal, and prints `projection row: invalid browser-note lifecycle join`, or `journal record at 2:26149 does not decode: invalid identified completed-note admission at line 1 column 1943` for an agent whose goal is done, where the position is that of your journal. After a mail-started turn it prints `journal required record kind 114 at 2:39817 is not understood`. `dudes start` reports only that the daemon exited. Start 0.103.0 again and everything is intact.
 
 ## [0.102.0] - 2026-10-31
 
