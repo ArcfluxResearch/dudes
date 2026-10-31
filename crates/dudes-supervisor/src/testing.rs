@@ -1016,6 +1016,16 @@ impl Harness {
         })
     }
 
+    /// Append `entry` the way the runtime does for a board record and fold it through
+    /// [`Input::BoardChanged`].
+    #[cfg(test)]
+    pub(crate) fn board_changed(&mut self, entry: Entry) {
+        let lsn = self.append_entry(entry.clone());
+        self.drive(Input::BoardChanged {
+            append: recorded_append(lsn, entry),
+        });
+    }
+
     /// Append and replay one explicit fixture record after the current contiguous prefix.
     pub fn append_replayed(&mut self, entry: Entry) -> Lsn {
         let lsn = self.append_entry(entry.clone());

@@ -53,6 +53,8 @@ mod browser_notes;
 mod conversations;
 #[cfg(test)]
 mod floor_stop_tests;
+#[cfg(test)]
+mod held_note_tests;
 mod instruction_observations;
 pub use instruction_observations::InstructionSource;
 mod mail_turns;
@@ -1449,6 +1451,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Input::BoardChanged { append } => {
                 let record = &append.entry().record;
                 let edited = record.ticket_edited().is_some();
+                let reviewed = matches!(record, Record::TicketInstructionReviewed { .. });
                 let card = if let Some(card) = record
                     .ticket_created()
                     .map(|created| created.card)
@@ -1475,8 +1478,28 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     return Ok(Handled::folded(through));
                 }
                 let goals: Vec<_> = self.world.held_board_goals(Some(card)).collect();
+                let judged: BTreeSet<_> = goals.iter().map(|(agent, _)| *agent).collect();
                 for (agent, goal) in goals {
                     self.judge(agent, goal, operation);
+                }
+                if reviewed {
+                    // Recording the review lifts the instruction hold. Work decided while it
+                    // stood was dropped at issue time and nothing else asks again.
+                    let claimants: Vec<_> = self
+                        .world
+                        .agents
+                        .iter()
+                        .filter(|(agent, row)| {
+                            !judged.contains(*agent)
+                                && row.goal.is_some_and(|goal| {
+                                    self.world.ticket_goal(goal).map(|(held, _)| held) == Some(card)
+                                })
+                        })
+                        .map(|(agent, _)| *agent)
+                        .collect();
+                    for agent in claimants {
+                        self.on_cause_cleared(agent, operation);
+                    }
                 }
                 return Ok(Handled::folded(through));
             }
