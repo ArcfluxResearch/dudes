@@ -735,7 +735,7 @@ mod conversation_tests {
         assert_eq!(
             crate::admit_conversation(&value).decision,
             NoteAdmission::Issue {
-                task: format!("{}\n\nHello", value.identity.as_str())
+                task: dudes_proto::identified_conversation_task(&value.identity, "Hello", false)
             }
         );
         value.agent_budget.usd_per_day = Some(Usd::ZERO);
@@ -833,7 +833,11 @@ mod conversation_tests {
         assert_eq!(
             decided.decision,
             NoteAdmission::Issue {
-                task: format!("{}\n\n[1 unread mail]", value.identity.as_str())
+                task: dudes_proto::identified_conversation_task(
+                    &value.identity,
+                    "[1 unread mail]",
+                    false
+                )
             }
         );
         assert_eq!(

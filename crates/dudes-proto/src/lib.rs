@@ -32,6 +32,7 @@ pub mod goal;
 pub mod instruction;
 pub mod instruction_state;
 pub mod issue;
+pub mod mail_answer;
 pub mod mail_wake;
 pub mod messages;
 pub mod projection;
@@ -102,6 +103,7 @@ pub use instruction::{
     MAX_INSTRUCTION_SOURCE_BYTES, MAX_INSTRUCTION_SYMLINK_HOPS, NativeInstructionPath,
     PriorRunLeader, TicketCoverageNote, validate_instruction_record,
 };
+pub use mail_answer::{MailFact, request_answer};
 pub use mail_wake::{
     MailRef, MailWakeAdmission, MailWakeDecision, MailWakeDigest, MailWakeDigestDomain,
     MailWakeIssue, MailWakePlan, MailWakePurpose, MailWakeTarget, MailWakeTask,
@@ -130,8 +132,9 @@ pub use record::{
 pub use reply::{HookDecision, HookReply, VendorReply};
 pub use rpc::hook::{HookToken, InvalidHookToken};
 pub use task::{
-    ANSWER_CLOSING, IDENTITY_BYTES, IdentityLine, MAIL_INSTRUCTION, MEMORY_INSTRUCTION,
-    NoteContract, SCOPED_MAIL_INSTRUCTION, TEACHING_BYTES, TaskCommandSet, TaskContract,
+    ANSWER_CLOSING, IDENTITY_BYTES, IdentityLine, MAIL_INSTRUCTION, MAIL_INSTRUCTION_WITH_REPLIES,
+    MEMORY_INSTRUCTION, NoteContract, SCOPED_MAIL_INSTRUCTION,
+    SCOPED_MAIL_INSTRUCTION_WITH_REPLIES, TEACHING_BYTES, TaskCommandSet, TaskContract,
     identified_conversation_task, identified_mail_wake_task, identified_taught_note_task,
     normalized_browser_note, recognize_identified_conversation_task,
     recognize_identified_mail_wake_task, recognize_identified_taught_note_task,

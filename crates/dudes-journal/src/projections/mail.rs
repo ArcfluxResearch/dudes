@@ -247,14 +247,7 @@ fn derive_messages(facts: &[MailRow], retired: &BTreeSet<AgentId>) -> Vec<Messag
             };
             let reply_status = if fact.act != MailAct::Request {
                 ReplyStatus::NotExpected
-            } else if facts.iter().any(|answer| {
-                answer.lsn > fact.lsn
-                    && answer.from == (MailFrom::Agent { agent: to })
-                    && answer.to == (MailTo::Agent { agent: from })
-                    && fact.thread.is_some()
-                    && answer.thread == fact.thread
-                    && !matches!(answer.state, MailState::Bounced { .. })
-            }) {
+            } else if answered(facts, fact) {
                 ReplyStatus::Answered
             } else if matches!(fact.state, MailState::Bounced { .. }) || retired.contains(&to) {
                 ReplyStatus::Undeliverable
@@ -281,6 +274,29 @@ fn derive_messages(facts: &[MailRow], retired: &BTreeSet<AgentId>) -> Vec<Messag
             })
         })
         .collect()
+}
+
+fn answered(facts: &[MailRow], request: &MailRow) -> bool {
+    let Some(thread) = request.thread else {
+        return false;
+    };
+    let mut ids = Vec::new();
+    let mut mail = Vec::new();
+    for fact in facts.iter().filter(|fact| fact.thread == Some(thread)) {
+        if let (MailFrom::Agent { agent: from }, MailTo::Agent { agent: to }) = (fact.from, fact.to)
+        {
+            ids.push(fact.id);
+            mail.push(dudes_proto::MailFact {
+                from,
+                to,
+                act: fact.act,
+                bounced: matches!(fact.state, MailState::Bounced { .. }),
+            });
+        }
+    }
+    ids.iter()
+        .position(|id| *id == request.id)
+        .is_some_and(|at| dudes_proto::request_answer(&mail, at).is_some())
 }
 
 fn encoded_len(value: &impl Serialize) -> Result<usize> {

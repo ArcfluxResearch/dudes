@@ -2296,7 +2296,8 @@ impl World {
     }
 
     /// Whether `task` is the identified task for the queued message with the name and role the
-    /// agent's row holds now. A rename since the decision makes it false.
+    /// agent's row holds now, with the mail teaching it was issued under. A rename since the decision
+    /// makes it false.
     #[must_use]
     pub fn conversation_task_is_current(
         &self,
@@ -2307,11 +2308,12 @@ impl World {
     ) -> bool {
         self.browser_notes.get(&note_lsn).is_some_and(|note| {
             row.identity_line(agent).is_some_and(|line| {
-                dudes_proto::identified_conversation_task(
-                    &line,
+                dudes_proto::recognize_identified_conversation_task(
+                    task,
                     note.task.as_deref().unwrap_or(&note.text),
                     note.answer_to.is_some(),
-                ) == task
+                    agent,
+                ) == Some(line)
             })
         })
     }

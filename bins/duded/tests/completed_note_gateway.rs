@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use duded::settings::{FloorSettings, RunOptions};
-use dudes_proto::{LoopDecision, MAIL_INSTRUCTION, MEMORY_INSTRUCTION, NoteAdmission, Record};
+use dudes_proto::{
+    LoopDecision, MAIL_INSTRUCTION_WITH_REPLIES, MEMORY_INSTRUCTION, NoteAdmission, Record,
+};
 use dudes_supervisor::{Clock as _, Input, World};
 use dudes_types::{AgentId, GoalId, Lsn, Mode, Provenance, TurnId, Usage};
 use serde_json::json;
@@ -147,11 +149,11 @@ fn taught_issue(fixture: &Fixture, completed: &Completed, note_lsn: Lsn, note: &
     assert_eq!(mode, Mode::Managed);
     assert!(answers.is_empty());
     let line = identity_line(fixture, completed.agent);
-    assert_eq!(task.len(), 4_528 + line.as_str().len() + 2);
+    assert_eq!(task.len(), 5_047 + line.as_str().len() + 2);
     assert_eq!(
         task,
         format!(
-            "{}\n\n{note}{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION}",
+            "{}\n\n{note}{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION_WITH_REPLIES}",
             line.as_str()
         )
     );
@@ -278,7 +280,7 @@ fn completed_note_exact_utf8_boundary_is_issued_and_survives_restart() {
     let launches = host.spawned();
     assert_eq!(launches.len() - initial_launches, 1);
     let expected_task = format!(
-        "{}\n\n{note}{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION}",
+        "{}\n\n{note}{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION_WITH_REPLIES}",
         identity_line(&fixture, completed.agent).as_str()
     );
     assert_eq!(

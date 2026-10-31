@@ -126,7 +126,12 @@ impl JsonSchema for MailWakeTask {
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         let tasks: Vec<_> = (1..=32)
-            .map(|count| crate::task::mail_wake_task(count).expect("bounded task"))
+            .flat_map(|count| {
+                [
+                    crate::task::mail_wake_task(count).expect("bounded task"),
+                    crate::task::historical_mail_wake_task(count),
+                ]
+            })
             .collect();
         let patterns: Vec<_> = [
             crate::task::TaskCommandSet::Legacy,

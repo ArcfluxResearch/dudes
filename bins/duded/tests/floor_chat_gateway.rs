@@ -1185,7 +1185,7 @@ fn conversation_answer_binds_question_and_precedes_unrelated_messages() {
         })
         .collect();
     assert_eq!(tasks.len(), 2);
-    assert!(tasks[0].starts_with("[You are ") && tasks[0].ends_with("]\n\nHelp me choose"));
+    assert!(tasks[0].starts_with("[You are ") && tasks[0].contains("Help me choose\n\n[Mail:"));
     assert!(
         dudes_proto::recognize_identified_conversation_task(&tasks[1], &queued.1, true, agent)
             .is_some(),
@@ -1226,7 +1226,12 @@ fn conversation_issued(
             session,
             task,
             ..
-        } if task.starts_with("[You are ") && task.ends_with(&format!("\n\n{task_text}")) => {
+        } if task.starts_with("[You are ")
+            && task.ends_with(&format!(
+                "\n\n{task_text}{}",
+                dudes_proto::MAIL_INSTRUCTION_WITH_REPLIES
+            )) =>
+        {
             Some((*turn, session.clone()))
         }
         _ => None,
@@ -1400,7 +1405,7 @@ fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
         third,
         dudes_proto::TurnOutcome::Completed,
     );
-    assert!(!fixture.records().iter().any(|record| matches!(record, Record::IdentifiedConversationTurnIssued { task, .. } if task.ends_with("\n\nqueued before loss"))));
+    assert!(!fixture.records().iter().any(|record| matches!(record, Record::IdentifiedConversationTurnIssued { task, .. } if task.contains("queued before loss"))));
     running.stop(duded::ExitCause::Signal);
 }
 
