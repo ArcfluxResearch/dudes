@@ -99,7 +99,7 @@ test('Refresh list needs the control switch, and a typed search filters the radi
 
 test('the agent panel says which model the latest ended turn ran', () => {
   const turn = (state, ran) => ({ agent_id: ID, turn_id: TURN, note_lsn: '7', text: 'hi', state, reply: null, truncated: null,
-    failure: null, ran_models: ran, reissued: false });
+    failure: null, cause: null, notice: null, ran_models: ran, reissued: false });
   const view = (turns) => ({ enabled: true, max_text_bytes: 4096, pending: [], turns, context_sent: [] });
   const claude = { ...base, provider: 'claude' };
   const on = [{ provider: 'claude', program: 'claude', found: true }];

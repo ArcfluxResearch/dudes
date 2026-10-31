@@ -508,7 +508,7 @@ fn escaped_legacy_replies_remain_visible_within_the_larger_history_budget() {
     p.end(turn(21), Some(&"\0".repeat(4096)));
     let view = p.projected.chat().unwrap();
     assert_eq!(view.turns.len(), 2);
-    assert_eq!(view.turns[0].turn_id, turn(20));
+    assert_eq!(view.turns[0].turn_id, Some(turn(20)));
     assert_eq!(view.turns[0].reply.as_deref(), Some("old fitting reply"));
     assert!(view.pending.is_empty());
     assert_eq!(

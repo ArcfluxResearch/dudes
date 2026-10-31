@@ -3489,7 +3489,7 @@ fn an_assignment_can_set_the_priority_and_sent_back_work_keeps_it() {
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v10"
+    "/tests/fixtures/floor-release-v11"
 );
 
 fn floor_answers(settings: &mut duded::Settings) {

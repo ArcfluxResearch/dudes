@@ -26,7 +26,7 @@ use common::{Fixture, ScriptedRunner, SharedHost, TestClock, UnconfirmedHost};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v10"
+    "/tests/fixtures/floor-release-v11"
 );
 const DAY_MS: i64 = 86_400_000;
 

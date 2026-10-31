@@ -1214,7 +1214,7 @@ fn ping_says_nothing_extra_when_the_versions_match() {
 fn quickstart_serves_the_floor_installed_beside_duded() {
     const FLOOR_FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../duded/tests/fixtures/floor-release-v10"
+        "/../duded/tests/fixtures/floor-release-v11"
     );
     let root = tempfile::tempdir().expect("an installed layout");
     #[cfg(unix)]

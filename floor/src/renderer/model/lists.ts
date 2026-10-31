@@ -65,7 +65,7 @@ export function heldList(floor: FloorState, provider: unknown): ModelListView | 
 
 /** The models the latest ended chat turn of an agent says it ran, at most four; empty when it names none. */
 export function ranModels(floor: FloorState, agent: string): readonly string[] {
-  const ended = floor.chat?.turns.filter((turn) => turn.agent_id === agent && (turn.state === 'ended' || turn.state === 'failed'));
+  const ended = floor.chat?.turns.filter((turn) => turn.agent_id === agent && turn.turn_id !== null && (turn.state === 'ended' || turn.state === 'failed'));
   return ended === undefined || ended.length === 0 ? [] : ended[ended.length - 1].ran_models;
 }
 

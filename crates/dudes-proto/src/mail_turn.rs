@@ -14,6 +14,13 @@ use crate::{ExhaustedReason, Gate, GateStep, HoldReason};
 /// The most mail one mail turn covers.
 pub const MAX_COVERED_MAIL: usize = 32;
 
+/// How a gate trace opens when the per-thread mail turn cap refuses.
+pub const THREAD_LIMIT_NOTE: &str = "mail turn thread limit reached";
+/// How a gate trace opens when the per-sender daily mail turn cap refuses.
+pub const SENDER_DAY_LIMIT_NOTE: &str = "mail turn sender day limit reached";
+/// How a gate trace opens when the daily cap on mail turns and mail wakes refuses.
+pub const DAY_LIMIT_NOTE: &str = "mail turn and mail wake day limit reached";
+
 /// The exact task of a mail turn: the agent's line, the covered-mail count, then the teaching.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -193,6 +200,41 @@ impl MailTurnDecision {
                 gate == Gate::Budget && *reason != ExhaustedReason::Hops
             }
         }
+    }
+}
+
+impl MailTurnDecision {
+    /// Why this decision started no turn, or `None` when it issues one.
+    #[must_use]
+    pub fn refusal(&self) -> Option<crate::ChatNoticeReason> {
+        use crate::ChatNoticeReason as Reason;
+        let note = || {
+            self.gate_trace
+                .last()
+                .and_then(|step| step.note.as_deref())
+                .unwrap_or_default()
+        };
+        Some(match &self.decision {
+            MailTurnAdmission::Issue { .. } => return None,
+            MailTurnAdmission::Wait { .. } => Reason::OpenQuestion,
+            MailTurnAdmission::Hold { reason } => match reason {
+                HoldReason::Halted => Reason::Halted,
+                HoldReason::Paused => Reason::Paused,
+                HoldReason::Attached => Reason::Attached,
+                _ => Reason::Hold,
+            },
+            MailTurnAdmission::Exhausted { reason } => match reason {
+                ExhaustedReason::CeilingRequired => Reason::CeilingRequired,
+                ExhaustedReason::MailWakeLimit if note().starts_with(THREAD_LIMIT_NOTE) => {
+                    Reason::ThreadLimit
+                }
+                ExhaustedReason::MailWakeLimit if note().starts_with(SENDER_DAY_LIMIT_NOTE) => {
+                    Reason::SenderDayLimit
+                }
+                ExhaustedReason::MailWakeLimit => Reason::DayLimit,
+                _ => Reason::Budget,
+            },
+        })
     }
 }
 

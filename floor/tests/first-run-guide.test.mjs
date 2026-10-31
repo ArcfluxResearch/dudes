@@ -14,7 +14,7 @@ const ID = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const SETTINGS = {
   folder_picker: false, create_parent: null, switches: { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false, hire: false, git: false, renew: false, board: false, diff: false, project: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '0', per_turn_tokens: '0' },
-  providers: ['claude'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 10 },
+  providers: ['claude'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 11 },
 };
 const WORKSPACE = { workspace_id: 'repo', label: '<Parser>', agent_usd_per_day_micros: '1000000',
   agent_tokens_per_day: null, goal_usd_micros: '1000000', goal_tokens: null };

@@ -3852,7 +3852,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         // The readers hand text over whole. It is scrubbed first and cut after, so a secret that
         // straddles a limit is replaced rather than half kept.
         let final_reply = final_reply
-            .filter(|_| self.world.browser_issue(turn).is_some())
+            .filter(|_| {
+                self.world.browser_issue(turn).is_some()
+                    || self.world.mail_turn_origin(turn)
+                    || self.world.mail_wake_origin(turn)
+            })
             .map(|reply| self.scrubbed_reply(&reply));
         let last_message = if final_reply.is_some() {
             None

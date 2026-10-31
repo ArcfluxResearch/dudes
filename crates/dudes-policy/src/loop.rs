@@ -648,17 +648,20 @@ fn mail_turn_cap(input: &MailTurnInput) -> Option<String> {
     let used = input.used;
     if used.thread >= THREAD_TURN_CAP {
         Some(format!(
-            "mail turn thread limit reached: {} of {THREAD_TURN_CAP}",
+            "{}: {} of {THREAD_TURN_CAP}",
+            dudes_proto::mail_turn::THREAD_LIMIT_NOTE,
             used.thread
         ))
     } else if used.sender_today >= SENDER_DAY_TURN_CAP {
         Some(format!(
-            "mail turn sender day limit reached: {} of {SENDER_DAY_TURN_CAP}",
+            "{}: {} of {SENDER_DAY_TURN_CAP}",
+            dudes_proto::mail_turn::SENDER_DAY_LIMIT_NOTE,
             used.sender_today
         ))
     } else if used.agent_today >= AGENT_DAY_TURN_CAP {
         Some(format!(
-            "mail turn and mail wake day limit reached: {} of {AGENT_DAY_TURN_CAP}",
+            "{}: {} of {AGENT_DAY_TURN_CAP}",
+            dudes_proto::mail_turn::DAY_LIMIT_NOTE,
             used.agent_today
         ))
     } else {

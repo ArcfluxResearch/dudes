@@ -15,7 +15,7 @@ const T2 = '01ARZ3NDEKTSV4RRFFQ69G5FB2';
 const M = n => `01ARZ3NDEKTSV4RRFFQ69G5FC${n}`;
 const row = { id: A, name: 'Ada', mode: 'managed', status: 'idle' };
 const turn = (lsn, text, reply) => ({ agent_id: A, turn_id: `01ARZ3NDEKTSV4RRFFQ69G5FD${lsn}`, note_lsn: String(lsn), text,
-  state: 'completed', reply, truncated: false, failure: null, ran_models: [], reissued: false });
+  state: 'completed', reply, truncated: false, failure: null, cause: null, notice: null, ran_models: [], reissued: false });
 const chat = { enabled: true, max_text_bytes: 4096, pending: [],
   turns: [turn(10, 'Ask Grace the date', 'Asked her.'), turn(30, 'Any news?', 'Not yet.')], context_sent: [] };
 const mail = (n, from, to, act, status, extra = {}) => ({ id: M(n), from, to, at: 1000 * n, lsn: String(n),

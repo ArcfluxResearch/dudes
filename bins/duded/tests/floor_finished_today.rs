@@ -28,7 +28,7 @@ use common::{Fixture, ScriptedRunner, SharedHost, TestClock, fails, goal_params,
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v10"
+    "/tests/fixtures/floor-release-v11"
 );
 
 /// 2026-10-07T08:00:00Z, which is 21:00 on 7 October in Auckland and 01:00 in Los Angeles.

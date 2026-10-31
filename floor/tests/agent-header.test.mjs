@@ -22,7 +22,7 @@ const ON = Object.freeze({});
 const SETTINGS = {
   folder_picker: false, create_parent: null, switches: { answer: false, control: true, goal: false, retire: true, terminal: true, hire: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-  providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 10 },
+  providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 11 },
 };
 
 let server;

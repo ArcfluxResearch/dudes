@@ -14,7 +14,7 @@ import { advanceStopAndSend, browserChatDeps, canStopAndSend, cancelChat, stopAn
   retryChat, selectChatAnswer, startFreshChat, submitChat, subscribeToChat } from './chat.ts';
 import { formatBytes } from './chatFiles.ts';
 import type { ChatState } from './chat.ts';
-import type { ChatReason, ChatTurn, PendingNote } from './model.ts';
+import type { ChatCause, ChatNotice, ChatReason, ChatTurn, NoticeReason, PendingNote } from './model.ts';
 import { conversationEntries } from './thread.ts';
 import type { ChatEntry } from './thread.ts';
 import { ChatText } from './ChatText.tsx';
@@ -230,7 +230,8 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onO
   const placed = placeAsked(entries.map(entry => entry.noteLsn), askedRequests(floor.messages ?? [], floor.threads ?? [], row.id));
   const askedRow = (request: AskedRequest) => <AskedRow key={request.id} request={request} from={name}
     to={names.get(request.to) || request.to} onOpenMail={onOpenMail} />;
-  const latestTurn = row.mode === 'managed' ? entries.filter(entry => entry.kind !== 'context' && entry.turn !== null).at(-1) : undefined;
+  const latestTurn = row.mode === 'managed'
+    ? entries.filter(entry => (entry.kind === 'message' || entry.kind === 'mail') && entry.turn !== null).at(-1) : undefined;
   return <section className={cn('chat-thread flex min-h-72 min-w-0 flex-1 flex-col gap-2', SHORT_THREAD)} aria-labelledby="chat-thread-title">
     <div className="chat-thread-heading flex flex-wrap items-center justify-between gap-x-3 gap-y-1"><h3 id="chat-thread-title" className={HEADING}>Conversation</h3>
       <ClearQueuedNotes floor={floor} row={row} action={action} />
@@ -251,16 +252,21 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onO
         if (entry.kind === 'context') return [<li key={entry.noteLsn} className="chat-context rounded-md border border-dashed border-line-strong px-3 py-2 text-small text-muted" data-chat-context-lsn={entry.noteLsn}>
           <p className="m-0">Sent as context</p>
         </li>, ...requests];
-        const { pending: note, turn } = entry;
+        if (entry.kind === 'notice') return [<NoticeRow key={entry.noteLsn} lsn={entry.noteLsn} notice={entry.notice}
+          sender={names.get(entry.notice.sender) || 'a teammate'} recipient={name} />, ...requests];
+        const turn = entry.turn;
+        const note = entry.kind === 'message' ? entry.pending : null;
         const preview = turn !== null && previewMatches(floor, row, turn);
         const status = turn !== null && note === null ? turnText(turn, preview ? floor.output.status : null) : null;
         const emphasis = turn?.state === 'failed' || note?.state === 'delivery_uncertain' ? 'font-semibold' : '';
         return [<li key={entry.noteLsn} className="chat-exchange grid min-w-0 gap-1.5" data-chat-note-lsn={entry.noteLsn}
           data-chat-pending-state={note?.state} data-chat-turn-id={turn?.turn_id} data-chat-turn-state={turn?.state}>
-          <div className={cn('chat-message chat-user', USER_BUBBLE)}>
-            <p className={cn('chat-speaker', SPEAKER)}>You</p>
-            <ChatText text={entry.text} />
-          </div>
+          {entry.kind === 'mail' ? <p className="chat-mail-cause m-0 min-w-0 text-small text-muted [overflow-wrap:anywhere]" data-chat-mail-cause
+            title={causeText(entry.cause, names)}>{causeLine(entry.cause, names)}</p>
+            : <div className={cn('chat-message chat-user', USER_BUBBLE)}>
+              <p className={cn('chat-speaker', SPEAKER)}>You</p>
+              <ChatText text={entry.text} />
+            </div>}
           {turn?.reissued === true ? <Notice tone="warn" data-chat-reissued="true">
             <p className={WARNING}>Restarted after interruption</p>
             <Disclosure className="font-normal" summaryClassName="py-0 text-small font-normal" summary="What changed">
@@ -364,6 +370,46 @@ function ClearQueuedNotes({ floor, row, action }: {
       </div>
     </div> : null}
   </div>;
+}
+
+function causeName(cause: ChatCause, names: ReadonlyMap<string, string>): string {
+  return cause.sender === null ? 'you' : names.get(cause.sender) || 'a teammate';
+}
+
+function causeText(cause: ChatCause, names: ReadonlyMap<string, string>): string {
+  const from = `After mail from ${causeName(cause, names)}`;
+  return cause.subject === null ? from : `${from} · ${cause.subject}`;
+}
+
+function causeLine(cause: ChatCause, names: ReadonlyMap<string, string>) {
+  const from = `After mail from ${causeName(cause, names)}`;
+  return cause.subject === null ? from : <>{from} · <bdi data-chat-mail-subject>{cause.subject}</bdi></>;
+}
+
+function noticeText(notice: ChatNotice, sender: string, recipient: string): string {
+  const tail: Readonly<Record<NoticeReason, string>> = {
+    thread_limit: 'waits: 2 turns in this thread already',
+    sender_day_limit: `waits: 4 turns from ${sender} today already`,
+    day_limit: 'waits: 20 mail turns today already',
+    open_question: `waits for your answer to ${recipient}'s question`,
+    halted: `waits while ${recipient} is stopped`,
+    paused: `waits while ${recipient} is paused`,
+    attached: `waits while ${recipient} is attached`,
+    hold: `waits while ${recipient} is held`,
+    budget: 'waits until the spending limit allows more work',
+    ceiling_required: 'needs a spending limit set',
+  };
+  return `Mail from ${sender} ${tail[notice.reason]}`;
+}
+
+/** One quiet line for mail that was held back instead of starting a turn. */
+function NoticeRow({ lsn, notice, sender, recipient }: {
+  readonly lsn: string; readonly notice: ChatNotice; readonly sender: string; readonly recipient: string;
+}) {
+  const sentence = noticeText(notice, sender, recipient);
+  return <li className="chat-notice m-0 min-w-0 list-none" data-chat-notice={notice.reason} data-chat-note-lsn={lsn}>
+    <p className="m-0 min-w-0 text-small text-muted [overflow-wrap:anywhere]" title={sentence}>{sentence}</p>
+  </li>;
 }
 
 function outcomeText(action: ChatState): string {

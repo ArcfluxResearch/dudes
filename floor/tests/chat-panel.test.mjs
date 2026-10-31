@@ -15,7 +15,7 @@ const G = '01ARZ3NDEKTSV4RRFFQ69G5FAZ';
 const row = { id: A, name: 'Ada', mode: 'managed', status: 'done', goal: { id: G, status: 'achieved' } };
 const view = () => ({ enabled: true, max_text_bytes: 4096, pending: [], turns: [], context_sent: [] });
 const turn = (patch = {}) => ({ agent_id: A, turn_id: T, note_lsn: '7', text: 'Please check',
-  state: 'ended', reply: 'A natural ending…', truncated: null, failure: null, ran_models: [], reissued: false, ...patch });
+  state: 'ended', reply: 'A natural ending…', truncated: null, failure: null, cause: null, notice: null, ran_models: [], reissued: false, ...patch });
 let server, store, ChatPanelView, AgentDrawer, action, chatModule;
 before(async () => {
   server = await createServer({ root: resolve(import.meta.dirname, '..'),

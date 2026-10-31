@@ -12,6 +12,7 @@ use dudes_types::{AgentId, GoalId, Lsn, ModelName, TurnId};
 use redb::{ReadableTable, Table};
 use serde::{Deserialize, Serialize};
 
+use super::mail::MailRow;
 use super::{AgentRow, RowTable, get_row, put_row};
 use crate::error::{Error, Result};
 
@@ -341,11 +342,74 @@ fn trim_windows(window: &mut Windows) -> Result<()> {
     Ok(())
 }
 
+/// The mail and wake rows a mail-started exchange reads its cause from.
+pub(super) struct MailFacts<'a, 'txn> {
+    pub mail: &'a RowTable<'txn>,
+    pub wakes: &'a RowTable<'txn>,
+}
+
+impl MailFacts<'_, '_> {
+    fn cause(&self, id: Option<dudes_types::MailId>) -> Result<Option<dudes_proto::ChatCause>> {
+        let Some(id) = id else { return Ok(None) };
+        Ok(get_row::<MailRow>(self.mail, &id.to_bytes())?.map(|row| row.chat_cause()))
+    }
+
+    fn wake_cause(&self, agent: AgentId, root: Lsn) -> Result<Option<dudes_proto::ChatCause>> {
+        let state =
+            get_row::<dudes_proto::mail_wake::MailWakeState>(self.wakes, &agent.to_bytes())?;
+        let trigger = state
+            .and_then(|state| state.preparation)
+            .filter(|preparation| preparation.root_lsn == root)
+            .map(|preparation| preparation.plan.trigger.id);
+        self.cause(trigger)
+    }
+}
+
+fn push_mail_row(window: &mut Windows, lsn: Lsn, view: ChatTurnView) -> Result<()> {
+    if array_bytes(std::slice::from_ref(&view))? <= MAX_CHAT_TURN_BYTES_PER_AGENT {
+        window.turns.push(TurnHistory {
+            issue_lsn: lsn,
+            view,
+        });
+    }
+    Ok(())
+}
+
+/// A turn that mail started has no operator note. It is running from the moment it is issued, so
+/// the reader never waits for a queued note that does not exist.
+fn push_mail_exchange(
+    window: &mut Windows,
+    lsn: Lsn,
+    agent: AgentId,
+    turn: TurnId,
+    cause: dudes_proto::ChatCause,
+) -> Result<()> {
+    push_mail_row(
+        window,
+        lsn,
+        ChatTurnView {
+            reissued: false,
+            agent_id: agent,
+            turn_id: Some(turn),
+            note_lsn: lsn.0.to_string(),
+            text: None,
+            cause: Some(cause),
+            notice: None,
+            state: ChatTurnState::Running,
+            reply: None,
+            truncated: None,
+            failure: None,
+            ran_models: Vec::new(),
+        },
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn apply(
     tables: &mut Tables<'_>,
     agents: &RowTable<'_>,
     turns: &RowTable<'_>,
+    mail: &MailFacts<'_, '_>,
     lsn: Lsn,
     entry: &Entry,
 ) -> Result<()> {
@@ -542,6 +606,17 @@ pub(super) fn apply(
                     *note_lsn,
                     None,
                 )?;
+            }
+            dudes_proto::issue::ManagedIssueRef::MailTurn(issue) => {
+                if let Some(cause) = mail.cause(issue.covered.first().map(|first| first.id))? {
+                    push_mail_exchange(&mut window, lsn, issue.agent, issue.turn, cause)?;
+                }
+            }
+            dudes_proto::issue::ManagedIssueRef::MailWake(issue)
+            | dudes_proto::issue::ManagedIssueRef::IdentifiedMailWake(issue) => {
+                if let Some(cause) = mail.wake_cause(issue.agent, issue.root_lsn)? {
+                    push_mail_exchange(&mut window, lsn, issue.agent, issue.turn, cause)?;
+                }
             }
             _ => return Ok(()),
         }
@@ -870,6 +945,36 @@ pub(super) fn apply(
             });
             put_row(&mut tables.decisions, &agent.to_bytes(), &decisions)?;
         }
+        Record::MailTurnDecided(decision) => {
+            if let Some(reason) = decision.refusal()
+                && let Some(sender) = decision
+                    .covered
+                    .first()
+                    .map(|first| mail.cause(Some(first.id)))
+                    .transpose()?
+                    .flatten()
+                    .and_then(|cause| cause.sender)
+            {
+                push_mail_row(
+                    &mut window,
+                    lsn,
+                    ChatTurnView {
+                        reissued: false,
+                        agent_id: decision.agent,
+                        turn_id: None,
+                        note_lsn: lsn.0.to_string(),
+                        text: None,
+                        cause: None,
+                        notice: Some(dudes_proto::ChatNotice { sender, reason }),
+                        state: ChatTurnState::Ended,
+                        reply: None,
+                        truncated: None,
+                        failure: None,
+                        ran_models: Vec::new(),
+                    },
+                )?;
+            }
+        }
         Record::BrowserNoteCancelled {
             agent, note_lsn, ..
         } => {
@@ -1031,11 +1136,11 @@ pub(super) fn apply(
                 tables
                     .notes
                     .insert(issue.note_lsn.0, encoded(&value)?.as_slice())?;
-                update_history(&mut window, *turn, |view| {
-                    view.state = ChatTurnState::Running;
-                    view.reissued |= *reissued;
-                });
             }
+            update_history(&mut window, *turn, |view| {
+                view.state = ChatTurnState::Running;
+                view.reissued |= *reissued;
+            });
         }
         Record::TurnEnded {
             agent,
@@ -1072,60 +1177,10 @@ pub(super) fn apply(
                 tables
                     .notes
                     .insert(issue.note_lsn.0, encoded(&value)?.as_slice())?;
-                update_history(&mut window, *turn, |view| {
-                    view.state = if matches!(
-                        outcome,
-                        Some(
-                            TurnOutcome::Failed { .. }
-                                | TurnOutcome::NoResult
-                                | TurnOutcome::Killed { .. }
-                                | TurnOutcome::Vanished
-                                | TurnOutcome::NotLaunched { .. }
-                                | TurnOutcome::LaunchRefused { .. }
-                        )
-                    ) || exit.code.is_some_and(|code| code != 0)
-                        || exit.signal.is_some()
-                    {
-                        ChatTurnState::Failed
-                    } else {
-                        ChatTurnState::Ended
-                    };
-                    view.failure = match outcome {
-                        Some(TurnOutcome::Failed { reason }) => {
-                            cut(reason, dudes_proto::MAX_CHAT_FAILURE_BYTES)
-                        }
-                        _ => None,
-                    };
-                    view.ran_models = model_usage
-                        .keys()
-                        .filter(|name| ModelName::parse(name).is_ok())
-                        .take(dudes_proto::MAX_CHAT_RAN_MODELS)
-                        .cloned()
-                        .collect();
-                    view.reply = final_reply
-                        .as_ref()
-                        .map(|reply| reply.text.clone())
-                        .or_else(|| last_message.clone());
-                    view.truncated = final_reply.as_ref().map(|reply| {
-                        reply.completeness == dudes_proto::ChatReplyCompleteness::Truncated
-                    });
-                    let reply_limit = if final_reply.is_some() {
-                        dudes_proto::MAX_CHAT_REPLY_BYTES
-                    } else {
-                        MAX_CHAT_TEXT_BYTES
-                    };
-                    if let Some(reply) = view.reply.as_mut()
-                        && reply.len() > reply_limit
-                    {
-                        let mut end = reply_limit;
-                        while !reply.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        reply.truncate(end);
-                        view.truncated = Some(true);
-                    }
-                });
             }
+            update_history(&mut window, *turn, |view| {
+                end_view(view, outcome, exit, model_usage, final_reply, last_message);
+            });
         }
         Record::AgentRetired { id, .. } => {
             window.turns.retain(|row| row.view.agent_id != *id);
@@ -1253,9 +1308,11 @@ fn reserve(
     let view = ChatTurnView {
         reissued: false,
         agent_id: agent,
-        turn_id: turn,
+        turn_id: Some(turn),
         note_lsn: note_lsn.0.to_string(),
-        text: value.text,
+        text: Some(value.text),
+        cause: None,
+        notice: None,
         state: ChatTurnState::Reserved,
         reply: None,
         truncated: None,
@@ -1280,8 +1337,71 @@ fn cut(text: &str, limit: usize) -> Option<String> {
     (end > 0).then(|| text[..end].to_owned())
 }
 
+fn end_view(
+    view: &mut ChatTurnView,
+    outcome: &Option<TurnOutcome>,
+    exit: &dudes_proto::ExitStatus,
+    model_usage: &BTreeMap<String, dudes_types::Usage>,
+    final_reply: &Option<dudes_proto::ChatReply>,
+    last_message: &Option<String>,
+) {
+    view.state = if matches!(
+        outcome,
+        Some(
+            TurnOutcome::Failed { .. }
+                | TurnOutcome::NoResult
+                | TurnOutcome::Killed { .. }
+                | TurnOutcome::Vanished
+                | TurnOutcome::NotLaunched { .. }
+                | TurnOutcome::LaunchRefused { .. }
+        )
+    ) || exit.code.is_some_and(|code| code != 0)
+        || exit.signal.is_some()
+    {
+        ChatTurnState::Failed
+    } else {
+        ChatTurnState::Ended
+    };
+    view.failure = match outcome {
+        Some(TurnOutcome::Failed { reason }) => cut(reason, dudes_proto::MAX_CHAT_FAILURE_BYTES),
+        _ => None,
+    };
+    view.ran_models = model_usage
+        .keys()
+        .filter(|name| ModelName::parse(name).is_ok())
+        .take(dudes_proto::MAX_CHAT_RAN_MODELS)
+        .cloned()
+        .collect();
+    view.reply = final_reply
+        .as_ref()
+        .map(|reply| reply.text.clone())
+        .or_else(|| last_message.clone());
+    view.truncated = final_reply
+        .as_ref()
+        .map(|reply| reply.completeness == dudes_proto::ChatReplyCompleteness::Truncated);
+    let reply_limit = if final_reply.is_some() {
+        dudes_proto::MAX_CHAT_REPLY_BYTES
+    } else {
+        MAX_CHAT_TEXT_BYTES
+    };
+    if let Some(reply) = view.reply.as_mut()
+        && reply.len() > reply_limit
+    {
+        let mut end = reply_limit;
+        while !reply.is_char_boundary(end) {
+            end -= 1;
+        }
+        reply.truncate(end);
+        view.truncated = Some(true);
+    }
+}
+
 fn update_history(window: &mut Windows, turn: TurnId, change: impl FnOnce(&mut ChatTurnView)) {
-    if let Some(row) = window.turns.iter_mut().find(|row| row.view.turn_id == turn) {
+    if let Some(row) = window
+        .turns
+        .iter_mut()
+        .find(|row| row.view.turn_id == Some(turn))
+    {
         change(&mut row.view);
     }
 }
@@ -1392,8 +1512,10 @@ pub(super) fn read(
         })
     });
     for turn in &mut view.turns {
-        let issue =
-            get_row::<BrowserTurn>(issues, &turn.turn_id.to_bytes())?.ok_or_else(invalid)?;
+        let Some(id) = turn.turn_id.filter(|_| turn.text.is_some()) else {
+            continue;
+        };
+        let issue = get_row::<BrowserTurn>(issues, &id.to_bytes())?.ok_or_else(invalid)?;
         if issue.cancellation.is_none()
             && issue.end.is_none()
             && overlays
