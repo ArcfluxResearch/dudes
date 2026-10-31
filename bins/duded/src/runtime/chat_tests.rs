@@ -2872,7 +2872,7 @@ fn owned_managed_child_receives_note_only_stdin_and_journals_exact_reply() {
     let final_row = chat
         .turns
         .iter()
-        .find(|row| row.turn_id == turn)
+        .find(|row| row.turn_id == Some(turn))
         .expect("matched note turn");
     assert_eq!(final_row.reply.as_deref(), Some(expected_reply.as_str()));
     assert_eq!(final_row.truncated, Some(false));

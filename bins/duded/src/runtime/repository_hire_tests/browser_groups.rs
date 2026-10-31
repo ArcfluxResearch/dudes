@@ -7,7 +7,7 @@ fn floor_setup() -> Setup {
     setup.settings.floor = Some(crate::settings::FloorSettings {
         assets_dir: std::path::PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/floor-release-v10"
+            "/tests/fixtures/floor-release-v11"
         )),
         port: Some(0),
     });

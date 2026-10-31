@@ -15,7 +15,7 @@ const empty = () => ({ enabled: true, max_text_bytes: 4096, pending: [], turns: 
 const pending = (patch = {}) => ({ agent_id: A, note_lsn: '7', goal_id: G, text: 'Please check.',
   state: 'queued', turn_id: null, cancellable: true, reason: null, ...patch });
 const turn = (patch = {}) => ({ agent_id: A, turn_id: T, note_lsn: '7', text: 'Please check.',
-  state: 'ended', reply: 'Looks good…', truncated: null, failure: null, ran_models: [], reissued: false, ...patch });
+  state: 'ended', reply: 'Looks good…', truncated: null, failure: null, cause: null, notice: null, ran_models: [], reissued: false, ...patch });
 
 test('Chat accepts the exact bounded value and preserves natural ellipses and unknown completeness', () => {
   const value = { ...empty(), turns: [turn()], context_sent: [{ agent_id: B, note_lsn: '8', state: 'sent_as_context' }] };

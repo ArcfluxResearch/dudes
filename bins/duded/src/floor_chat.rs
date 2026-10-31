@@ -457,7 +457,7 @@ pub(crate) fn validate_view(view: &dudes_proto::ChatView) -> Result<()> {
     let mut turn_ids = std::collections::BTreeSet::new();
     for row in &view.turns {
         let note = crate::floor_answer::decode_canonical_lsn(&row.note_lsn)?;
-        valid_text(&row.text)?;
+        valid_turn_shape(row)?;
         if row
             .reply
             .as_ref()
@@ -465,7 +465,9 @@ pub(crate) fn validate_view(view: &dudes_proto::ChatView) -> Result<()> {
         {
             bail!("Chat final reply exceeds its bound");
         }
-        if turns.insert(note, row).is_some() || !turn_ids.insert(row.turn_id) {
+        if turns.insert(note, row).is_some()
+            || row.turn_id.is_some_and(|turn| !turn_ids.insert(turn))
+        {
             bail!("duplicate Chat note turn");
         }
         if matches!(
@@ -480,8 +482,8 @@ pub(crate) fn validate_view(view: &dudes_proto::ChatView) -> Result<()> {
         }
         if let Some(pending) = pending.get(&note)
             && (pending.agent_id != row.agent_id
-                || pending.turn_id != Some(row.turn_id)
-                || pending.text != row.text)
+                || pending.turn_id != row.turn_id
+                || Some(&pending.text) != row.text.as_ref())
         {
             bail!("unmatched Chat pending turn");
         }
@@ -526,6 +528,46 @@ pub(crate) fn retain_current_agents(
     view.turns.retain(|row| current.contains(&row.agent_id));
     view.context_sent
         .retain(|row| current.contains(&row.agent_id));
+}
+
+fn valid_turn_shape(row: &dudes_proto::ChatTurnView) -> Result<()> {
+    use dudes_proto::ChatTurnState;
+    match (&row.text, &row.cause, &row.notice, row.turn_id) {
+        (Some(text), None, None, Some(_)) => {
+            valid_text(text)?;
+            if row.state == ChatTurnState::Waiting {
+                bail!("Chat note turn cannot be waiting");
+            }
+        }
+        (None, Some(cause), None, Some(_)) => {
+            if !matches!(
+                row.state,
+                ChatTurnState::Waiting
+                    | ChatTurnState::Running
+                    | ChatTurnState::Ended
+                    | ChatTurnState::Failed
+            ) {
+                bail!("Chat mail turn is in a state a mail turn never has");
+            }
+            if cause.subject.as_ref().is_some_and(|subject| {
+                subject.is_empty()
+                    || subject.len() > dudes_proto::messages::MAX_MAIL_SUBJECT_BYTES
+                    || subject.chars().any(char::is_control)
+            }) {
+                bail!("invalid Chat mail cause subject");
+            }
+        }
+        (None, None, Some(notice), None)
+            if row.state == ChatTurnState::Ended
+                && !row.reissued
+                && row.reply.is_none()
+                && row.truncated.is_none()
+                && row.failure.is_none()
+                && row.ran_models.is_empty()
+                && notice.limit.is_some() == notice.reason.is_cap() => {}
+        _ => bail!("Chat turn row is neither a note turn, a mail turn nor a notice"),
+    }
+    Ok(())
 }
 
 fn valid_text(text: &str) -> Result<()> {
@@ -697,9 +739,11 @@ mod tests {
         dudes_proto::ChatTurnView {
             reissued: false,
             agent_id: agent,
-            turn_id: dudes_types::TurnId::from_parts(1, u128::from(number)),
+            turn_id: Some(dudes_types::TurnId::from_parts(1, u128::from(number))),
             note_lsn: number.to_string(),
-            text: "\\".repeat(4_096),
+            text: Some("\\".repeat(4_096)),
+            cause: None,
+            notice: None,
             state: dudes_proto::ChatTurnState::Ended,
             reply: Some("\\".repeat(4_096)),
             truncated: None,
@@ -737,7 +781,7 @@ mod tests {
         row.truncated = Some(false);
         view.turns.push(row.clone());
         validate_view(&view).unwrap();
-        row.turn_id = dudes_types::TurnId::from_parts(1, 2);
+        row.turn_id = Some(dudes_types::TurnId::from_parts(1, 2));
         row.note_lsn = "2".into();
         view.turns.push(row.clone());
         assert!(validate_view(&view).is_err());
@@ -745,16 +789,80 @@ mod tests {
             .map(|number| {
                 let mut value = row.clone();
                 value.agent_id = AgentId::from_parts(1, number);
-                value.turn_id = dudes_types::TurnId::from_parts(1, number);
+                value.turn_id = Some(dudes_types::TurnId::from_parts(1, number));
                 value.note_lsn = number.to_string();
                 value
             })
             .collect();
         validate_view(&view).unwrap();
         row.agent_id = AgentId::from_parts(1, 5);
-        row.turn_id = dudes_types::TurnId::from_parts(1, 5);
+        row.turn_id = Some(dudes_types::TurnId::from_parts(1, 5));
         row.note_lsn = "5".into();
         view.turns.push(row);
+        assert!(validate_view(&view).is_err());
+    }
+
+    #[test]
+    fn mail_started_rows_and_notices_must_keep_their_exact_shape() {
+        let agent = AgentId::parse(AGENT).unwrap();
+        let mut mail = turn(2, agent);
+        mail.text = None;
+        mail.cause = Some(dudes_proto::ChatCause {
+            sender: Some(AgentId::from_parts(1, 9)),
+            thread: None,
+            subject: Some("Release date".into()),
+        });
+        let mut notice = turn(3, agent);
+        notice.text = None;
+        notice.turn_id = None;
+        notice.reply = None;
+        notice.notice = Some(dudes_proto::ChatNotice {
+            sender: AgentId::from_parts(1, 9),
+            reason: dudes_proto::ChatNoticeReason::ThreadLimit,
+            limit: Some(2),
+        });
+        let mut view = dudes_proto::ChatView::empty();
+        view.turns = vec![mail.clone(), notice.clone()];
+        validate_view(&view).unwrap();
+
+        let refused = |change: &dyn Fn(&mut dudes_proto::ChatTurnView)| {
+            let mut rows = [mail.clone(), notice.clone()];
+            rows.iter_mut().for_each(change);
+            let mut view = dudes_proto::ChatView::empty();
+            view.turns = rows.to_vec();
+            validate_view(&view).is_err()
+        };
+        assert!(refused(&|row| row.text = Some("operator words".into())));
+        assert!(refused(&|row| row.turn_id = None));
+        assert!(refused(
+            &|row| row.state = dudes_proto::ChatTurnState::Failed
+        ));
+        assert!(refused(&|row| row.reissued = true));
+        assert!(refused(&|row| row.failure = Some("boom".into())));
+        assert!(refused(&|row| row.ran_models = vec!["model".into()]));
+        assert!(refused(&|row| if let Some(notice) = row.notice.as_mut() {
+            notice.limit = None;
+        }));
+        let mut waiting = mail.clone();
+        waiting.state = dudes_proto::ChatTurnState::Waiting;
+        waiting.reply = None;
+        view.turns = vec![waiting.clone()];
+        validate_view(&view).unwrap();
+        waiting.state = dudes_proto::ChatTurnState::Reserved;
+        view.turns = vec![waiting];
+        assert!(validate_view(&view).is_err());
+        let mut note = turn(4, agent);
+        note.state = dudes_proto::ChatTurnState::Waiting;
+        note.reply = None;
+        view.turns = vec![note];
+        assert!(validate_view(&view).is_err());
+        let mut long = mail.clone();
+        long.cause.as_mut().unwrap().subject = Some("x".repeat(121));
+        view.turns = vec![long];
+        assert!(validate_view(&view).is_err());
+        let mut both = notice;
+        both.cause = mail.cause;
+        view.turns = vec![both];
         assert!(validate_view(&view).is_err());
     }
 
@@ -770,12 +878,12 @@ mod tests {
         view.pending[0].state = dudes_proto::ChatPendingState::Reserved;
         assert!(validate_view(&view).is_err());
         let mut row = turn(1, agent);
-        row.text = "hello".into();
+        row.text = Some("hello".into());
         row.reply = None;
-        view.pending[0].turn_id = Some(row.turn_id);
+        view.pending[0].turn_id = row.turn_id;
         view.turns.push(row);
         validate_view(&view).unwrap();
-        view.turns[0].text = "another note".into();
+        view.turns[0].text = Some("another note".into());
         assert!(validate_view(&view).is_err());
     }
 

@@ -122,7 +122,10 @@ fn raw_taught_and_identified_decision_issue_contracts_must_match() {
                     dudes_types::GoalStatus::Achieved
                 );
                 assert_eq!(p.goal(goal()).unwrap().unwrap().turns_on_goal, 1);
-                assert_eq!(p.chat().unwrap().turns[0].text, "whole note");
+                assert_eq!(
+                    p.chat().unwrap().turns[0].text.as_deref(),
+                    Some("whole note")
+                );
                 assert!(p.export().unwrap().contains(match decision_contract {
                     NoteContract::Raw => "\"raw\"",
                     NoteContract::Taught => "\"taught\"",

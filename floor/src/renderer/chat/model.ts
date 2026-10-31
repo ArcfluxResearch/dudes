@@ -10,7 +10,7 @@ export const CHAT_REASONS = ['agent_absent', 'agent_retired', 'halted', 'unsuppo
   'stale_control', 'turn_open', 'action_off'] as const;
 export type ChatReason = (typeof CHAT_REASONS)[number];
 export type PendingState = 'queued' | 'reserved' | 'delivery_uncertain';
-export type TurnState = 'reserved' | 'running' | 'ended' | 'failed' | 'cancelled' | 'delivery_uncertain' | 'reissue_cancelled';
+export type TurnState = 'reserved' | 'waiting' | 'running' | 'ended' | 'failed' | 'cancelled' | 'delivery_uncertain' | 'reissue_cancelled';
 
 export interface PendingNote {
   readonly agent_id: string;
@@ -23,11 +23,39 @@ export interface PendingNote {
   readonly reason: ChatReason | null;
 }
 
+export const NOTICE_REASONS = ['thread_limit', 'sender_day_limit', 'day_limit', 'open_question', 'halted', 'paused',
+  'attached', 'hold', 'budget', 'ceiling_required'] as const;
+const CAP_REASONS: readonly string[] = ['thread_limit', 'sender_day_limit', 'day_limit'];
+export type NoticeReason = (typeof NOTICE_REASONS)[number];
+
+/** The mail that started a turn. A peer's words: show them as plain text. */
+export interface ChatCause {
+  /** The sending agent, or null when the operator sent the mail. */
+  readonly sender: string | null;
+  readonly thread: string | null;
+  /** The subject caption, present only when the daemon admitted it for display. */
+  readonly subject: string | null;
+}
+
+/** Mail for this agent that was held back instead of starting a turn. */
+export interface ChatNotice {
+  readonly sender: string;
+  readonly reason: NoticeReason;
+  /** The cap that fired, for a cap reason, and null for every other reason. */
+  readonly limit: number | null;
+}
+
+/**
+ * One row of an agent's history. An operator note carries `text`. A turn that mail started carries `cause`
+ * and no `text`. A notice carries `notice` and no turn.
+ */
 export interface ChatTurn {
   readonly agent_id: string;
-  readonly turn_id: string;
+  readonly turn_id: string | null;
   readonly note_lsn: string;
-  readonly text: string;
+  readonly text: string | null;
+  readonly cause: ChatCause | null;
+  readonly notice: ChatNotice | null;
   readonly state: TurnState;
   readonly reply: string | null;
   readonly truncated: boolean | null;
@@ -69,6 +97,19 @@ function text(value: unknown, note = false): value is string {
   return typeof value === 'string' && !/\p{Cs}/u.test(value) && utf8Bytes(value) <= (note ? 4096 : 65536)
     && (!note || (value.length > 0 && !/[^\P{Cc}\t\n]/u.test(value)
       && !/^[ \t\r\n]|[ \t\r\n]$/.test(value)));
+}
+
+function causeOk(value: unknown): value is ChatCause {
+  return exactObject(value, ['sender', 'thread', 'subject'])
+    && (value.sender === null || identity(value.sender)) && (value.thread === null || identity(value.thread))
+    && (value.subject === null || (typeof value.subject === 'string' && value.subject.length > 0
+      && utf8Bytes(value.subject) <= 120 && !/\p{Cc}|\p{Cs}/u.test(value.subject)));
+}
+
+function noticeOk(value: unknown): value is ChatNotice {
+  return exactObject(value, ['sender', 'reason', 'limit']) && identity(value.sender)
+    && typeof value.reason === 'string' && (NOTICE_REASONS as readonly string[]).includes(value.reason)
+    && (CAP_REASONS.includes(value.reason) ? Number.isInteger(value.limit) && (value.limit as number) > 0 : value.limit === null);
 }
 
 function failureText(value: unknown): boolean {
@@ -117,16 +158,21 @@ export function decodeChat(value: unknown, agents: readonly { readonly id: strin
     pending.push(Object.freeze({ ...row }) as unknown as PendingNote);
   }
   for (const row of value.turns) {
-    if (!exactObject(row, ['agent_id', 'turn_id', 'note_lsn', 'text', 'state', 'reply', 'truncated', 'failure', 'ran_models', 'reissued'])
-      || !identity(row.agent_id) || !current.has(row.agent_id) || !identity(row.turn_id)
-      || !canonicalLsn(row.note_lsn) || !text(row.text, true)
+    if (!exactObject(row, ['agent_id', 'turn_id', 'note_lsn', 'text', 'cause', 'notice', 'state', 'reply', 'truncated', 'failure', 'ran_models', 'reissued'])
+      || !identity(row.agent_id) || !current.has(row.agent_id) || !canonicalLsn(row.note_lsn)
       || typeof row.state !== 'string'
-      || !['reserved', 'running', 'ended', 'failed', 'cancelled', 'delivery_uncertain', 'reissue_cancelled'].includes(row.state)
+      || !['reserved', 'waiting', 'running', 'ended', 'failed', 'cancelled', 'delivery_uncertain', 'reissue_cancelled'].includes(row.state)
       || (row.reply !== null && !text(row.reply)) || (row.truncated !== null && typeof row.truncated !== 'boolean')
       || typeof row.reissued !== 'boolean' || !failureText(row.failure) || ranModels(row.ran_models) === null
       || (row.failure !== null && row.state !== 'failed')
       || (row.reply === null && row.truncated !== null)
       || (row.state !== 'ended' && row.state !== 'failed' && (row.reply !== null || row.truncated !== null))) return null;
+    const noteTurn = row.text !== null && row.state !== 'waiting' && text(row.text, true) && identity(row.turn_id) && row.cause === null && row.notice === null;
+    const mailTurn = row.text === null && identity(row.turn_id) && causeOk(row.cause) && row.notice === null
+      && ['waiting', 'running', 'ended', 'failed'].includes(row.state);
+    const notice = row.text === null && row.turn_id === null && row.cause === null && noticeOk(row.notice) && row.state === 'ended'
+      && row.reply === null && row.failure === null && !row.reissued && (row.ran_models as unknown[]).length === 0;
+    if (!noteTurn && !mailTurn && !notice) return null;
     turns.push(Object.freeze({ ...row, ran_models: Object.freeze(ranModels(row.ran_models)) }) as unknown as ChatTurn);
   }
   for (const row of value.context_sent) {
@@ -139,7 +185,7 @@ export function decodeChat(value: unknown, agents: readonly { readonly id: strin
   const pendingByNote = new Map(pending.map(row => [row.note_lsn, row]));
   const turnsByNote = new Map(turns.map(row => [row.note_lsn, row]));
   if (pendingByNote.size !== pending.length || turnsByNote.size !== turns.length
-    || new Set(turns.map(row => row.turn_id)).size !== turns.length
+    || new Set(turns.flatMap(row => row.turn_id === null ? [] : [row.turn_id])).size !== turns.filter(row => row.turn_id !== null).length
     || new Set(context.map(row => row.note_lsn)).size !== context.length) return null;
   for (const row of turns) {
     const queued = pendingByNote.get(row.note_lsn);

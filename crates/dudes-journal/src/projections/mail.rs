@@ -36,6 +36,18 @@ pub(super) struct MailRow {
 }
 
 impl MailRow {
+    /// The sender, thread and admitted subject caption a chat row shows for this mail.
+    pub(super) fn chat_cause(&self) -> dudes_proto::ChatCause {
+        dudes_proto::ChatCause {
+            sender: match self.from {
+                MailFrom::Agent { agent } => Some(agent),
+                MailFrom::Human => None,
+            },
+            thread: self.thread,
+            subject: self.subject.clone().filter(|caption| !caption.is_empty()),
+        }
+    }
+
     pub(super) fn wake_fact(&self) -> Option<(AgentId, MailWakeMail)> {
         let MailTo::Agent { agent } = self.to else {
             return None;

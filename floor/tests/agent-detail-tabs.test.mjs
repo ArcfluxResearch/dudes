@@ -392,7 +392,7 @@ test('with the terminal switch off, a Claude agent’s header says how to turn i
   const settings = {
     folder_picker: false, create_parent: null, switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-    providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 10 },
+    providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 11 },
   };
   const claude = { ...row, provider: 'claude' };
   const hint = /<p class="agent-attach-note">To open the real CLI, turn on Attach terminals in Settings\.<\/p>/;
@@ -408,7 +408,7 @@ test('the Attach note does not fold into Enable more controls, which keeps the o
   const settings = {
     folder_picker: false, create_parent: null, switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-    providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 10 },
+    providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 11 },
   };
   const claude = { ...row, provider: 'claude' };
   const DISCLOSURE = /<details class="enable-controls"><summary>(?:<svg[\s\S]*?<\/svg>)?Enable more controls <span class="enable-controls-count">(\d)<\/span><\/summary><div>([\s\S]*?)<\/div><\/details>/;

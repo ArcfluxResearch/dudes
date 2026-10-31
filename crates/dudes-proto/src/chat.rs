@@ -1,6 +1,6 @@
 //! The bounded browser-note read contract, emitted by every daemon run.
 
-use dudes_types::{AgentId, GoalId, TurnId};
+use dudes_types::{AgentId, GoalId, ThreadId, TurnId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -135,6 +135,9 @@ pub enum ChatPendingState {
 pub enum ChatTurnState {
     /// Fixed wire spelling `reserved`.
     Reserved,
+    /// A mail-started turn is issued and has not launched yet. It starts when the agent is free,
+    /// which a pause, a halt or a hold can delay. Only mail rows carry it.
+    Waiting,
     /// Fixed wire spelling `running`.
     Running,
     /// Fixed wire spelling `ended`.
@@ -193,12 +196,24 @@ pub struct ChatTurnView {
     pub reissued: bool,
     /// The `agent_id` value, with explicit null where applicable.
     pub agent_id: AgentId,
-    /// The `turn_id` value, with explicit null where applicable.
-    pub turn_id: TurnId,
-    /// The `note_lsn` value, with explicit null where applicable.
+    /// The `turn_id` value. Null on a notice, which no turn belongs to.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<TurnId>")]
+    pub turn_id: Option<TurnId>,
+    /// The journal position that orders this row among the agent's other rows.
     pub note_lsn: String,
-    /// The `text` value, with explicit null where applicable.
-    pub text: String,
+    /// The operator's message. Null when mail started the turn, and on a notice.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<String>")]
+    pub text: Option<String>,
+    /// What started the turn when mail did, and null otherwise.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<ChatCause>")]
+    pub cause: Option<ChatCause>,
+    /// Why mail for this agent was held back, and null on a turn.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<ChatNotice>")]
+    pub notice: Option<ChatNotice>,
     /// The `state` value, with explicit null where applicable.
     pub state: ChatTurnState,
     /// The `reply` value, with explicit null where applicable.
@@ -217,6 +232,75 @@ pub struct ChatTurnView {
     /// The models the provider attributed the turn's usage to, at most [`MAX_CHAT_RAN_MODELS`],
     /// as reported. Empty when the provider reported none.
     pub ran_models: Vec<String>,
+}
+
+/// The mail that started a turn. Its words are a peer's, so a reader shows them as plain text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCause {
+    /// The sending agent, taken from the folder the mail came from. Null when the operator sent it.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<AgentId>")]
+    pub sender: Option<AgentId>,
+    /// The conversation. Null for mail that predates conversations.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<ThreadId>")]
+    pub thread: Option<ThreadId>,
+    /// The subject caption, present only when the mail's subject admission permits browser captions.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<String>")]
+    pub subject: Option<String>,
+}
+
+/// Why a mail turn was not started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatNoticeReason {
+    /// The thread already got its mail turns.
+    ThreadLimit,
+    /// The sender already got its mail turns today.
+    SenderDayLimit,
+    /// The agent already got its mail turns and wakes today.
+    DayLimit,
+    /// An operator question is open.
+    OpenQuestion,
+    /// The agent is halted.
+    Halted,
+    /// The agent is paused.
+    Paused,
+    /// A person is attached to the agent.
+    Attached,
+    /// Another standing hold.
+    Hold,
+    /// A spending limit is used up.
+    Budget,
+    /// The engine bills a credential and no spending limit is set.
+    CeilingRequired,
+}
+
+/// A mail turn that was refused, shown as one line in the recipient's chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChatNotice {
+    /// The agent whose mail waits.
+    pub sender: AgentId,
+    /// Why it waits.
+    pub reason: ChatNoticeReason,
+    /// The cap that fired, for the three cap reasons, and null for every other reason.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<u32>")]
+    pub limit: Option<u32>,
+}
+
+impl ChatNoticeReason {
+    /// Whether this reason names a cap and so carries its number.
+    #[must_use]
+    pub const fn is_cap(self) -> bool {
+        matches!(
+            self,
+            Self::ThreadLimit | Self::SenderDayLimit | Self::DayLimit
+        )
+    }
 }
 
 /// Longest `failure` text of a [`ChatTurnView`], in bytes.

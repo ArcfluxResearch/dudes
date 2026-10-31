@@ -573,7 +573,7 @@ fn a_hire_keeps_its_revision_across_label_edits_but_cannot_omit_a_new_member() {
 #[test]
 fn a_cache_without_lifetime_markers_rebuilds_retired_legacy_hire_identity() {
     use dudes_proto::repository_state::history::RepositoryHireClass;
-    assert_eq!(dudes_journal::PROJECTION_VERSION, 73);
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 74);
     let dir = tempfile::tempdir().unwrap();
     let journal = dir.path().join("journal");
     let cache = dir.path().join("state.redb");

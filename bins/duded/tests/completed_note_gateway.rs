@@ -33,7 +33,7 @@ fn start(
     settings.floor = Some(FloorSettings {
         assets_dir: PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/floor-release-v10"
+            "/tests/fixtures/floor-release-v11"
         )),
         port: Some(0),
     });

@@ -2971,9 +2971,11 @@ mod tests {
         chat.turns.push(dudes_proto::ChatTurnView {
             reissued: false,
             agent_id,
-            turn_id,
+            turn_id: Some(turn_id),
             note_lsn: "1".into(),
-            text: "note".into(),
+            text: Some("note".into()),
+            cause: None,
+            notice: None,
             state: dudes_proto::ChatTurnState::Reserved,
             reply: None,
             truncated: None,

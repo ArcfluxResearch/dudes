@@ -64,7 +64,7 @@ use common::{Fixture, ScriptedRunner, SharedHost, TestClock, seams};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v10"
+    "/tests/fixtures/floor-release-v11"
 );
 
 fn floor_fixture() -> tempfile::TempDir {
