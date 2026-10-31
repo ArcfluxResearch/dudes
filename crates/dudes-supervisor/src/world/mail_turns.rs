@@ -233,36 +233,47 @@ impl Fold {
                     self.accepted_lsn = Some(lsn);
                 }
             }
-            Record::MailTurnIssued(issue) => {
-                let current = self.issue_current(world, issue);
-                if !current {
-                    return;
+            _ => {
+                if let Some(issue) = entry.record.mail_turn_issue() {
+                    self.apply_issue(world, lsn, entry.at, issue);
                 }
-                let Some(thread) = self.threads.get(&issue.thread) else {
-                    return;
-                };
-                let sender = if thread.members[0] == issue.agent {
-                    thread.members[1]
-                } else {
-                    thread.members[0]
-                };
-                let day = entry.at.utc_day();
-                self.covered
-                    .extend(issue.covered.iter().map(|mail| mail.id));
-                *self
-                    .per_thread
-                    .entry((issue.agent, issue.thread))
-                    .or_default() += 1;
-                *self
-                    .per_sender_day
-                    .entry((issue.agent, sender, day))
-                    .or_default() += 1;
-                *self.per_day.entry((issue.agent, day)).or_default() += 1;
-                self.origins.insert(issue.turn);
-                self.accepted_lsn = Some(lsn);
             }
-            _ => {}
         }
+    }
+
+    fn apply_issue(
+        &mut self,
+        world: &World,
+        lsn: Lsn,
+        at: dudes_types::Timestamp,
+        issue: &dudes_proto::MailTurnIssue,
+    ) {
+        let current = self.issue_current(world, issue);
+        if !current {
+            return;
+        }
+        let Some(thread) = self.threads.get(&issue.thread) else {
+            return;
+        };
+        let sender = if thread.members[0] == issue.agent {
+            thread.members[1]
+        } else {
+            thread.members[0]
+        };
+        let day = at.utc_day();
+        self.covered
+            .extend(issue.covered.iter().map(|mail| mail.id));
+        *self
+            .per_thread
+            .entry((issue.agent, issue.thread))
+            .or_default() += 1;
+        *self
+            .per_sender_day
+            .entry((issue.agent, sender, day))
+            .or_default() += 1;
+        *self.per_day.entry((issue.agent, day)).or_default() += 1;
+        self.origins.insert(issue.turn);
+        self.accepted_lsn = Some(lsn);
     }
 
     fn idle_goal_free(world: &World, agent: AgentId) -> bool {

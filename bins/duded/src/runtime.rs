@@ -7646,8 +7646,8 @@ fn mail_acknowledged_by_effect(effect: &Effect) -> bool {
                     | Record::MailWakeTurnDecided(_)
                     | Record::IdentifiedMailWakeTurnDecided(_)
                     | Record::MailTurnDecided(_)
-                    | Record::MailTurnIssued(_)
             ) || entry.record.mail_issue().is_some()
+                || entry.record.mail_turn_issue().is_some()
         })
 }
 
@@ -8972,8 +8972,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 | Record::MailWakeTurnDecided(_)
                 | Record::IdentifiedMailWakeTurnDecided(_)
                 | Record::MailTurnDecided(_)
-                | Record::MailTurnIssued(_)
         ) || entry.record.mail_issue().is_some()
+            || entry.record.mail_turn_issue().is_some()
         {
             anyhow::ensure!(
                 !self.mail_progression_fenced(),
