@@ -18,6 +18,7 @@ pub(super) use common::repository_runner::Runner;
 
 mod browser_groups;
 mod unconfined_instructions;
+mod unconfined_mail;
 mod unconfined_options;
 mod unconfined_recovery;
 pub(in crate::runtime) mod unconfined_sites;
