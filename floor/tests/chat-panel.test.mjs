@@ -692,7 +692,7 @@ test('a queued note says why it waits while the agent\'s ticket is held for an i
     floor: floor({ ...view(), pending: [note] }, patch), row, action, onOpenTicket: id => open.push(id) }));
   const out = draw({ cards: [held] });
   assert.match(out, /Queued\. Delivery has not started\./);
-  assert.match(out, /Waits until you review the instruction change on Fix &lt;b&gt;login&lt;\/b&gt;/);
+  assert.match(out, /Waits until you review the instruction change on “<bdi>Fix &lt;b&gt;login&lt;\/b&gt;[^<]*<\/bdi>”\./);
   assert.match(out, /data-chat-held-ticket="C1"/);
   assert.match(out, />Review change<\/button>/);
   assert.doesNotMatch(draw({ cards: [] }), /Waits until you review/);

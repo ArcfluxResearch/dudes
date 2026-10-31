@@ -280,7 +280,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onO
             : <div className={cn('chat-message-state mx-2 flex flex-col items-start gap-1', NOTE, emphasis)}>
               <p className="m-0">{pendingText(note)}</p>
               {note.state === 'queued' && held !== null ? <p className="chat-held m-0 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" data-chat-held-ticket={held.id}>
-                <span className="min-w-0 [overflow-wrap:anywhere]">Waits until you review the instruction change on {held.title}</span>
+                <span className="min-w-0 [overflow-wrap:anywhere]">Waits until you review the instruction change on “<bdi>{held.title}</bdi>”.</span>
                 {onOpenTicket === undefined ? null : <Button size="sm" onClick={() => onOpenTicket(held.id)}>Review change</Button>}
               </p> : null}
               {note.reason === null || note.reason === 'delivery_uncertain' ? null
