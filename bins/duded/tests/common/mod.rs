@@ -78,6 +78,8 @@ use dudes_types::{AgentId, GoalId, Lsn, Provider, Timestamp, Tokens, TurnId, Usd
 pub(crate) struct TestClock {
     at: AtomicI64,
     step: i64,
+    /// Reads the system clock instead, for a test that compares a recorded time with a file's.
+    wall: bool,
 }
 
 impl TestClock {
@@ -87,6 +89,16 @@ impl TestClock {
         Self {
             at: AtomicI64::new(start_millis),
             step,
+            wall: false,
+        }
+    }
+
+    /// A clock that is the system clock.
+    pub(crate) const fn wall() -> Self {
+        Self {
+            at: AtomicI64::new(0),
+            step: 0,
+            wall: true,
         }
     }
 
@@ -103,6 +115,14 @@ impl TestClock {
 
 impl Clock for TestClock {
     fn now(&self) -> Timestamp {
+        if self.wall {
+            let since_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the system clock is after the epoch");
+            return Timestamp::from_unix_millis(
+                i64::try_from(since_epoch.as_millis()).expect("a time that fits"),
+            );
+        }
         Timestamp::from_unix_millis(self.at.fetch_add(self.step, Ordering::SeqCst))
     }
 }
@@ -1571,9 +1591,20 @@ pub(crate) struct ScriptedRunner {
     runs: AtomicUsize,
     sweeps: AtomicUsize,
     seen: Mutex<Vec<LaunchSpec>>,
+    /// Set, every program really runs and the script is unused: for checks whose answer is the
+    /// state of a real directory.
+    real: Option<dudes_host::OneShot>,
 }
 
 impl ScriptedRunner {
+    /// A runner that really runs every program it is handed.
+    pub(crate) fn real() -> Self {
+        Self {
+            real: Some(dudes_host::OneShot::new()),
+            ..Self::default()
+        }
+    }
+
     /// A runner that answers these outcomes in order, and then repeats the last one for ever.
     pub(crate) fn scripted(answers: impl IntoIterator<Item = PredicateOutcome>) -> Self {
         Self {
@@ -1602,8 +1633,47 @@ impl ScriptedRunner {
 }
 
 impl PredicateRunner for ScriptedRunner {
-    fn run(&self, spec: &LaunchSpec, _timeout: Duration) -> io::Result<PredicateOutcome> {
+    fn run_captured(
+        &self,
+        spec: &LaunchSpec,
+        timeout: Duration,
+        stdout_cap: usize,
+    ) -> io::Result<duded::predicate::PredicateCaptured> {
+        let Some(real) = &self.real else {
+            return Err(io::ErrorKind::Unsupported.into());
+        };
+        real.run_captured(spec, timeout, stdout_cap).map(|outcome| match outcome {
+            dudes_host::CapturedOutcome::Finished {
+                exit,
+                stdout,
+                truncated,
+                timed_out,
+            } => duded::predicate::PredicateCaptured::Finished {
+                exit,
+                stdout,
+                truncated,
+                timed_out,
+            },
+            dudes_host::CapturedOutcome::Swept => duded::predicate::PredicateCaptured::Swept,
+        })
+    }
+
+    fn run(&self, spec: &LaunchSpec, timeout: Duration) -> io::Result<PredicateOutcome> {
         self.runs.fetch_add(1, Ordering::SeqCst);
+        if let Some(real) = &self.real {
+            return real.run(spec, timeout).map(|outcome| match outcome {
+                dudes_host::OneShotOutcome::Finished {
+                    exit,
+                    output_tail,
+                    timed_out,
+                } => PredicateOutcome::Finished {
+                    exit,
+                    output_tail,
+                    timed_out,
+                },
+                dudes_host::OneShotOutcome::Swept => PredicateOutcome::Swept,
+            });
+        }
         self.seen
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
