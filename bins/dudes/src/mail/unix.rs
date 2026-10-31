@@ -525,6 +525,7 @@ pub(super) fn run(
     command: &MailCommand,
     path: &Path,
     scoped_file_mail: bool,
+    names: &std::collections::HashMap<AgentId, String>,
     out: &mut dyn Write,
 ) -> io::Result<()> {
     let mailbox = Mailbox::open(path)?;
@@ -543,6 +544,9 @@ pub(super) fn run(
             let mut names_hint = matches!(command, MailCommand::Read) && !scoped_file_mail;
             for (item, body) in items {
                 let from = match item.from {
+                    MailFrom::Agent { agent } if names.contains_key(&agent) => {
+                        format!("{} ({agent})", Escaped(&names[&agent]))
+                    }
                     MailFrom::Agent { agent } if std::mem::take(&mut names_hint) => {
                         format!("{agent}\nUse `dudes team` to see agent names.")
                     }
@@ -653,7 +657,14 @@ mod tests {
             .unwrap();
         }
         let mut output = Vec::new();
-        run(&MailCommand::Read, &path, false, &mut output).unwrap();
+        run(
+            &MailCommand::Read,
+            &path,
+            false,
+            &std::collections::HashMap::default(),
+            &mut output,
+        )
+        .unwrap();
         let text = String::from_utf8(output).unwrap();
         assert_eq!(text.matches("Use `dudes team`").count(), 1);
         assert!(text.contains(&format!(
@@ -661,7 +672,14 @@ mod tests {
             AgentId::from_parts(1, 2)
         )));
         let mut output = Vec::new();
-        run(&MailCommand::List, &path, false, &mut output).unwrap();
+        run(
+            &MailCommand::List,
+            &path,
+            false,
+            &std::collections::HashMap::default(),
+            &mut output,
+        )
+        .unwrap();
         assert!(
             !String::from_utf8(output)
                 .unwrap()
