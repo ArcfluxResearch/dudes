@@ -128,7 +128,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Ask the mailbox which wake-worthy mail is in the agent's inbox, unless the same inputs were
     /// already handled today.
     pub(super) fn request_mail_turn(&mut self, agent: AgentId) {
-        if self.mail_turn_inspections.contains_key(&agent) || !self.mail_turn_open(agent) {
+        if self.mail_turn_inspections.contains_key(&agent) {
+            return;
+        }
+        if !self.mail_turn_open(agent) {
+            self.mail_turn_waiting.remove(&agent);
             return;
         }
         if self.world.agents.get(&agent).is_some_and(|row| {
@@ -150,6 +154,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         let candidates = self.world.mail_turn_candidates(agent);
         let Some(first) = candidates.first() else {
+            self.mail_turn_waiting.remove(&agent);
             return;
         };
         if !self.spend.contains_key(&agent) {

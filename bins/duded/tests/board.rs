@@ -748,6 +748,14 @@ fn agents_moving_each_others_cards_to_done_complete_neither_goal() {
     let (settings, running, column, mut operator, tokens) = start(&fixture);
     let first = common::hire(&running.handle, fixture.state.path());
     let second = common::hire(&running.handle, fixture.state.path());
+    let first_card = create(&mut operator, &settings, "infra");
+    let second_card = create(&mut operator, &settings, "infra");
+    let mut goals = Vec::new();
+    for (agent, card) in [(first, first_card), (second, second_card)] {
+        let goal = common::set_goal(&running.handle, card_done_goal(agent, card));
+        goals.push((agent, card, goal, issued_to(&fixture, agent)));
+    }
+    // Peer requests reach agents that already have goals, so they wake nobody.
     for (n, sender, recipient) in [(1, first, second), (2, second, first)] {
         let id = dudes_types::MailId::from_parts(3, n);
         let outbox = fixture
@@ -774,13 +782,6 @@ fn agents_moving_each_others_cards_to_done_complete_neither_goal() {
             }
             _ => None,
         });
-    }
-    let first_card = create(&mut operator, &settings, "infra");
-    let second_card = create(&mut operator, &settings, "infra");
-    let mut goals = Vec::new();
-    for (agent, card) in [(first, first_card), (second, second_card)] {
-        let goal = common::set_goal(&running.handle, card_done_goal(agent, card));
-        goals.push((agent, card, goal, issued_to(&fixture, agent)));
     }
     for (mover, card) in [(first, second_card), (second, first_card)] {
         column.set(PeerProvenance::Agent(mover));

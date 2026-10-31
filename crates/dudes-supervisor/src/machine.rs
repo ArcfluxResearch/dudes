@@ -2936,7 +2936,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             self.decide_conversation(agent);
             self.decide_completed_note(agent);
             self.request_mail_wake(agent);
-            self.request_mail_turn(agent);
             return;
         };
         let browser_note = self.eligible_ordinary_note(agent);
