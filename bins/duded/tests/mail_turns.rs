@@ -436,6 +436,51 @@ fn a_thread_gets_two_mail_turns_and_a_third_request_is_refused_once() {
 }
 
 #[test]
+fn a_capped_thread_does_not_starve_a_newer_request_from_another_teammate() {
+    let mut rig = Rig::new();
+    let y = rig.hire();
+    let z = rig.hire();
+    let b = rig.hire();
+    let first = rig.asked_and_ended(y, b, 0);
+    rig.send(
+        y,
+        json!({"in_reply_to": first, "act": "request", "body": "and 3+3?"}),
+    );
+    rig.mail_to(b, MailAct::Request, 1);
+    let (turn, _, _) = rig.issue(b, 1);
+    rig.end(turn);
+    rig.send(
+        y,
+        json!({"in_reply_to": first, "act": "request", "body": "and 4+4?"}),
+    );
+    rig.await_decisions(b, 3);
+
+    rig.request(z, b);
+    let (fresh, _, _) = rig.mail_to(b, MailAct::Request, 3);
+    let (turn, covered, _) = rig.issue(b, 2);
+    assert_eq!(covered, vec![fresh]);
+    rig.end(turn);
+    rig.settle();
+    let refusals = rig
+        .decisions(b)
+        .into_iter()
+        .filter(|(decision, _)| !matches!(decision, MailTurnAdmission::Issue { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        refusals,
+        vec![(
+            MailTurnAdmission::Exhausted {
+                reason: ExhaustedReason::MailWakeLimit
+            },
+            Some("mail turn thread limit reached: 2 of 2".to_owned())
+        )],
+        "the capped thread is refused once, not after every beat or turn"
+    );
+    assert_eq!(rig.issues(b).len(), 3);
+    rig.stop();
+}
+
+#[test]
 fn a_sender_gets_four_turns_a_day_and_the_next_day_decides_the_fifth_again() {
     let mut rig = Rig::new();
     let a = rig.hire();

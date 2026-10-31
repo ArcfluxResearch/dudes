@@ -5,13 +5,16 @@ use super::{
 };
 use crate::input::{MailWakeRefreshFailure, MailWakeRequest};
 use crate::world::MailTurnCandidate;
-use dudes_policy::{BudgetState, Control, MailTurnInput};
+use dudes_policy::{
+    AGENT_DAY_TURN_CAP, BudgetState, Control, MailTurnInput, MailTurnUse, SENDER_DAY_TURN_CAP,
+    THREAD_TURN_CAP,
+};
 use dudes_proto::record::Hex32;
 use dudes_proto::{
-    BrowserNoteDestination, MailRef, MailTurnAdmission, MailTurnDecision, MailTurnIssue,
-    MailTurnTask,
+    BrowserNoteDestination, ExhaustedReason, MailRef, MailTurnAdmission, MailTurnDecision,
+    MailTurnIssue, MailTurnTask,
 };
-use dudes_types::{MailId, UtcDay};
+use dudes_types::{BreakerRung, MailId, UtcDay};
 
 /// How many mailbox passes may find a candidate's mail still unpublished before the beat alone
 /// looks again.
@@ -120,8 +123,42 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         })
     }
 
-    fn mail_turn_digest(input: &MailTurnInput, day: UtcDay) -> Option<Hex32> {
-        let bytes = serde_json::to_vec(&("mail_turn_v1", input, day)).ok()?;
+    /// The digest a refusal is kept under. Spend and turn-end facts are left out unless the
+    /// refusal is a budget one, so a capped request is not decided again after every turn.
+    fn mail_turn_digest(
+        input: &MailTurnInput,
+        decision: &MailTurnAdmission,
+        day: UtcDay,
+    ) -> Option<Hex32> {
+        let mut seen = input.clone();
+        if !matches!(decision, MailTurnAdmission::Issue { .. }) {
+            seen.inspection_digest.clear();
+        }
+        match decision {
+            MailTurnAdmission::Exhausted {
+                reason: ExhaustedReason::MailWakeLimit,
+            } => {
+                seen.budget_state = BudgetState::default();
+                seen.rung = BreakerRung::Healthy;
+                seen.last_turn_end = None;
+                seen.used = MailTurnUse {
+                    thread: u32::from(seen.used.thread >= THREAD_TURN_CAP),
+                    sender_today: u32::from(seen.used.sender_today >= SENDER_DAY_TURN_CAP),
+                    agent_today: u32::from(seen.used.agent_today >= AGENT_DAY_TURN_CAP),
+                };
+            }
+            MailTurnAdmission::Issue { .. } | MailTurnAdmission::Exhausted { .. } => {}
+            MailTurnAdmission::Hold { .. } => {
+                seen.budget_state = BudgetState::default();
+                seen.rung = BreakerRung::Healthy;
+            }
+            MailTurnAdmission::Wait { .. } => {
+                seen.budget_state = BudgetState::default();
+                seen.rung = BreakerRung::Healthy;
+                seen.last_turn_end = None;
+            }
+        }
+        let bytes = serde_json::to_vec(&("mail_turn_v2", seen, day)).ok()?;
         Some(hex(&bytes))
     }
 
@@ -260,77 +297,100 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .iter()
                 .all(|mail| present.binary_search(&mail.id).is_ok())
         });
+        self.track_mail_turn_presence(agent, complete);
+        let Ok(report) = serde_json::to_vec(&("mail_turn_inspection_v1", agent, &present)) else {
+            return;
+        };
+        let inspection_digest = hex(&report);
+        let day = now.utc_day();
         if complete {
-            self.mail_turn_waiting.remove(&agent);
-        } else {
-            let retries = self.mail_turn_waiting.get(&agent).copied().unwrap_or(0);
-            if retries < MAIL_TURN_PASS_RETRIES {
-                self.mail_turn_waiting.insert(agent, retries + 1);
-            } else {
-                self.mail_turn_waiting.remove(&agent);
-            }
+            self.mail_turn_handled.insert(agent, pending.key);
         }
-        let Some((candidate, covered)) = candidates.into_iter().find_map(|candidate| {
+        for candidate in candidates {
             let covered: Vec<MailRef> = candidate
                 .mail
                 .iter()
                 .filter(|mail| present.binary_search(&mail.id).is_ok())
                 .copied()
                 .collect();
-            (!covered.is_empty()).then_some((candidate, covered))
-        }) else {
-            return;
-        };
-        let Ok(report) = serde_json::to_vec(&("mail_turn_inspection_v1", agent, &present)) else {
-            return;
-        };
-        let inspection_digest = hex(&report);
-        let day = now.utc_day();
-        let Some(input) = self.mail_turn_input(
-            agent,
-            &candidate,
-            covered.clone(),
-            inspection_digest.to_hex(),
-            day,
-        ) else {
-            return;
-        };
-        let Some(input_digest) = Self::mail_turn_digest(&input, day) else {
-            return;
-        };
-        let Some(decided) = dudes_policy::admit_mail_turn(&input) else {
-            return;
-        };
+            if covered.is_empty() {
+                continue;
+            }
+            let Some(input) = self.mail_turn_input(
+                agent,
+                &candidate,
+                covered.clone(),
+                inspection_digest.to_hex(),
+                day,
+            ) else {
+                return;
+            };
+            let Some(decided) = dudes_policy::admit_mail_turn(&input) else {
+                continue;
+            };
+            let issue = matches!(decided.decision, MailTurnAdmission::Issue { .. });
+            let Some(input_digest) = Self::mail_turn_digest(&input, &decided.decision, day) else {
+                return;
+            };
+            let candidate_level = Self::candidate_level_refusal(&input, &decided.decision);
+            if !issue
+                && self
+                    .world
+                    .mail_turn_latest_for_thread(agent, candidate.thread)
+                    .is_some_and(|latest| latest.decision.input_digest == input_digest)
+            {
+                if candidate_level {
+                    continue;
+                }
+                return;
+            }
+            let decision = MailTurnDecision {
+                agent,
+                thread: candidate.thread,
+                covered,
+                inspection_digest,
+                input_digest,
+                gate_trace: decided.gate_trace,
+                decision: decided.decision,
+            };
+            if !decision.valid() {
+                return;
+            }
+            let then = if issue {
+                Then::MailTurnIssue { agent, at: now }
+            } else {
+                Then::Fold
+            };
+            self.persist_at(now, Record::MailTurnDecided(decision), then);
+            if issue || !candidate_level {
+                return;
+            }
+        }
+    }
+
+    fn track_mail_turn_presence(&mut self, agent: AgentId, complete: bool) {
         if complete {
-            self.mail_turn_handled.insert(agent, pending.key);
-        }
-        let issue = matches!(decided.decision, MailTurnAdmission::Issue { .. });
-        if !issue
-            && self
-                .world
-                .mail_turn_latest(agent)
-                .is_some_and(|latest| latest.decision.input_digest == input_digest)
-        {
+            self.mail_turn_waiting.remove(&agent);
             return;
         }
-        let decision = MailTurnDecision {
-            agent,
-            thread: candidate.thread,
-            covered,
-            inspection_digest,
-            input_digest,
-            gate_trace: decided.gate_trace,
-            decision: decided.decision,
-        };
-        if !decision.valid() {
-            return;
-        }
-        let then = if issue {
-            Then::MailTurnIssue { agent, at: now }
+        let retries = self.mail_turn_waiting.get(&agent).copied().unwrap_or(0);
+        if retries < MAIL_TURN_PASS_RETRIES {
+            self.mail_turn_waiting.insert(agent, retries + 1);
         } else {
-            Then::Fold
-        };
-        self.persist_at(now, Record::MailTurnDecided(decision), then);
+            self.mail_turn_waiting.remove(&agent);
+        }
+    }
+
+    /// Whether a refusal concerns only this thread or sender, so the next thread may still be
+    /// admitted.
+    fn candidate_level_refusal(input: &MailTurnInput, decision: &MailTurnAdmission) -> bool {
+        matches!(
+            decision,
+            MailTurnAdmission::Exhausted {
+                reason: ExhaustedReason::MailWakeLimit
+            }
+        ) && (input.used.thread >= THREAD_TURN_CAP
+            || input.used.sender_today >= SENDER_DAY_TURN_CAP)
     }
 
     /// Whether the agent's current inputs still admit exactly this issue, checked again right
@@ -368,6 +428,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 Some(decided) if decided.decision == MailTurnAdmission::Issue { task: issue.task.clone() })
     }
 
+    /// Issue the decided turn. When nothing is issued the decision is forgotten as handled, so it
+    /// is made again once whatever blocked the issue clears.
     pub(super) fn issue_mail_turn(
         &mut self,
         agent: AgentId,
@@ -375,26 +437,38 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         at: Timestamp,
         operation: &crate::RecoveryOperation<'_>,
     ) {
+        if !self.try_issue_mail_turn(agent, decision_lsn, at, operation) {
+            self.mail_turn_handled.remove(&agent);
+        }
+    }
+
+    fn try_issue_mail_turn(
+        &mut self,
+        agent: AgentId,
+        decision_lsn: Lsn,
+        at: Timestamp,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
         if !self.mail_turn_open(agent)
             || self.issue_in_flight(agent)
             || self.launch_held(agent, operation)
         {
-            return;
+            return false;
         }
         let Some(row) = self.world.agents.get(&agent).cloned() else {
-            return;
+            return false;
         };
         if row.paused || row.halted {
-            return;
+            return false;
         }
         let Some(latest) = self.world.mail_turn_latest(agent).cloned() else {
-            return;
+            return false;
         };
         let MailTurnAdmission::Issue { task } = &latest.decision.decision else {
-            return;
+            return false;
         };
         let Some(line) = row.identity_line(agent) else {
-            return;
+            return false;
         };
         if latest.lsn != decision_lsn
             || MailTurnTask::new(
@@ -416,15 +490,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                             .all(|mail| candidate.mail.contains(mail))
                 })
         {
-            return;
+            return false;
         }
         let turn = TurnId::from_ulid(self.rng.ulid());
         let session = self.announce_session(agent, false);
         let Some(selection) = self.model_selection(&row) else {
-            return;
+            return false;
         };
         let Some(repositories) = self.issue_repositories(agent) else {
-            return;
+            return false;
         };
         let launch = match self.launch(
             agent,
@@ -435,7 +509,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             &selection,
         ) {
             ManagedLaunch::Ready(launch) => launch,
-            ManagedLaunch::Unavailable => return,
+            ManagedLaunch::Unavailable => return false,
             ManagedLaunch::Refused(error) => {
                 self.hold_agent(
                     agent,
@@ -444,7 +518,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         reason: error.to_string(),
                     },
                 );
-                return;
+                return false;
             }
         };
         let issue = MailTurnIssue {
@@ -458,7 +532,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             lsn_of_decision: decision_lsn,
         };
         if !issue.valid() {
-            return;
+            return false;
         }
         let record = launch
             .repositories
@@ -472,6 +546,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 launch,
             },
         );
+        true
     }
 }
 
@@ -481,6 +556,7 @@ mod tests {
     use crate::Input;
     use crate::input::SpendView;
     use crate::testing::{Harness, Seen};
+    use dudes_proto::record::Hex32;
     use dudes_proto::{Entry, RecordKind};
     use dudes_types::ThreadId;
 
@@ -678,5 +754,105 @@ mod tests {
         let world = f.h.supervisor.world();
         assert!(world.mail_turn_covered(mail));
         assert!(world.mail_turn_candidates(b).is_empty());
+    }
+
+    #[test]
+    fn a_chat_note_between_the_decision_and_the_issue_delays_the_turn_until_the_chat_turn_ends() {
+        let mut f = Flow::new();
+        let (a, b) = (f.a, f.b);
+        let (mail, effects) = f.agent_mail("request", &[a, b]);
+        let (first_request, _) = inspects(&effects).remove(0);
+        let effects = f.h.step(Input::MailTurnInspected {
+            agent: b,
+            request: first_request,
+            result: Ok((at(20), vec![mail])),
+        });
+        let token = effects
+            .iter()
+            .find_map(|seen| match seen {
+                Seen::Persist {
+                    token,
+                    entry:
+                        Entry {
+                            record: Record::MailTurnDecided(_),
+                            ..
+                        },
+                } => Some(*token),
+                _ => None,
+            })
+            .expect("a decision");
+        let context_lsn = f.h.supervisor.world().agents[&b].context_lsn;
+        f.h.drive(Input::Command(crate::Command::ConversationMessageQueued {
+            agent: b,
+            text: "look at this first".into(),
+            browser: dudes_proto::BrowserNoteAttribution {
+                request_id_digest: Hex32::new([1; 32]),
+                request_digest: Hex32::new([2; 32]),
+                session_digest: Hex32::new([3; 32]),
+            },
+            context_lsn,
+            context_reset_turn: None,
+        }));
+        let chat = f.h.open_turn(b).expect("the chat message issued a turn");
+        f.h.acknowledge(token);
+        assert!(
+            !f.h.journal
+                .iter()
+                .any(|entry| matches!(entry.record, Record::MailTurnIssued(_))),
+            "the chat turn holds the mail turn back"
+        );
+        assert!(
+            !f.h.supervisor.mail_turn_handled.contains_key(&b),
+            "an issue that did not happen leaves the decision to be made again"
+        );
+        f.h.drive(Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
+            final_reply: None,
+            elapsed_ms: None,
+            turn: chat,
+            exit: dudes_proto::ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: std::collections::BTreeMap::new(),
+            outcome: dudes_proto::TurnOutcome::Completed,
+            last_message: None,
+        });
+        let effects: Vec<Seen> = f.h.trace.iter().rev().take(40).cloned().collect();
+        let mut found = inspects(&effects);
+        found.retain(|(request, _)| *request != first_request);
+        assert_eq!(
+            found.len(),
+            1,
+            "decided again with no new mail: {effects:?}"
+        );
+        let (request, covered) = found.remove(0);
+        assert_eq!(covered, vec![mail]);
+        let effects = f.h.step(Input::MailTurnInspected {
+            agent: b,
+            request,
+            result: Ok((at(40), vec![mail])),
+        });
+        let token = effects
+            .iter()
+            .find_map(|seen| match seen {
+                Seen::Persist {
+                    token,
+                    entry:
+                        Entry {
+                            record: Record::MailTurnDecided(_),
+                            ..
+                        },
+                } => Some(*token),
+                _ => None,
+            })
+            .expect("a second decision");
+        f.h.acknowledge(token);
+        assert!(
+            f.h.journal
+                .iter()
+                .any(|entry| matches!(entry.record, Record::MailTurnIssued(_)))
+        );
     }
 }

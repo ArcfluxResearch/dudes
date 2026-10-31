@@ -73,6 +73,7 @@ pub(super) struct Fold {
     by_agent: BTreeMap<AgentId, BTreeSet<ThreadId>>,
     covered: BTreeSet<MailId>,
     latest: BTreeMap<AgentId, Latest>,
+    by_thread: BTreeMap<(AgentId, ThreadId), Latest>,
     per_thread: BTreeMap<(AgentId, ThreadId), u32>,
     per_sender_day: BTreeMap<(AgentId, AgentId, UtcDay), u32>,
     per_day: BTreeMap<(AgentId, UtcDay), u32>,
@@ -91,6 +92,10 @@ impl Fold {
 
     pub(super) fn latest(&self, agent: AgentId) -> Option<&Latest> {
         self.latest.get(&agent)
+    }
+
+    pub(super) fn latest_for_thread(&self, agent: AgentId, thread: ThreadId) -> Option<&Latest> {
+        self.by_thread.get(&(agent, thread))
     }
 
     pub(super) fn is_covered(&self, id: MailId) -> bool {
@@ -217,14 +222,14 @@ impl Fold {
             }
             Record::MailTurnDecided(decision) => {
                 if self.decision_current(world, decision) {
-                    self.latest.insert(
-                        decision.agent,
-                        Latest {
-                            lsn,
-                            at: entry.at,
-                            decision: decision.clone(),
-                        },
-                    );
+                    let latest = Latest {
+                        lsn,
+                        at: entry.at,
+                        decision: decision.clone(),
+                    };
+                    self.by_thread
+                        .insert((decision.agent, decision.thread), latest.clone());
+                    self.latest.insert(decision.agent, latest);
                     self.accepted_lsn = Some(lsn);
                 }
             }
