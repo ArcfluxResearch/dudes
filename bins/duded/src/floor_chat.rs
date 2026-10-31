@@ -533,8 +533,22 @@ pub(crate) fn retain_current_agents(
 fn valid_turn_shape(row: &dudes_proto::ChatTurnView) -> Result<()> {
     use dudes_proto::ChatTurnState;
     match (&row.text, &row.cause, &row.notice, row.turn_id) {
-        (Some(text), None, None, Some(_)) => valid_text(text)?,
+        (Some(text), None, None, Some(_)) => {
+            valid_text(text)?;
+            if row.state == ChatTurnState::Waiting {
+                bail!("Chat note turn cannot be waiting");
+            }
+        }
         (None, Some(cause), None, Some(_)) => {
+            if !matches!(
+                row.state,
+                ChatTurnState::Waiting
+                    | ChatTurnState::Running
+                    | ChatTurnState::Ended
+                    | ChatTurnState::Failed
+            ) {
+                bail!("Chat mail turn is in a state a mail turn never has");
+            }
             if cause.subject.as_ref().is_some_and(|subject| {
                 subject.is_empty()
                     || subject.len() > dudes_proto::messages::MAX_MAIL_SUBJECT_BYTES
@@ -543,10 +557,14 @@ fn valid_turn_shape(row: &dudes_proto::ChatTurnView) -> Result<()> {
                 bail!("invalid Chat mail cause subject");
             }
         }
-        (None, None, Some(_), None)
+        (None, None, Some(notice), None)
             if row.state == ChatTurnState::Ended
+                && !row.reissued
                 && row.reply.is_none()
-                && row.truncated.is_none() => {}
+                && row.truncated.is_none()
+                && row.failure.is_none()
+                && row.ran_models.is_empty()
+                && notice.limit.is_some() == notice.reason.is_cap() => {}
         _ => bail!("Chat turn row is neither a note turn, a mail turn nor a notice"),
     }
     Ok(())
@@ -801,6 +819,7 @@ mod tests {
         notice.notice = Some(dudes_proto::ChatNotice {
             sender: AgentId::from_parts(1, 9),
             reason: dudes_proto::ChatNoticeReason::ThreadLimit,
+            limit: Some(2),
         });
         let mut view = dudes_proto::ChatView::empty();
         view.turns = vec![mail.clone(), notice.clone()];
@@ -818,6 +837,25 @@ mod tests {
         assert!(refused(
             &|row| row.state = dudes_proto::ChatTurnState::Failed
         ));
+        assert!(refused(&|row| row.reissued = true));
+        assert!(refused(&|row| row.failure = Some("boom".into())));
+        assert!(refused(&|row| row.ran_models = vec!["model".into()]));
+        assert!(refused(&|row| if let Some(notice) = row.notice.as_mut() {
+            notice.limit = None;
+        }));
+        let mut waiting = mail.clone();
+        waiting.state = dudes_proto::ChatTurnState::Waiting;
+        waiting.reply = None;
+        view.turns = vec![waiting.clone()];
+        validate_view(&view).unwrap();
+        waiting.state = dudes_proto::ChatTurnState::Reserved;
+        view.turns = vec![waiting];
+        assert!(validate_view(&view).is_err());
+        let mut note = turn(4, agent);
+        note.state = dudes_proto::ChatTurnState::Waiting;
+        note.reply = None;
+        view.turns = vec![note];
+        assert!(validate_view(&view).is_err());
         let mut long = mail.clone();
         long.cause.as_mut().unwrap().subject = Some("x".repeat(121));
         view.turns = vec![long];

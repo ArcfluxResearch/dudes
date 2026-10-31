@@ -10,7 +10,7 @@ export const CHAT_REASONS = ['agent_absent', 'agent_retired', 'halted', 'unsuppo
   'stale_control', 'turn_open', 'action_off'] as const;
 export type ChatReason = (typeof CHAT_REASONS)[number];
 export type PendingState = 'queued' | 'reserved' | 'delivery_uncertain';
-export type TurnState = 'reserved' | 'running' | 'ended' | 'failed' | 'cancelled' | 'delivery_uncertain' | 'reissue_cancelled';
+export type TurnState = 'reserved' | 'waiting' | 'running' | 'ended' | 'failed' | 'cancelled' | 'delivery_uncertain' | 'reissue_cancelled';
 
 export interface PendingNote {
   readonly agent_id: string;
@@ -25,6 +25,7 @@ export interface PendingNote {
 
 export const NOTICE_REASONS = ['thread_limit', 'sender_day_limit', 'day_limit', 'open_question', 'halted', 'paused',
   'attached', 'hold', 'budget', 'ceiling_required'] as const;
+const CAP_REASONS: readonly string[] = ['thread_limit', 'sender_day_limit', 'day_limit'];
 export type NoticeReason = (typeof NOTICE_REASONS)[number];
 
 /** The mail that started a turn. A peer's words: show them as plain text. */
@@ -40,6 +41,8 @@ export interface ChatCause {
 export interface ChatNotice {
   readonly sender: string;
   readonly reason: NoticeReason;
+  /** The cap that fired, for a cap reason, and null for every other reason. */
+  readonly limit: number | null;
 }
 
 /**
@@ -104,8 +107,9 @@ function causeOk(value: unknown): value is ChatCause {
 }
 
 function noticeOk(value: unknown): value is ChatNotice {
-  return exactObject(value, ['sender', 'reason']) && identity(value.sender)
-    && typeof value.reason === 'string' && (NOTICE_REASONS as readonly string[]).includes(value.reason);
+  return exactObject(value, ['sender', 'reason', 'limit']) && identity(value.sender)
+    && typeof value.reason === 'string' && (NOTICE_REASONS as readonly string[]).includes(value.reason)
+    && (CAP_REASONS.includes(value.reason) ? Number.isInteger(value.limit) && (value.limit as number) > 0 : value.limit === null);
 }
 
 function failureText(value: unknown): boolean {
@@ -157,15 +161,15 @@ export function decodeChat(value: unknown, agents: readonly { readonly id: strin
     if (!exactObject(row, ['agent_id', 'turn_id', 'note_lsn', 'text', 'cause', 'notice', 'state', 'reply', 'truncated', 'failure', 'ran_models', 'reissued'])
       || !identity(row.agent_id) || !current.has(row.agent_id) || !canonicalLsn(row.note_lsn)
       || typeof row.state !== 'string'
-      || !['reserved', 'running', 'ended', 'failed', 'cancelled', 'delivery_uncertain', 'reissue_cancelled'].includes(row.state)
+      || !['reserved', 'waiting', 'running', 'ended', 'failed', 'cancelled', 'delivery_uncertain', 'reissue_cancelled'].includes(row.state)
       || (row.reply !== null && !text(row.reply)) || (row.truncated !== null && typeof row.truncated !== 'boolean')
       || typeof row.reissued !== 'boolean' || !failureText(row.failure) || ranModels(row.ran_models) === null
       || (row.failure !== null && row.state !== 'failed')
       || (row.reply === null && row.truncated !== null)
       || (row.state !== 'ended' && row.state !== 'failed' && (row.reply !== null || row.truncated !== null))) return null;
-    const noteTurn = row.text !== null && text(row.text, true) && identity(row.turn_id) && row.cause === null && row.notice === null;
+    const noteTurn = row.text !== null && row.state !== 'waiting' && text(row.text, true) && identity(row.turn_id) && row.cause === null && row.notice === null;
     const mailTurn = row.text === null && identity(row.turn_id) && causeOk(row.cause) && row.notice === null
-      && ['running', 'ended', 'failed'].includes(row.state);
+      && ['waiting', 'running', 'ended', 'failed'].includes(row.state);
     const notice = row.text === null && row.turn_id === null && row.cause === null && noticeOk(row.notice) && row.state === 'ended'
       && row.reply === null && row.failure === null && !row.reissued && (row.ran_models as unknown[]).length === 0;
     if (!noteTurn && !mailTurn && !notice) return null;

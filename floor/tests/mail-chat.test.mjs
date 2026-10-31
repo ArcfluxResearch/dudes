@@ -19,8 +19,9 @@ const operatorTurn = { ...base, agent_id: A, turn_id: '01ARZ3NDEKTSV4RRFFQ69G5FD
 const mailTurn = (patch = {}, cause = {}) => ({ ...base, agent_id: A, turn_id: TURN, note_lsn: '30', text: null,
   cause: { sender: B, thread: T1, subject: 'Release date', ...cause }, notice: null, state: 'ended',
   reply: 'Grace says it ships on Friday.', ...patch });
-const noticeRow = (reason, patch = {}) => ({ ...base, agent_id: A, turn_id: null, note_lsn: '40', text: null, cause: null,
-  notice: { sender: B, reason }, state: 'ended', reply: null, ...patch });
+const LIMITS = { thread_limit: 2, sender_day_limit: 4, day_limit: 20 };
+const noticeRow = (reason, patch = {}, limit = LIMITS[reason] ?? null) => ({ ...base, agent_id: A, turn_id: null, note_lsn: '40', text: null,
+  cause: null, notice: { sender: B, reason, limit }, state: 'ended', reply: null, ...patch });
 const view = turns => ({ enabled: true, max_text_bytes: 4096, pending: [], turns, context_sent: [] });
 const agents = [row, { id: B, name: 'Grace', mode: 'managed' }];
 let server, store, ChatPanelView, action, decodeChat;
@@ -38,6 +39,14 @@ const render = (turns, patch = {}) => renderToStaticMarkup(createElement(ChatPan
   floor: { ...store.getFloorState(), epoch: 1, snapshotEpoch: 1, phase: 'live', stale: false, chat: view(turns),
     agents, retiredAgents: [{ id: C, name: 'Linus' }], ...patch } }));
 
+test('a waiting mail turn is accepted and reads in plain words, and a running one reads as replying', () => {
+  const waiting = mailTurn({ state: 'waiting', reply: null });
+  assert.equal(decodeChat(view([waiting]), agents)?.turns[0].state, 'waiting');
+  assert.match(render([waiting]), /Starts when Ada is free\./);
+  assert.doesNotMatch(render([waiting]), /Replying/);
+  assert.match(render([mailTurn({ state: 'running', reply: null })]), /Replying…/);
+});
+
 test('the decoder accepts a mail turn and each notice reason, and refuses mixed or malformed rows', () => {
   const good = [operatorTurn, mailTurn(), mailTurn({ note_lsn: '31', turn_id: '01ARZ3NDEKTSV4RRFFQ69G5FD2' }, { sender: null, thread: null, subject: null }),
     ...['thread_limit', 'sender_day_limit', 'day_limit', 'open_question', 'halted', 'paused', 'attached', 'hold', 'budget', 'ceiling_required']
@@ -48,19 +57,30 @@ test('the decoder accepts a mail turn and each notice reason, and refuses mixed 
   const refused = [
     mailTurn({ text: 'also an operator note' }),
     mailTurn({ state: 'reserved' }),
+    mailTurn({ state: 'cancelled' }),
+    { ...operatorTurn, state: 'waiting', reply: null },
+    mailTurn({ state: 'waiting' }),
+    noticeRow('paused', {}, 3),
+    noticeRow('thread_limit', {}, null),
+    noticeRow('thread_limit', {}, 0),
+    noticeRow('day_limit', {}, 1.5),
+    noticeRow('paused', { reissued: true }),
+    noticeRow('paused', { failure: 'boom' }),
+    noticeRow('paused', { ran_models: ['m'] }),
     mailTurn({ cause: { sender: B, thread: T1 } }),
     mailTurn({}, { subject: '' }),
     mailTurn({}, { subject: 'x'.repeat(121) }),
     mailTurn({}, { subject: 'line\nbreak' }),
     mailTurn({}, { sender: 'not-an-id' }),
     mailTurn({ turn_id: null }),
-    mailTurn({ notice: { sender: B, reason: 'paused' } }),
+    mailTurn({ notice: { sender: B, reason: 'paused', limit: null } }),
+    { ...noticeRow('paused'), notice: { sender: B, reason: 'paused' } },
     noticeRow('unknown_reason'),
     noticeRow('paused', { turn_id: TURN }),
     noticeRow('paused', { reply: 'text' }),
     noticeRow('paused', { state: 'running' }),
     noticeRow('paused', { text: 'x' }),
-    { ...operatorTurn, notice: { sender: B, reason: 'paused' } },
+    { ...operatorTurn, notice: { sender: B, reason: 'paused', limit: null } },
     { ...operatorTurn, cause: undefined },
   ];
   for (const bad of refused) assert.equal(decodeChat(view([bad]), agents), null, JSON.stringify(bad));
@@ -111,6 +131,12 @@ test('each notice reads as one muted line with literal words, in time order with
     assert.ok(html.indexOf('Asked her.') < html.indexOf(sentence.slice(0, 20)) && html.indexOf('data-chat-notice') < html.indexOf('After mail from'));
   }
   assert.equal((render([noticeRow('paused')]).match(/chat-user/g) ?? []).length, 0);
+});
+
+test('a cap notice prints the number it receives', () => {
+  assert.match(render([noticeRow('thread_limit', {}, 7)]), />Mail from Grace waits: 7 turns in this thread already</);
+  assert.match(render([noticeRow('sender_day_limit', {}, 9)]), />Mail from Grace waits: 9 turns from Grace today already</);
+  assert.match(render([noticeRow('day_limit', {}, 31)]), />Mail from Grace waits: 31 mail turns today already</);
 });
 
 test('a notice names the sender safely', () => {

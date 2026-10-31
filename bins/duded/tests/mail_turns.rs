@@ -787,8 +787,15 @@ fn a_pause_between_the_crash_and_the_restart_keeps_the_turn_unlaunched_until_res
             |record| matches!(record, Record::TurnSpawned { turn: found, .. } if *found == turn)
         )
     );
+    let rows = rig.await_chat_rows(b, 1);
+    assert_eq!(rows[0]["state"], "waiting", "{rows:?}");
     rig.running.handle.ask(Ask::Resume(b)).unwrap();
     rig.spawned(turn);
+    let end = Instant::now() + Duration::from_secs(10);
+    while rig.chat_rows(b)[0]["state"] != "running" {
+        assert!(Instant::now() < end, "the spawned turn never reads running");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     rig.stop();
 }
 
@@ -918,7 +925,7 @@ fn a_capped_request_adds_one_notice_to_the_recipients_chat() {
     assert_eq!(notices.len(), 1, "{rows:?}");
     assert_eq!(
         notices[0]["notice"],
-        json!({"sender": a, "reason": "thread_limit"})
+        json!({"sender": a, "reason": "thread_limit", "limit": 2})
     );
     assert_eq!(notices[0]["turn_id"], Value::Null);
     assert_eq!(notices[0]["text"], Value::Null);
@@ -944,7 +951,10 @@ fn a_paused_recipient_adds_one_notice_and_the_resumed_turn_adds_its_exchange() {
     rig.settle();
     let rows = rig.await_chat_rows(b, 1);
     assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0]["notice"], json!({"sender": a, "reason": "paused"}));
+    assert_eq!(
+        rows[0]["notice"],
+        json!({"sender": a, "reason": "paused", "limit": null})
+    );
 
     rig.running.handle.ask(Ask::Resume(b)).unwrap();
     let (turn, _, _) = rig.issue(b, 0);

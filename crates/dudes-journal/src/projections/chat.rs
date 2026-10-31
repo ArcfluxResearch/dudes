@@ -270,6 +270,38 @@ fn reserved_object_bytes(view: &ChatView) -> Result<usize> {
     )
 }
 
+/// A newer notice from a sender replaces that sender's older one in the agent's chat.
+fn drop_notices(window: &mut Windows, agent: AgentId, sender: AgentId) {
+    window.turns.retain(|row| {
+        row.view.agent_id != agent || row.view.notice.as_ref().is_none_or(|n| n.sender != sender)
+    });
+}
+
+/// The row to drop first, oldest first within a class: a notice, then a mail row, then an
+/// operator row, and an operator row still waiting on delivery last.
+fn eviction(turns: &[TurnHistory], agent: Option<AgentId>) -> Option<usize> {
+    let rank = |view: &ChatTurnView| {
+        if view.notice.is_some() {
+            0
+        } else if view.cause.is_some() {
+            1
+        } else if matches!(
+            view.state,
+            ChatTurnState::Reserved | ChatTurnState::DeliveryUncertain
+        ) {
+            3
+        } else {
+            2
+        }
+    };
+    turns
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| agent.is_none_or(|agent| row.view.agent_id == agent))
+        .min_by_key(|(index, row)| (rank(&row.view), *index))
+        .map(|(index, _)| index)
+}
+
 fn trim_windows(window: &mut Windows) -> Result<()> {
     let mut fitting = Vec::new();
     for row in std::mem::take(&mut window.turns) {
@@ -298,16 +330,13 @@ fn trim_windows(window: &mut Windows) -> Result<()> {
         }
         let global: Vec<_> = window.turns.iter().map(|row| &row.view).collect();
         if let Some(agent) = oversized {
-            let first = window
-                .turns
-                .iter()
-                .position(|row| row.view.agent_id == agent)
-                .expect("oversized agent exists");
+            let first = eviction(&window.turns, Some(agent)).expect("oversized agent exists");
             window.turns.remove(first);
         } else if window.turns.len() > MAX_CHAT_TURNS
             || history_bytes(&global)? > MAX_CHAT_TURN_BYTES
         {
-            window.turns.remove(0);
+            let first = eviction(&window.turns, None).expect("rows exist");
+            window.turns.remove(first);
         } else {
             break;
         }
@@ -375,8 +404,8 @@ fn push_mail_row(window: &mut Windows, lsn: Lsn, view: ChatTurnView) -> Result<(
     Ok(())
 }
 
-/// A turn that mail started has no operator note. It is running from the moment it is issued, so
-/// the reader never waits for a queued note that does not exist.
+/// A turn that mail started has no operator note. It waits from the moment it is issued and runs at
+/// its spawn: a paused, halted or held agent keeps an issued turn unlaunched.
 fn push_mail_exchange(
     window: &mut Windows,
     lsn: Lsn,
@@ -395,7 +424,7 @@ fn push_mail_exchange(
             text: None,
             cause: Some(cause),
             notice: None,
-            state: ChatTurnState::Running,
+            state: ChatTurnState::Waiting,
             reply: None,
             truncated: None,
             failure: None,
@@ -955,6 +984,7 @@ pub(super) fn apply(
                     .flatten()
                     .and_then(|cause| cause.sender)
             {
+                drop_notices(&mut window, decision.agent, sender);
                 push_mail_row(
                     &mut window,
                     lsn,
@@ -965,7 +995,11 @@ pub(super) fn apply(
                         note_lsn: lsn.0.to_string(),
                         text: None,
                         cause: None,
-                        notice: Some(dudes_proto::ChatNotice { sender, reason }),
+                        notice: Some(dudes_proto::ChatNotice {
+                            sender,
+                            reason,
+                            limit: decision.refusal_limit(),
+                        }),
                         state: ChatTurnState::Ended,
                         reply: None,
                         truncated: None,
@@ -1610,7 +1644,75 @@ mod tests {
     };
     use dudes_types::AgentId;
 
-    use super::admits_pending;
+    use super::{TurnHistory, Windows, admits_pending, drop_notices, trim_windows};
+    use dudes_proto::{ChatCause, ChatNotice, ChatNoticeReason, ChatTurnState, ChatTurnView};
+    use dudes_types::{Lsn, TurnId};
+
+    fn row(lsn: u64, shape: &str, state: ChatTurnState) -> TurnHistory {
+        let sender = agent(9);
+        TurnHistory {
+            issue_lsn: Lsn(lsn),
+            view: ChatTurnView {
+                reissued: false,
+                agent_id: agent(1),
+                turn_id: (shape != "notice").then(|| TurnId::from_parts(1, u128::from(lsn))),
+                note_lsn: lsn.to_string(),
+                text: (shape == "operator").then(|| format!("note {lsn}")),
+                cause: (shape == "mail").then_some(ChatCause {
+                    sender: Some(sender),
+                    thread: None,
+                    subject: None,
+                }),
+                notice: (shape == "notice").then_some(ChatNotice {
+                    sender,
+                    reason: ChatNoticeReason::Paused,
+                    limit: None,
+                }),
+                state,
+                reply: None,
+                truncated: None,
+                failure: None,
+                ran_models: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_newer_notice_replaces_only_the_same_senders_older_notice() {
+        let mut other = row(2, "notice", ChatTurnState::Ended);
+        other.view.notice.as_mut().unwrap().sender = agent(8);
+        let mut window = Windows {
+            turns: vec![
+                row(1, "notice", ChatTurnState::Ended),
+                other,
+                row(3, "mail", ChatTurnState::Ended),
+            ],
+            context: Vec::new(),
+        };
+        drop_notices(&mut window, agent(1), agent(9));
+        let kept: Vec<_> = window.turns.iter().map(|row| row.issue_lsn.0).collect();
+        assert_eq!(kept, [2, 3]);
+    }
+
+    #[test]
+    fn a_burst_of_peer_rows_leaves_the_operators_exchanges_in_place() {
+        let mut window = Windows {
+            turns: vec![
+                row(1, "operator", ChatTurnState::Ended),
+                row(2, "operator", ChatTurnState::Reserved),
+            ],
+            context: Vec::new(),
+        };
+        for lsn in 3..=8 {
+            window.turns.push(row(lsn, "mail", ChatTurnState::Ended));
+        }
+        window.turns.push(row(9, "notice", ChatTurnState::Ended));
+        window.turns.push(row(10, "mail", ChatTurnState::Waiting));
+        window.turns.push(row(11, "operator", ChatTurnState::Ended));
+        trim_windows(&mut window).unwrap();
+        let kept: Vec<_> = window.turns.iter().map(|row| row.issue_lsn.0).collect();
+        assert_eq!(kept, [1, 2, 5, 6, 7, 8, 10, 11]);
+    }
 
     fn agent(n: u8) -> AgentId {
         AgentId::from_bytes([n; 16])

@@ -238,6 +238,22 @@ impl MailTurnDecision {
     }
 }
 
+impl MailTurnDecision {
+    /// The cap a refused decision hit, read from the trace the policy wrote from its own constant.
+    #[must_use]
+    pub fn refusal_limit(&self) -> Option<u32> {
+        self.refusal().filter(|reason| reason.is_cap())?;
+        self.gate_trace
+            .last()?
+            .note
+            .as_deref()?
+            .rsplit_once(" of ")?
+            .1
+            .parse()
+            .ok()
+    }
+}
+
 impl TryFrom<DecisionFields> for MailTurnDecision {
     type Error = &'static str;
     fn try_from(value: DecisionFields) -> Result<Self, Self::Error> {

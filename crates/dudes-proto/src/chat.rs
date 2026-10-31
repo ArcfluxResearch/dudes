@@ -135,6 +135,9 @@ pub enum ChatPendingState {
 pub enum ChatTurnState {
     /// Fixed wire spelling `reserved`.
     Reserved,
+    /// A mail-started turn is issued and has not launched yet. It starts when the agent is free,
+    /// which a pause, a halt or a hold can delay. Only mail rows carry it.
+    Waiting,
     /// Fixed wire spelling `running`.
     Running,
     /// Fixed wire spelling `ended`.
@@ -253,11 +256,11 @@ pub struct ChatCause {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatNoticeReason {
-    /// The thread already got its two mail turns.
+    /// The thread already got its mail turns.
     ThreadLimit,
-    /// The sender already got its four mail turns today.
+    /// The sender already got its mail turns today.
     SenderDayLimit,
-    /// The agent already got its twenty mail turns and wakes today.
+    /// The agent already got its mail turns and wakes today.
     DayLimit,
     /// An operator question is open.
     OpenQuestion,
@@ -283,6 +286,21 @@ pub struct ChatNotice {
     pub sender: AgentId,
     /// Why it waits.
     pub reason: ChatNoticeReason,
+    /// The cap that fired, for the three cap reasons, and null for every other reason.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<u32>")]
+    pub limit: Option<u32>,
+}
+
+impl ChatNoticeReason {
+    /// Whether this reason names a cap and so carries its number.
+    #[must_use]
+    pub const fn is_cap(self) -> bool {
+        matches!(
+            self,
+            Self::ThreadLimit | Self::SenderDayLimit | Self::DayLimit
+        )
+    }
 }
 
 /// Longest `failure` text of a [`ChatTurnView`], in bytes.
