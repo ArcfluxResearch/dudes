@@ -1212,7 +1212,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
   assert.match(form, /const choose = \(choice: CheckChoice\) => \{\s*if \(!blocked\) chooseGoalCheck\(gate\.agent, gate\.goal, choice\);\s*\};/);
 });
 
-test('the only activators are named selection, retry, view, Hire, answer, Chat, the roster\'s row, action and sheet buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit, model change and dismiss buttons, the notice stack\'s fold, History and Clear buttons, Overview Answer, Review work, Review ticket and Change navigation, a step\'s Show the output, '
+test('the only activators are named selection, retry, view, Hire, answer, Chat, the roster\'s row, action and sheet buttons, pause, Stop this turn, Stop and send, the chat\'s Asked-request jump, Pause all, resume, goal change, look edit, model change and dismiss buttons, the notice stack\'s fold, History and Clear buttons, Overview Answer, Review work, Review ticket and Change navigation, a step\'s Show the output, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, the Projects page\'s Add project, Open board, ticket count and dialog buttons, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation, '
@@ -1241,6 +1241,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(ANSWER_FORM),
     ...Array(2).fill(DEVICE_NOTICES),
     DEVICES_SECTION,
+    'src/renderer/chat/AskedRequests.tsx',
     ...Array(13).fill(CHAT_PANEL),
     'src/renderer/chat/Steps.tsx',
     ...Array(5).fill(CONTROL_PANEL),

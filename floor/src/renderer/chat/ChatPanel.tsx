@@ -19,6 +19,7 @@ import { conversationEntries } from './thread.ts';
 import type { ChatEntry } from './thread.ts';
 import { ChatText } from './ChatText.tsx';
 import { Steps } from './Steps.tsx';
+import { AskedRequests } from './AskedRequests.tsx';
 import { EngineSaid } from './EngineSaid.tsx';
 import { FullOutput } from '../LiveWork.tsx';
 import { MessageSquare, Paperclip, SendHorizontal } from 'lucide-react';
@@ -55,9 +56,9 @@ export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   action_off: 'Stopping and sending is switched off, so the note was not sent. It is still in the box.',
 };
 
-export function ChatPanel({ floor, row, fullOutput = false, onFullOutput }: {
+export function ChatPanel({ floor, row, fullOutput = false, onFullOutput, onOpenMail }: {
   readonly floor: FloorState; readonly row: AgentRow; readonly fullOutput?: boolean;
-  readonly onFullOutput?: (open: boolean) => void;
+  readonly onFullOutput?: (open: boolean) => void; readonly onOpenMail?: (id: string) => void;
 }) {
   const chat = useSyncExternalStore(subscribeToChat, getChatState, getChatState);
   const target = chat.answerTargets.get(row.id);
@@ -72,12 +73,13 @@ export function ChatPanel({ floor, row, fullOutput = false, onFullOutput }: {
     if (chatGate(floor, row).open && floor.chat !== null) reconcileChat(floor.chat);
     void advanceStopAndSend(browserChatDeps);
   }, [floor.chat, floor.phase, floor.stale, floor.epoch, floor.snapshotEpoch, row, chat.acknowledged, chat.stopSend]);
-  return <ChatPanelView floor={floor} row={row} action={chat} fullOutput={fullOutput} onFullOutput={onFullOutput} />;
+  return <ChatPanelView floor={floor} row={row} action={chat} fullOutput={fullOutput} onFullOutput={onFullOutput} onOpenMail={onOpenMail} />;
 }
 
-export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOutput = () => {} }: {
+export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOutput = () => {}, onOpenMail }: {
   readonly floor: FloorState; readonly row: AgentRow; readonly action: ChatState;
   readonly fullOutput?: boolean; readonly onFullOutput?: (open: boolean) => void;
+  readonly onOpenMail?: (id: string) => void;
 }) {
   const gate = chatGate(floor, row);
   const view = floor.chat;
@@ -97,7 +99,7 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   const waitingQuestion = row.status === 'waiting' && typeof row.question === 'string' && canonicalLsn(row.question_lsn);
   return <div className="chat-panel flex min-h-full flex-col gap-3 font-sans text-base text-ink" data-chat-agent-id={row.id}>
     <ChatThread key={row.id} entries={entries} floor={floor} row={row} action={action}
-      fullOutput={fullOutput} onFullOutput={onFullOutput} />
+      fullOutput={fullOutput} onFullOutput={onFullOutput} onOpenMail={onOpenMail} />
     {row.mode === 'attached' ? <p className={cn('chat-guidance', NOTE)}>Attached replies are unavailable. Messages are sent as context.</p> : null}
     <section aria-labelledby="chat-compose-title" className="chat-compose sticky bottom-0 z-10 flex shrink-0 flex-col gap-2 border-t border-line bg-surface pt-3"
       onDragOver={overChatFiles} onDrop={(event) => dropChatFiles(event, gate)}>
@@ -175,9 +177,10 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   </div>;
 }
 
-function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
+function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onOpenMail }: {
   readonly entries: readonly ChatEntry[]; readonly floor: FloorState; readonly row: AgentRow; readonly action: ChatState;
   readonly fullOutput: boolean; readonly onFullOutput: (open: boolean) => void;
+  readonly onOpenMail?: (id: string) => void;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
@@ -226,6 +229,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
     <div className="chat-thread-heading flex flex-wrap items-center justify-between gap-x-3 gap-y-1"><h3 id="chat-thread-title" className={HEADING}>Conversation</h3>
       <ClearQueuedNotes floor={floor} row={row} action={action} />
     </div>
+    <AskedRequests floor={floor} agent={row.id} onOpenMail={onOpenMail} />
     <div className="chat-scroll min-h-0 flex-1 overflow-y-auto rounded-lg border border-line bg-bg p-3 [overflow-anchor:none]"
       ref={scroll} role="log" aria-label={`Conversation with ${name}`} aria-relevant="additions"
       onScroll={event => {
