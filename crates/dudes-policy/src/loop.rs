@@ -3,7 +3,7 @@
 
 use dudes_proto::{
     BudgetScope, CheckBaselineKind, ExhaustedReason, Gate, GateStep, HoldReason, LoopDecision,
-    MailWakeAdmission, MailWakeTask, NoteAdmission, Spend,
+    MailTurnAdmission, MailTurnTask, MailWakeAdmission, MailWakeTask, NoteAdmission, Spend,
 };
 use dudes_types::{AgentId, BreakerRung, GoalId, Lsn, Provenance, Usd};
 
@@ -15,6 +15,9 @@ use crate::closing::{
 };
 use crate::input::{AnswerInput, Control, Decided, GoalInput, LoopInput, WorkInput};
 use crate::mail::{MailWakeDecided, MailWakeInput};
+use crate::mail_turn::{
+    AGENT_DAY_TURN_CAP, MailTurnDecided, MailTurnInput, SENDER_DAY_TURN_CAP, THREAD_TURN_CAP,
+};
 use crate::predicate::judge;
 
 /// Most UTF-8 bytes one `Continue` task may carry.
@@ -241,6 +244,32 @@ pub fn admit_mail_wake(input: &MailWakeInput) -> Option<MailWakeDecided> {
     })
 }
 
+/// Admit one turn for the wake-worthy mail of a goal-free agent.
+///
+/// `None` only for an input that cannot be decided: a standing question without its position, or
+/// a covered-mail count the task cannot name.
+#[must_use]
+pub fn admit_mail_turn(input: &MailTurnInput) -> Option<MailTurnDecided> {
+    let ClosingDecided::Policy(decided) = standard_walk(PolicyInput::MailTurn(input), None) else {
+        unreachable!("mail turns have no closing work");
+    };
+    let decision = match decided.decision {
+        LoopDecision::Continue { .. } => MailTurnAdmission::Issue {
+            task: MailTurnTask::new(&input.identity, u8::try_from(input.covered.len()).ok()?)?,
+        },
+        LoopDecision::Wait { .. } => MailTurnAdmission::Wait {
+            question_lsn: input.question_lsn?,
+        },
+        LoopDecision::Hold { reason } => MailTurnAdmission::Hold { reason },
+        LoopDecision::Exhausted { reason } => MailTurnAdmission::Exhausted { reason },
+        LoopDecision::Done => unreachable!("a mail turn cannot complete a goal"),
+    };
+    Some(MailTurnDecided {
+        decision,
+        gate_trace: decided.gate_trace,
+    })
+}
+
 struct AdmissionView<'a> {
     billing_ceiling_missing: bool,
     control: Control,
@@ -263,6 +292,7 @@ enum PolicyInput<'a> {
     Completed(&'a CompletedNoteInput),
     Conversation(&'a ConversationInput),
     Mail(&'a MailWakeInput),
+    MailTurn(&'a MailTurnInput),
 }
 
 impl<'a> PolicyInput<'a> {
@@ -281,6 +311,25 @@ impl<'a> PolicyInput<'a> {
                 hop_cap: input.goal.hop_cap,
             },
             Self::Conversation(input) => AdmissionView {
+                billing_ceiling_missing: input.billing_ceiling_missing,
+                control: input.control,
+                last_turn_end: input.last_turn_end,
+                open_question: input.open_question.as_deref(),
+                budget_state: input.budget_state,
+                ceilings: Ceilings {
+                    goal: dudes_proto::GoalBudget {
+                        usd: None,
+                        tokens: None,
+                    },
+                    agent: input.agent_budget,
+                    floor_usd_per_day: input.floor_usd_per_day,
+                },
+                per_turn_floor: input.per_turn_floor,
+                rung: input.rung,
+                turns_on_goal: 0,
+                hop_cap: u32::MAX,
+            },
+            Self::MailTurn(input) => AdmissionView {
                 billing_ceiling_missing: input.billing_ceiling_missing,
                 control: input.control,
                 last_turn_end: input.last_turn_end,
@@ -512,6 +561,9 @@ fn check(gate: Gate, input: PolicyInput<'_>, common: &AdmissionView<'_>) -> Outc
             PolicyInput::Mail(input) => {
                 Outcome::Pass(Some(TraceNote::Completed(input.completion_lsn())))
             }
+            PolicyInput::MailTurn(_) => {
+                Outcome::Pass(Some("a mail turn has no goal completion".into()))
+            }
         },
         Gate::Budget => {
             let common_outcome = budget(common);
@@ -526,12 +578,26 @@ fn check(gate: Gate, input: PolicyInput<'_>, common: &AdmissionView<'_>) -> Outc
                     format!("mail-wake day limit reached: {} of 20", input.wakes_today()),
                 );
             }
+            if matches!(common_outcome, Outcome::Pass(_))
+                && let PolicyInput::MailTurn(input) = input
+                && let Some(note) = mail_turn_cap(input)
+            {
+                return Outcome::Fire(
+                    LoopDecision::Exhausted {
+                        reason: ExhaustedReason::MailWakeLimit,
+                    },
+                    note,
+                );
+            }
             common_outcome
         }
         Gate::Hops => match input {
             PolicyInput::Ordinary { .. } => hops(common.turns_on_goal, common.hop_cap),
             PolicyInput::Conversation(_) => {
                 Outcome::Pass(Some("one accepted input authorizes one reply".into()))
+            }
+            PolicyInput::MailTurn(_) => {
+                Outcome::Pass(Some("a goal-free agent carries no hop count".into()))
             }
             PolicyInput::Completed(_) | PolicyInput::Mail(_) => Outcome::Pass(None),
         },
@@ -552,6 +618,15 @@ fn check(gate: Gate, input: PolicyInput<'_>, common: &AdmissionView<'_>) -> Outc
                 note: format!("conversation message {}", input.note_lsn.0),
                 answers: Vec::new(),
             },
+            PolicyInput::MailTurn(input) => Outcome::Work {
+                task: u8::try_from(input.covered.len())
+                    .ok()
+                    .and_then(|count| MailTurnTask::new(&input.identity, count))
+                    .map(|task| task.as_str().to_owned())
+                    .unwrap_or_default(),
+                note: format!("{} mail covered", input.covered.len()),
+                answers: Vec::new(),
+            },
             PolicyInput::Completed(input) => Outcome::Work {
                 task: dudes_proto::identified_taught_note_task(input.identity(), input.note_text())
                     .expect("BrowserNoteInput is a complete normalized note"),
@@ -565,6 +640,29 @@ fn check(gate: Gate, input: PolicyInput<'_>, common: &AdmissionView<'_>) -> Outc
                 Outcome::MailWork(input.task().clone())
             }
         },
+    }
+}
+
+/// The mail turn cap a replayed count has reached, in the words the trace records.
+fn mail_turn_cap(input: &MailTurnInput) -> Option<String> {
+    let used = input.used;
+    if used.thread >= THREAD_TURN_CAP {
+        Some(format!(
+            "mail turn thread limit reached: {} of {THREAD_TURN_CAP}",
+            used.thread
+        ))
+    } else if used.sender_today >= SENDER_DAY_TURN_CAP {
+        Some(format!(
+            "mail turn sender day limit reached: {} of {SENDER_DAY_TURN_CAP}",
+            used.sender_today
+        ))
+    } else if used.agent_today >= AGENT_DAY_TURN_CAP {
+        Some(format!(
+            "mail turn and mail wake day limit reached: {} of {AGENT_DAY_TURN_CAP}",
+            used.agent_today
+        ))
+    } else {
+        None
     }
 }
 
