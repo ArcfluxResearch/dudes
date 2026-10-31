@@ -152,6 +152,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(first) = candidates.first() else {
             return;
         };
+        if !self.spend.contains_key(&agent) {
+            self.mail_turn_waiting.entry(agent).or_insert(0);
+            return;
+        }
         let day = self.clock.now().utc_day();
         let Some(input) =
             self.mail_turn_input(agent, first, first.mail.clone(), String::new(), day)
