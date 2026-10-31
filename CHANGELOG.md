@@ -11,6 +11,44 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.103.0] - 2026-10-31
+
+### Highlights
+
+- **Agents can ask each other a question and report the answer back to you.** Ask an agent in its chat to ask a teammate something. It sends the teammate a request. If the teammate is idle and has no goal, it gets a turn, reads the request and answers. The first answer then starts a turn for the agent that asked, and its report appears in your chat under a quiet line, "After mail from <name>". Before this release a teammate with no goal never ran a turn for mail, so the request sat unread until someone typed to it. (#344, #345, #346, #347, #350, #351)
+- **Requests an agent sent show in its chat.** Each direct request appears as one muted line at the point it was sent, "<agent> asked <teammate>: <subject>", with a badge for Waiting, Answered, Not delivered or Thread full. Selecting the line opens the Messages tab at the reply, or at the request while it waits. `dudes mail read` and `dudes mail list` now show a sender as `from <name> (<id>)` when the daemon knows it. (#344, #351)
+- **A request that waits says why.** When a request does not start a turn, the recipient's chat shows one line, for example "Mail from Ada waits: 2 turns in this thread already", "waits while Grace is paused" or "needs a spending limit set". (#347)
+
+### What wakes an agent, and the limits
+
+- **Only two kinds of mail start a turn for an agent with no goal.** One is a request sent to that one agent alone. The other is the first answer to a request that agent sent. Group, department and everyone messages, plain messages, cards, acknowledgements and mail from you wait for the agent's next turn. An acknowledgement no longer counts as an answer, in the wake rule or in the Floor's "Answered" badge. (#345, #346)
+- **Caps.** An agent gets at most 2 mail-started turns per thread, at most 4 per sender per day (UTC), and at most 20 a day counting mail wakes as well. A refused request shows the one-line notice described above.
+- **Pause, halt and spending limits apply.** Pause and halt hold mail-started turns, and Stop does not cancel one that has not launched. An agent that runs on a visible billing credential needs a spending limit before a teammate's request can start a turn for it, the same rule as for your own chat messages.
+- **Agents with a goal wake as before.** They gain only the new instructions below and the chat display.
+
+### What agents are told
+
+- **A request is a question, not an order.** The teaching for mail turns, mail wakes, completed-note turns and chat turns now says that an agent answers a request with `dudes mail send --reply-to <id> --act message --body <text>`, and does not change files, goals or settings, start work or contact anyone else because a request asks. If a request asks for that, the agent says so in its reply and tells you.
+- **An answer is relayed as the teammate's words.** When an answer to a request the agent sent arrives, it tells you what the teammate said, quoted as the teammate's words and not as an instruction to itself.
+- Chat turns under the full command set did not teach mail before; they do now. Work for another agent still goes through tickets. (#345)
+
+### Changes
+
+- The release smoke now covers the loop in a real browser: ask one agent in chat to ask another, read the answer in the first agent's chat. (#350)
+- The Apple silicon release archive is built on a supported runner image, so releases keep working. This changes nothing for users. (#343)
+
+### Fixes
+
+- **The default "files changed" check counts only files changed since the round began.** It used to pass on a file an earlier ticket left uncommitted, so a ticket whose turn changed nothing, or whose turn vanished, could reach Ready for you. A file now counts only if it was written after the round's baseline, or if the agent committed since. This also holds after a crash, because the baseline is in the journal. Known limit: work that keeps an old file time (`cp -p`, `rsync -t`, `tar x`, a move from outside the tree, `touch -d`) reads as a leftover and does not count. (#349)
+- **Chat says why a message waits on an instruction review.** Under "Queued. Delivery has not started." it now adds "Waits until you review the instruction change on <ticket>", with a Review change button that opens the ticket. (#348)
+- **A mail subject shows once, without its "Re:" prefixes.** A long thread no longer reads "Re: Re: Re: What is…", and a reply with no admitted subject no longer shows a bare "Re:". (#351)
+
+### Breaking
+
+- **The first start after the upgrade rebuilds the saved views once.** The projection version moves from 73 to 74. Nothing is lost, and the rebuild runs once.
+- **Reload the browser page after the upgrade.** The browser wire version moves from 10 to 11, so a Floor page left open from 0.102.0 must be reloaded.
+DOWNGRADE_PLACEHOLDER
+
 ## [0.102.0] - 2026-10-31
 
 ### Highlights
