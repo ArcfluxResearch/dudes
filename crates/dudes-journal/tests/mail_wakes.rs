@@ -28,6 +28,10 @@ struct Log {
 
 impl Log {
     fn new(counts: &[u8]) -> Self {
+        Self::new_with(counts, |_| {})
+    }
+
+    fn new_with(counts: &[u8], shape_mail: impl Fn(&mut Record)) -> Self {
         let owned = tempfile::tempdir().unwrap();
         let journal = owned.path().join("journal");
         let writer = open(
@@ -96,6 +100,7 @@ impl Log {
             };
             *to = MailTo::Agent { agent };
             *state = MailState::Durable;
+            shape_mail(&mut record);
             let lsn = log.append(record, stamp());
             log.receipts.push(MailRef { id, lsn });
             if *count != 0 {
@@ -1448,4 +1453,106 @@ fn issue_day_buckets_admit_twenty_preserve_refusal_and_survive_backward_clock() 
     assert_eq!(counts, [1, 20]);
     assert_eq!(replay(&reader, &mut projected).unwrap().applied, 0);
     assert_eq!(projected.export().unwrap(), export);
+}
+
+fn wake_chat(subject_admission: Option<u32>, from: MailFrom) -> Vec<dudes_proto::ChatTurnView> {
+    let thread = dudes_types::ThreadId::from_parts(1, 7);
+    let mut log = Log::new_with(&[0], |record| {
+        let Record::Mail {
+            subject,
+            subject_admission: admission,
+            thread: found,
+            from: sender,
+            ..
+        } = record
+        else {
+            unreachable!();
+        };
+        *subject = "Release date".into();
+        *admission = subject_admission;
+        *found = Some(thread);
+        *sender = from;
+    });
+    let root = log.append(log.root_record(), stamp());
+    log.advance(0);
+    let decision = log.append(log.resume_record(root), stamp());
+    log.append(log.issue_record(root, decision), stamp());
+    let turn = TurnId::from_parts(1, 91);
+    let mut spawned = samples::record(RecordKind::TurnSpawned);
+    let Record::TurnSpawned {
+        agent,
+        turn: spawned_turn,
+        reissued,
+        ..
+    } = &mut spawned
+    else {
+        unreachable!();
+    };
+    *agent = log.agent;
+    *spawned_turn = turn;
+    *reissued = false;
+    log.append(spawned, stamp());
+    let mut ended = samples::record(RecordKind::TurnEnded);
+    let Record::TurnEnded {
+        agent,
+        turn: ended_turn,
+        final_reply,
+        last_message,
+        provenance,
+        mode,
+        ..
+    } = &mut ended
+    else {
+        unreachable!();
+    };
+    *agent = log.agent;
+    *ended_turn = turn;
+    *last_message = None;
+    *provenance = dudes_types::Provenance::Observed;
+    *mode = Mode::Managed;
+    *final_reply = Some(dudes_proto::ChatReply {
+        text: "Looks fine to me.".into(),
+        completeness: dudes_proto::ChatReplyCompleteness::Complete,
+    });
+    log.append(ended, stamp());
+    let reader = log.reader();
+    let mut projected = Projections::in_memory().unwrap();
+    replay(&reader, &mut projected).unwrap();
+    projected.chat().unwrap().turns
+}
+
+#[test]
+fn a_mail_wake_adds_an_exchange_naming_the_trigger_mail() {
+    let sender = AgentId::from_parts(1, 90);
+    let thread = dudes_types::ThreadId::from_parts(1, 7);
+    let rows = wake_chat(Some(1), MailFrom::Agent { agent: sender });
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].turn_id, Some(TurnId::from_parts(1, 91)));
+    assert_eq!(rows[0].text, None);
+    assert_eq!(rows[0].reply.as_deref(), Some("Looks fine to me."));
+    assert_eq!(rows[0].state, dudes_proto::ChatTurnState::Ended);
+    assert_eq!(
+        rows[0].cause,
+        Some(dudes_proto::ChatCause {
+            sender: Some(sender),
+            thread: Some(thread),
+            subject: Some("Release date".into()),
+        })
+    );
+}
+
+#[test]
+fn a_subject_that_was_not_admitted_for_display_is_left_out_of_the_cause() {
+    let sender = AgentId::from_parts(1, 90);
+    let rows = wake_chat(None, MailFrom::Agent { agent: sender });
+    assert_eq!(rows[0].cause.as_ref().unwrap().subject, None);
+    assert_eq!(rows[0].cause.as_ref().unwrap().sender, Some(sender));
+}
+
+#[test]
+fn operator_mail_that_wakes_an_agent_names_no_sending_agent() {
+    let rows = wake_chat(Some(1), MailFrom::Human);
+    let cause = rows[0].cause.as_ref().unwrap();
+    assert_eq!(cause.sender, None);
+    assert_eq!(cause.subject.as_deref(), Some("Release date"));
 }

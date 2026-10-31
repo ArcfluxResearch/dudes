@@ -4,6 +4,8 @@
 #![cfg(unix)]
 
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,6 +36,7 @@ struct Rig {
     fixture: Fixture,
     running: common::Running,
     page: duded::floor_browser::Page,
+    addr: SocketAddr,
     clock: Arc<TestClock>,
     host: SharedHost,
     next_mail: u64,
@@ -61,6 +64,24 @@ impl Rig {
         process_host: H,
         host: SharedHost,
     ) -> Self {
+        Self::start_checked(
+            fixture,
+            configure,
+            clock,
+            process_host,
+            host,
+            ScriptedRunner::scripted([]),
+        )
+    }
+
+    fn start_checked<H: ProcessHost + Send + 'static>(
+        fixture: Fixture,
+        configure: impl FnOnce(&mut Settings),
+        clock: Arc<TestClock>,
+        process_host: H,
+        host: SharedHost,
+        runner: ScriptedRunner,
+    ) -> Self {
         let mut settings = fixture.settings();
         settings.floor = Some(FloorSettings {
             assets_dir: PathBuf::from(FLOOR_FIXTURE),
@@ -70,7 +91,7 @@ impl Rig {
         let seams = common::seams(
             &settings,
             process_host,
-            Arc::new(ScriptedRunner::scripted([])),
+            Arc::new(runner),
             Arc::clone(&clock),
             Witness::default(),
         );
@@ -89,6 +110,7 @@ impl Rig {
             fixture,
             running,
             page,
+            addr,
             clock,
             host,
             next_mail: 1,
@@ -292,6 +314,98 @@ impl Rig {
                 } if *found == agent => Some(*turn),
                 _ => None,
             })
+    }
+
+    fn end_with_reply(&self, turn: TurnId, text: &str) {
+        self.spawned(turn);
+        common::end_turn_with_native_payload(
+            &self.fixture,
+            &self.host,
+            Input::ChildExited {
+                report: dudes_proto::TurnReport::default(),
+                final_reply: Some(dudes_proto::ChatReply {
+                    text: text.to_owned(),
+                    completeness: dudes_proto::ChatReplyCompleteness::Complete,
+                }),
+                elapsed_ms: None,
+                turn,
+                exit: dudes_proto::ExitStatus {
+                    code: Some(0),
+                    signal: None,
+                },
+                usage: None,
+                model_usage: std::collections::BTreeMap::new(),
+                outcome: dudes_proto::TurnOutcome::Completed,
+                last_message: None,
+            },
+        );
+    }
+
+    /// The rows of `agent`'s chat history in the first frame of a Floor subscription, which is
+    /// what the Floor renders from.
+    fn chat_rows(&self, agent: AgentId) -> Vec<Value> {
+        let mut stream = TcpStream::connect(self.addr).expect("Floor stream");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("stream read bound");
+        let head = self.page.upgrade_head("/floor/stream", "dudes-floor-v6");
+        stream.write_all(head.as_bytes()).expect("upgrade write");
+        let mut seen = Vec::new();
+        let mut byte = [0];
+        while !seen.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).expect("upgrade response");
+            seen.push(byte[0]);
+        }
+        assert!(String::from_utf8_lossy(&seen).starts_with("HTTP/1.1 101"));
+        let payload = b"{\"type\":\"floor.subscribe\"}";
+        let mut frame = vec![
+            0x81,
+            0x80 | u8::try_from(payload.len()).unwrap(),
+            0,
+            0,
+            0,
+            0,
+        ];
+        frame.extend_from_slice(payload);
+        stream.write_all(&frame).expect("subscribe");
+        let mut prefix = [0; 2];
+        stream.read_exact(&mut prefix).expect("snapshot frame");
+        let length = match prefix[1] & 0x7f {
+            126 => {
+                let mut bytes = [0; 2];
+                stream.read_exact(&mut bytes).unwrap();
+                usize::from(u16::from_be_bytes(bytes))
+            }
+            127 => {
+                let mut bytes = [0; 8];
+                stream.read_exact(&mut bytes).unwrap();
+                usize::try_from(u64::from_be_bytes(bytes)).unwrap()
+            }
+            length => usize::from(length),
+        };
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).expect("snapshot payload");
+        let snapshot: Value = serde_json::from_slice(&body).expect("snapshot JSON");
+        snapshot["chat"]["turns"]
+            .as_array()
+            .expect("chat turns")
+            .iter()
+            .filter(|row| row["agent_id"] == json!(agent))
+            .cloned()
+            .collect()
+    }
+
+    /// Chat rows once `count` of them exist for `agent`.
+    fn await_chat_rows(&self, agent: AgentId, count: usize) -> Vec<Value> {
+        let end = Instant::now() + Duration::from_secs(10);
+        loop {
+            let rows = self.chat_rows(agent);
+            if rows.len() >= count {
+                return rows;
+            }
+            assert!(Instant::now() < end, "chat rows for {agent}: {rows:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// Let mailbox passes and the loop run, then move the loop one beat.
@@ -681,4 +795,206 @@ fn replay_folds_the_same_covered_mail_and_decides_nothing_twice() {
         story,
         "a cold replay decides and issues nothing"
     );
+}
+
+fn thread_of(rig: &Rig, to: AgentId, act: MailAct, nth: usize) -> ThreadId {
+    rig.mail_to(to, act, nth).2.expect("a threaded mail")
+}
+
+#[test]
+fn both_chats_show_the_mail_started_turns_with_their_replies() {
+    let mut rig = Rig::new();
+    let a = rig.hire();
+    let b = rig.hire();
+    rig.chat(a, "ask B what 2+2 is");
+    let chat = rig.chat_turn(a);
+    rig.spawned(chat);
+    rig.request(a, b);
+    rig.end_with_reply(chat, "Asked B.");
+
+    let (delivered, _, _) = rig.mail_to(b, MailAct::Request, 0);
+    let thread = thread_of(&rig, b, MailAct::Request, 0);
+    let (b_turn, _, _) = rig.issue(b, 0);
+    rig.spawned(b_turn);
+    rig.reply(b, delivered, "message");
+    rig.mail_to(a, MailAct::Message, 0);
+    rig.end_with_reply(b_turn, "It is 4.");
+    let (a_turn, _, _) = rig.issue(a, 0);
+    rig.end_with_reply(a_turn, "B says it is 4.");
+
+    let a_rows = rig.await_chat_rows(a, 2);
+    assert_eq!(a_rows.len(), 2, "{a_rows:?}");
+    assert_eq!(a_rows[0]["text"], "ask B what 2+2 is");
+    assert_eq!(a_rows[0]["reply"], "Asked B.");
+    assert_eq!(a_rows[0]["cause"], Value::Null);
+    assert_eq!(a_rows[1]["turn_id"], json!(a_turn));
+    assert_eq!(a_rows[1]["text"], Value::Null);
+    assert_eq!(a_rows[1]["state"], "ended");
+    assert_eq!(a_rows[1]["reply"], "B says it is 4.");
+    assert_eq!(
+        a_rows[1]["cause"],
+        json!({"sender": b, "thread": thread, "subject": "question"})
+    );
+    assert_eq!(a_rows[1]["notice"], Value::Null);
+
+    let b_rows = rig.await_chat_rows(b, 1);
+    assert_eq!(b_rows.len(), 1, "{b_rows:?}");
+    assert_eq!(b_rows[0]["turn_id"], json!(b_turn));
+    assert_eq!(b_rows[0]["reply"], "It is 4.");
+    assert_eq!(b_rows[0]["cause"]["sender"], json!(a));
+    assert_eq!(b_rows[0]["cause"]["thread"], json!(thread));
+    rig.stop();
+}
+
+#[test]
+fn a_capped_request_adds_one_notice_to_the_recipients_chat() {
+    let mut rig = Rig::new();
+    let a = rig.hire();
+    let b = rig.hire();
+    let first = rig.asked_and_ended(a, b, 0);
+    rig.send(
+        a,
+        json!({"in_reply_to": first, "act": "request", "body": "and 3+3?"}),
+    );
+    let (turn, _, _) = rig.issue(b, 1);
+    rig.end(turn);
+    rig.send(
+        a,
+        json!({"in_reply_to": first, "act": "request", "body": "and 4+4?"}),
+    );
+    rig.await_decisions(b, 3);
+    rig.settle();
+
+    let rows = rig.await_chat_rows(b, 3);
+    let notices: Vec<_> = rows
+        .iter()
+        .filter(|row| row["notice"] != Value::Null)
+        .collect();
+    assert_eq!(notices.len(), 1, "{rows:?}");
+    assert_eq!(
+        notices[0]["notice"],
+        json!({"sender": a, "reason": "thread_limit"})
+    );
+    assert_eq!(notices[0]["turn_id"], Value::Null);
+    assert_eq!(notices[0]["text"], Value::Null);
+    assert_eq!(notices[0]["cause"], Value::Null);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["cause"] != Value::Null)
+            .count(),
+        2
+    );
+    assert_eq!(rig.chat_rows(a).len(), 0, "the sender's chat has no notice");
+    rig.stop();
+}
+
+#[test]
+fn a_paused_recipient_adds_one_notice_and_the_resumed_turn_adds_its_exchange() {
+    let mut rig = Rig::new();
+    let a = rig.hire();
+    let b = rig.hire();
+    rig.running.handle.ask(Ask::Pause(b)).unwrap();
+    rig.request(a, b);
+    rig.await_decisions(b, 1);
+    rig.settle();
+    let rows = rig.await_chat_rows(b, 1);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["notice"], json!({"sender": a, "reason": "paused"}));
+
+    rig.running.handle.ask(Ask::Resume(b)).unwrap();
+    let (turn, _, _) = rig.issue(b, 0);
+    rig.end_with_reply(turn, "On it.");
+    let rows = rig.await_chat_rows(b, 2);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["notice"]["reason"], "paused");
+    assert_eq!(rows[1]["reply"], "On it.");
+    assert_eq!(rows[1]["cause"]["sender"], json!(a));
+    rig.stop();
+}
+
+#[test]
+fn a_replay_rebuilds_the_same_chat_cold_and_warm() {
+    let mut rig = Rig::new();
+    let a = rig.hire();
+    let b = rig.hire();
+    let request = rig.asked_and_ended(a, b, 0);
+    rig.reply(b, request, "message");
+    let (turn, _, _) = rig.issue(a, 0);
+    rig.end_with_reply(turn, "B answered.");
+    rig.running.handle.ask(Ask::Pause(b)).unwrap();
+    rig.request(a, b);
+    rig.await_decisions(b, 2);
+    let before = (rig.await_chat_rows(a, 1), rig.await_chat_rows(b, 2));
+    assert_eq!(before.0[0]["reply"], "B answered.");
+    assert_eq!(before.1[1]["notice"]["reason"], "paused");
+    let fixture = rig.stop();
+
+    let rig = Rig::start(fixture, |_| {}, Arc::new(TestClock::new()));
+    assert_eq!((rig.chat_rows(a), rig.chat_rows(b)), before, "warm");
+    let fixture = rig.stop();
+
+    fs::remove_file(fixture.state.path().join(duded::boot::PROJECTION_FILE)).unwrap();
+    let rig = Rig::start(fixture, |_| {}, Arc::new(TestClock::new()));
+    assert_eq!((rig.chat_rows(a), rig.chat_rows(b)), before, "cold");
+    rig.stop();
+}
+
+#[test]
+fn a_mail_wake_of_an_agent_with_a_goal_adds_an_exchange() {
+    let fixture = Fixture::new();
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let mut rig = Rig::start_checked(
+        fixture,
+        |_| {},
+        Arc::new(TestClock::new()),
+        host.clone(),
+        host,
+        ScriptedRunner::scripted([common::passes()]),
+    );
+    let a = rig.hire();
+    let b = rig.hire();
+    common::set_goal(
+        &rig.running.handle,
+        common::goal_params(b, &[common::true_program()]),
+    );
+    let goal_turn = rig.fixture.await_turn();
+    rig.end(goal_turn);
+    rig.fixture
+        .await_record("goal done", |record| match record {
+            Record::LoopDecided {
+                agent,
+                decision: dudes_proto::LoopDecision::Done,
+                ..
+            } if *agent == b => Some(()),
+            _ => None,
+        });
+
+    rig.send(
+        a,
+        json!({"to": {"kind": "agent", "agent": b}, "act": "message", "body": "fyi"}),
+    );
+    let (_, _, thread) = rig.mail_to(b, MailAct::Message, 0);
+    rig.settle();
+    let wake = rig
+        .fixture
+        .await_record("mail wake issue", |record| match record {
+            Record::MailWakeOnlyTurnIssued(issue)
+            | Record::IdentifiedMailWakeOnlyTurnIssued(issue)
+                if issue.agent == b =>
+            {
+                Some(issue.turn)
+            }
+            _ => None,
+        });
+    rig.end_with_reply(wake, "Noted.");
+
+    let rows = rig.await_chat_rows(b, 1);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["turn_id"], json!(wake));
+    assert_eq!(rows[0]["text"], Value::Null);
+    assert_eq!(rows[0]["reply"], "Noted.");
+    assert_eq!(rows[0]["cause"]["sender"], json!(a));
+    assert_eq!(rows[0]["cause"]["thread"], json!(thread));
+    assert!(rig.issues(b).is_empty(), "a wake is not a mail turn");
+    rig.stop();
 }
