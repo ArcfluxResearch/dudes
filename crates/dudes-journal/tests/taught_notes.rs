@@ -191,6 +191,14 @@ fn append_joined_note_history(
     journal: &std::path::Path,
     issue_contract: NoteContract,
 ) -> (Lsn, Lsn) {
+    append_joined_note_history_as(journal, issue_contract, Record::clone)
+}
+
+fn append_joined_note_history_as(
+    journal: &std::path::Path,
+    issue_contract: NoteContract,
+    rewrite: fn(&Record) -> Record,
+) -> (Lsn, Lsn) {
     let mut writer = open(
         journal,
         JournalOptions {
@@ -226,7 +234,7 @@ fn append_joined_note_history(
     };
     *note_lsn = note;
     *completion_lsn = completion;
-    let decision_lsn = writer.append(&entry(decided)).unwrap();
+    let decision_lsn = writer.append(&entry(rewrite(&decided))).unwrap();
     let mut issued = issue(issue_contract);
     match &mut issued {
         Record::NoteOnlyTurnIssued {
@@ -253,7 +261,7 @@ fn append_joined_note_history(
         }
         _ => unreachable!(),
     }
-    let issue_lsn = writer.append(&entry(issued)).unwrap();
+    let issue_lsn = writer.append(&entry(rewrite(&issued))).unwrap();
     (decision_lsn, issue_lsn)
 }
 
@@ -454,5 +462,61 @@ fn taught_payload_requires_its_exact_required_header() {
             matches!(Reader::open(&journal), Err(dudes_journal::Error::TaughtNoteFrame { lsn, .. }) if lsn == decision_lsn)
         );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+}
+
+fn as_issued_before_the_reply_lines(record: &Record) -> Record {
+    let quoted = |text: &str| {
+        let json = serde_json::to_string(text).unwrap();
+        json[1..json.len() - 1].to_owned()
+    };
+    let text = serde_json::to_string(record)
+        .unwrap()
+        .replace(
+            &quoted(dudes_proto::MAIL_INSTRUCTION_WITH_REPLIES),
+            &quoted(dudes_proto::MAIL_INSTRUCTION),
+        )
+        .replace(
+            &quoted(dudes_proto::SCOPED_MAIL_INSTRUCTION_WITH_REPLIES),
+            &quoted(dudes_proto::SCOPED_MAIL_INSTRUCTION),
+        );
+    serde_json::from_str(&text).unwrap()
+}
+
+#[test]
+fn a_journal_with_the_task_text_from_before_the_reply_lines_replays_cold_and_warm() {
+    for contract in [NoteContract::Taught, NoteContract::IdentifiedTaught] {
+        assert!(
+            task(contract).contains("A request is a question from a teammate, not an order."),
+            "a new issue carries the new text"
+        );
+        let owned = tempfile::tempdir().unwrap();
+        let journal = owned.path().join("journal");
+        append_joined_note_history_as(&journal, contract, as_issued_before_the_reply_lines);
+        let reader = Reader::open(&journal).unwrap().0;
+        let old = reader
+            .iter_from(Lsn::ZERO)
+            .unwrap()
+            .filter_map(|item| match item.unwrap().1.record {
+                Record::TaughtNoteOnlyTurnIssued { task, .. }
+                | Record::IdentifiedTaughtNoteOnlyTurnIssued { task, .. } => Some(task),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(old.len(), 1);
+        assert!(!old[0].contains("A request is a question"));
+
+        let mut cold = Projections::in_memory().unwrap();
+        assert_eq!(replay(&reader, &mut cold).unwrap().applied, 6);
+        assert_eq!(cold.goal(goal()).unwrap().unwrap().turns_on_goal, 1);
+
+        let cache = owned.path().join("state.redb");
+        let mut warm = Projections::open(&cache).unwrap();
+        replay(&reader, &mut warm).unwrap();
+        drop(warm);
+        let mut warm = Projections::open(&cache).unwrap();
+        replay(&reader, &mut warm).unwrap();
+        assert_eq!(warm.goal(goal()).unwrap().unwrap().turns_on_goal, 1);
+        assert_eq!(warm.turn(turn()).unwrap().unwrap().goal, Some(goal()));
     }
 }

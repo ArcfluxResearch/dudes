@@ -1185,7 +1185,13 @@ fn conversation_answer_binds_question_and_precedes_unrelated_messages() {
         })
         .collect();
     assert_eq!(tasks.len(), 2);
-    assert!(tasks[0].starts_with("[You are ") && tasks[0].ends_with("]\n\nHelp me choose"));
+    assert!(
+        tasks[0].starts_with("[You are ")
+            && tasks[0].ends_with(&format!(
+                "]\n\nHelp me choose{}",
+                dudes_proto::MAIL_INSTRUCTION_WITH_REPLIES
+            ))
+    );
     assert!(
         dudes_proto::recognize_identified_conversation_task(&tasks[1], &queued.1, true, agent)
             .is_some(),

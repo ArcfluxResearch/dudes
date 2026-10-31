@@ -83,6 +83,9 @@ fn answers_use_direction_thread_creation_order_and_delivery_not_acknowledgement(
         },
     );
     let rows = store.messages().unwrap();
+    assert_eq!(rows[1].reply_status, ReplyStatus::Undeliverable);
+    apply(&mut store, 9, &message(7, 2, 1, Some(1), MailAct::Message));
+    let rows = store.messages().unwrap();
     assert_eq!(rows[1].reply_status, ReplyStatus::Answered);
     assert_eq!(rows[5].act, None);
     assert_eq!(rows[5].reply_status, ReplyStatus::NotExpected);
@@ -205,4 +208,34 @@ fn combined_budget_keeps_a_suffix_caps_captions_and_rebuilds_exact_threads() {
             && !subject.contains('\n')
             && subject.ends_with('…')
     }));
+}
+
+fn statuses(replies: &[(u128, u128, MailAct, bool)]) -> ReplyStatus {
+    let mut store = Projections::in_memory().unwrap();
+    apply(&mut store, 1, &message(1, 1, 2, Some(1), MailAct::Request));
+    for (at, (from, to, act, bounced)) in (2u64..).zip(replies) {
+        let mut entry = message(at, *from, *to, Some(1), *act);
+        if *bounced && let Record::Mail { state, .. } = &mut entry.record {
+            *state = MailState::Bounced { why: "no".into() };
+        }
+        apply(&mut store, at, &entry);
+    }
+    store.messages().unwrap()[0].reply_status
+}
+
+#[test]
+fn only_a_message_or_request_from_the_recipient_answers_a_request() {
+    use MailAct::{Ack, Card, Message, Request};
+    assert_eq!(statuses(&[]), ReplyStatus::Awaiting);
+    assert_eq!(statuses(&[(2, 1, Ack, false)]), ReplyStatus::Awaiting);
+    assert_eq!(statuses(&[(2, 1, Card, false)]), ReplyStatus::Awaiting);
+    assert_eq!(statuses(&[(2, 1, Message, false)]), ReplyStatus::Answered);
+    assert_eq!(statuses(&[(2, 1, Request, false)]), ReplyStatus::Answered);
+    assert_eq!(
+        statuses(&[(2, 1, Ack, false), (2, 1, Message, false)]),
+        ReplyStatus::Answered
+    );
+    assert_eq!(statuses(&[(2, 1, Message, true)]), ReplyStatus::Awaiting);
+    assert_eq!(statuses(&[(3, 1, Message, false)]), ReplyStatus::Awaiting);
+    assert_eq!(statuses(&[(1, 2, Message, false)]), ReplyStatus::Awaiting);
 }

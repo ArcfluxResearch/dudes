@@ -68,7 +68,13 @@ fn a_chat_turn_is_the_line_a_blank_line_and_the_note_as_typed() {
         view: SpendView::default(),
     });
     message(&mut harness, agent, "Who are you?");
-    assert_eq!(chat_tasks(&harness), [format!("{FIRST}\n\nWho are you?")]);
+    assert_eq!(
+        chat_tasks(&harness),
+        [format!(
+            "{FIRST}\n\nWho are you?{}",
+            dudes_proto::MAIL_INSTRUCTION_WITH_REPLIES
+        )]
+    );
 }
 
 #[test]

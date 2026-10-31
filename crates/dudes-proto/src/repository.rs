@@ -1194,7 +1194,10 @@ mod tests {
         let line = IdentityLine::for_hire(agent, "Kim", "engineer", &hire).unwrap();
         let queued = format!("see [You are here]\n\n[You are lost]{ANSWER_CLOSING}");
         let task = identified_conversation_task(&line, &queued, true);
-        assert!(task.ends_with(&format!("web: /data/worktrees/c3{ANSWER_CLOSING}")));
+        assert!(task.ends_with(&format!(
+            "web: /data/worktrees/c3{}{ANSWER_CLOSING}",
+            crate::task::MAIL_INSTRUCTION_WITH_REPLIES
+        )));
         assert_eq!(
             recognize_identified_conversation_task(&task, &queued, true, agent),
             Some(line.clone())

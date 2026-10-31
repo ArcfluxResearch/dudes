@@ -308,7 +308,7 @@ mod tests {
             format!(
                 "[1 unread mail]{}{}",
                 dudes_proto::MEMORY_INSTRUCTION,
-                dudes_proto::MAIL_INSTRUCTION
+                dudes_proto::MAIL_INSTRUCTION_WITH_REPLIES
             )
         );
     }

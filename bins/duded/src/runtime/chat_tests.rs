@@ -1325,8 +1325,9 @@ fn three_agents_are_each_told_who_they_are_and_the_roster_marks_the_caller() {
         assert_eq!(
             task,
             format!(
-                "{}\n\n{question}",
-                dudes_proto::IdentityLine::new(*agent, name, role).as_str()
+                "{}\n\n{question}{}",
+                dudes_proto::IdentityLine::new(*agent, name, role).as_str(),
+                dudes_proto::MAIL_INSTRUCTION_WITH_REPLIES
             )
         );
         tasks.push(task);
