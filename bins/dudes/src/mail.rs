@@ -1,4 +1,7 @@
+use std::collections::HashMap;
 use std::io::{self, Write};
+
+use dudes_types::AgentId;
 
 use crate::args::MailCommand;
 use crate::env::Environment;
@@ -6,19 +9,25 @@ use crate::env::Environment;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix;
 
-pub(crate) fn run(command: &MailCommand, env: &Environment, out: &mut dyn Write) -> io::Result<()> {
+pub(crate) fn run(
+    command: &MailCommand,
+    env: &Environment,
+    names: &HashMap<AgentId, String>,
+    out: &mut dyn Write,
+) -> io::Result<()> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         unix::run(
             command,
             env.mailbox().map_err(io::Error::other)?,
             env.scoped_file_mail(),
+            names,
             out,
         )
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = (command, env, out);
+        let _ = (command, env, names, out);
         Err(io::Error::other("mail is not yet available on Windows"))
     }
 }

@@ -120,6 +120,10 @@ export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, 
     setDetailTab(tab);
     writeDetailTab(tab);
   }
+  function openMail(id: string): void {
+    chooseDetailTab('messages');
+    setTimeout(() => document.querySelector(`[data-message-id="${id}"]`)?.scrollIntoView({ block: 'center' }), 0);
+  }
   const selection = <SelectionBar floor={floor} onClear={onClose} leaveFocusTo={leaveFocusTo} showStatus={row === null} />;
   const switchedOff = switchedOffControls(floor).filter((control) => control !== 'terminal');
   const attachOff = switchedOffControls(floor).includes('terminal');
@@ -142,7 +146,7 @@ export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, 
       ) : (
         <AgentDetail row={row} cards={floor.cards} selection={selection} streamState={streamStatus(floor)} tab={detailTab} onTabChange={chooseDetailTab}
           chat={chatGate(floor, row).open
-            ? <ChatPanel floor={floor} row={row} fullOutput={fullOutput} onFullOutput={setFullOutput} /> : null}
+            ? <ChatPanel floor={floor} row={row} fullOutput={fullOutput} onFullOutput={setFullOutput} onOpenMail={openMail} /> : null}
           liveOutput={floor.output.targetId === row.id && (floor.output.chunks.length > 0
             || floor.output.status === 'gap' || floor.output.status === 'unavailable')
             ? <OverviewOutput floor={floor} row={row} /> : null}
