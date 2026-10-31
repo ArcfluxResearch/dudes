@@ -19,7 +19,9 @@ import { conversationEntries } from './thread.ts';
 import type { ChatEntry } from './thread.ts';
 import { ChatText } from './ChatText.tsx';
 import { Steps } from './Steps.tsx';
-import { AskedRequests } from './AskedRequests.tsx';
+import { AskedRow, agentNames } from './AskedRequests.tsx';
+import { askedRequests, placeAsked } from './asked.ts';
+import type { AskedRequest } from './asked.ts';
 import { EngineSaid } from './EngineSaid.tsx';
 import { FullOutput } from '../LiveWork.tsx';
 import { MessageSquare, Paperclip, SendHorizontal } from 'lucide-react';
@@ -224,12 +226,15 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onO
   const name = typeof row.name === 'string' ? row.name : 'this agent';
   const attempt = action.attempt?.payload.agent === row.id ? action.attempt : null;
   const outcome = action.outcome;
+  const names = agentNames(floor);
+  const placed = placeAsked(entries.map(entry => entry.noteLsn), askedRequests(floor.messages ?? [], floor.threads ?? [], row.id));
+  const askedRow = (request: AskedRequest) => <AskedRow key={request.id} request={request} from={name}
+    to={names.get(request.to) || request.to} onOpenMail={onOpenMail} />;
   const latestTurn = row.mode === 'managed' ? entries.filter(entry => entry.kind !== 'context' && entry.turn !== null).at(-1) : undefined;
   return <section className={cn('chat-thread flex min-h-72 min-w-0 flex-1 flex-col gap-2', SHORT_THREAD)} aria-labelledby="chat-thread-title">
     <div className="chat-thread-heading flex flex-wrap items-center justify-between gap-x-3 gap-y-1"><h3 id="chat-thread-title" className={HEADING}>Conversation</h3>
       <ClearQueuedNotes floor={floor} row={row} action={action} />
     </div>
-    <AskedRequests floor={floor} agent={row.id} onOpenMail={onOpenMail} />
     <div className="chat-scroll min-h-0 flex-1 overflow-y-auto rounded-lg border border-line bg-bg p-3 [overflow-anchor:none]"
       ref={scroll} role="log" aria-label={`Conversation with ${name}`} aria-relevant="additions"
       onScroll={event => {
@@ -237,19 +242,20 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onO
         if (node.clientWidth !== size.current.width || node.clientHeight !== size.current.height) return;
         follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
       }}>
-      {entries.length === 0 && attempt === null ? <div className="chat-empty grid min-h-full content-center justify-items-center gap-1 text-center">
+      {entries.length === 0 && attempt === null && placed.leading.length === 0 ? <div className="chat-empty grid min-h-full content-center justify-items-center gap-1 text-center">
         <MessageSquare {...ICON} size={24} aria-hidden="true" className="mb-1 text-subtle" />
         <p className="m-0 font-medium">No messages in the available history</p>
         <p className={NOTE}>Write a message below to continue the conversation.</p>
-      </div> : <ol className="m-0 grid min-h-full list-none content-end gap-4 p-0">{entries.map(entry => {
-        if (entry.kind === 'context') return <li key={entry.noteLsn} className="chat-context rounded-md border border-dashed border-line-strong px-3 py-2 text-small text-muted" data-chat-context-lsn={entry.noteLsn}>
+      </div> : <ol className="m-0 grid min-h-full list-none content-end gap-4 p-0">{placed.leading.map(askedRow)}{entries.flatMap(entry => {
+        const requests = (placed.after.get(entry.noteLsn) ?? []).map(askedRow);
+        if (entry.kind === 'context') return [<li key={entry.noteLsn} className="chat-context rounded-md border border-dashed border-line-strong px-3 py-2 text-small text-muted" data-chat-context-lsn={entry.noteLsn}>
           <p className="m-0">Sent as context</p>
-        </li>;
+        </li>, ...requests];
         const { pending: note, turn } = entry;
         const preview = turn !== null && previewMatches(floor, row, turn);
         const status = turn !== null && note === null ? turnText(turn, preview ? floor.output.status : null) : null;
         const emphasis = turn?.state === 'failed' || note?.state === 'delivery_uncertain' ? 'font-semibold' : '';
-        return <li key={entry.noteLsn} className="chat-exchange grid min-w-0 gap-1.5" data-chat-note-lsn={entry.noteLsn}
+        return [<li key={entry.noteLsn} className="chat-exchange grid min-w-0 gap-1.5" data-chat-note-lsn={entry.noteLsn}
           data-chat-pending-state={note?.state} data-chat-turn-id={turn?.turn_id} data-chat-turn-state={turn?.state}>
           <div className={cn('chat-message chat-user', USER_BUBBLE)}>
             <p className={cn('chat-speaker', SPEAKER)}>You</p>
@@ -293,7 +299,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onO
           </div> : null}
           {entry === latestTurn
             ? <FullOutput floor={floor} row={row} id="chat-full-output" open={fullOutput} onToggle={onFullOutput} /> : null}
-        </li>;
+        </li>, ...requests];
       })}</ol>}
       {attempt === null ? null : <section className={cn('chat-receipt mt-3 flex flex-col items-start gap-2', BOX)} aria-label="Chat request" aria-live="polite"
         data-chat-outcome={action.outcome?.kind ?? 'sending'}
