@@ -146,7 +146,7 @@ export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, 
       ) : (
         <AgentDetail row={row} cards={floor.cards} selection={selection} streamState={streamStatus(floor)} tab={detailTab} onTabChange={chooseDetailTab}
           chat={chatGate(floor, row).open
-            ? <ChatPanel floor={floor} row={row} fullOutput={fullOutput} onFullOutput={setFullOutput} onOpenMail={openMail} /> : null}
+            ? <ChatPanel floor={floor} row={row} fullOutput={fullOutput} onFullOutput={setFullOutput} onOpenMail={openMail} onOpenTicket={onOpenTicket} /> : null}
           liveOutput={floor.output.targetId === row.id && (floor.output.chunks.length > 0
             || floor.output.status === 'gap' || floor.output.status === 'unavailable')
             ? <OverviewOutput floor={floor} row={row} /> : null}
