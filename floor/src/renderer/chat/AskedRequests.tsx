@@ -43,7 +43,7 @@ export function AskedRequests({ floor, agent, onOpenMail }: {
     </li>;
   };
   return <section className={cn('asked-requests flex min-w-0 flex-col gap-1.5')} aria-label="Requests this agent sent">
-    <ul className={cn('m-0 flex list-none flex-col gap-1.5 p-0')}>{open.map(card)}</ul>
+    <ul className={cn('m-0 flex max-h-40 list-none flex-col gap-1.5 overflow-y-auto p-0')}>{open.map(card)}</ul>
     {older.length === 0 ? null : <Disclosure summaryClassName="py-0 text-small font-normal text-muted"
       summary={`Earlier answered requests (${older.length})`}>
       <ul className={cn('m-0 mt-1.5 flex list-none flex-col gap-1.5 p-0')}>{older.map(card)}</ul>
