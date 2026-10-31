@@ -257,7 +257,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onO
         const turn = entry.turn;
         const note = entry.kind === 'message' ? entry.pending : null;
         const preview = turn !== null && previewMatches(floor, row, turn);
-        const status = turn !== null && note === null ? turnText(turn, preview ? floor.output.status : null, name) : null;
+        const status = turn !== null && note === null ? turnText(turn, preview ? floor.output.status : null) : null;
         const emphasis = turn?.state === 'failed' || note?.state === 'delivery_uncertain' ? 'font-semibold' : '';
         return [<li key={entry.noteLsn} className="chat-exchange grid min-w-0 gap-1.5" data-chat-note-lsn={entry.noteLsn}
           data-chat-pending-state={note?.state} data-chat-turn-id={turn?.turn_id} data-chat-turn-state={turn?.state}>
@@ -437,9 +437,9 @@ function pendingText(note: PendingNote): string {
       : 'Delivery before restart is unknown. Stopping future reissue cannot retract possible past delivery.';
 }
 
-function turnText(turn: ChatTurn, output: OutputStatus | null, name: string): string | null {
+function turnText(turn: ChatTurn, output: OutputStatus | null): string | null {
   switch (turn.state) {
-    case 'waiting': return `Starts when ${name} is free.`;
+    case 'waiting': return 'Waiting to start.';
     case 'reserved': return 'Next to be sent. Delivery has not started.';
     case 'running': return output === 'ended' ? 'Waiting for reply status' : 'Replying…';
     case 'ended': return turn.reply === null ? 'No final reply was reported' : null;

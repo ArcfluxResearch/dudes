@@ -42,7 +42,7 @@ const render = (turns, patch = {}) => renderToStaticMarkup(createElement(ChatPan
 test('a waiting mail turn is accepted and reads in plain words, and a running one reads as replying', () => {
   const waiting = mailTurn({ state: 'waiting', reply: null });
   assert.equal(decodeChat(view([waiting]), agents)?.turns[0].state, 'waiting');
-  assert.match(render([waiting]), /Starts when Ada is free\./);
+  assert.match(render([waiting]), /Waiting to start\./);
   assert.doesNotMatch(render([waiting]), /Replying/);
   assert.match(render([mailTurn({ state: 'running', reply: null })]), /Replying…/);
 });
