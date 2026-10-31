@@ -2278,6 +2278,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if fenced && !acknowledged.is_empty() {
             self.ctx.fence_journal();
         }
+        if !fenced && self.sup.mail_turn_waiting() {
+            acknowledged.push_back(Input::MailPassFinished);
+        }
         if !fenced && !acknowledged.is_empty() {
             let mut report = PumpReport::Discard;
             if self

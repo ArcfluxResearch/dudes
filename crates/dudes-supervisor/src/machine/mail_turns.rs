@@ -13,6 +13,10 @@ use dudes_proto::{
 };
 use dudes_types::{MailId, UtcDay};
 
+/// How many mailbox passes may find a candidate's mail still unpublished before the beat alone
+/// looks again.
+const MAIL_TURN_PASS_RETRIES: u8 = 16;
+
 /// One mailbox inspection that is outstanding for an agent.
 #[derive(Debug)]
 pub(super) struct MailTurnInspection {
@@ -187,6 +191,20 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         });
     }
 
+    /// Whether some agent's wake-worthy mail was not yet in its inbox at the last inspection.
+    #[must_use]
+    pub fn mail_turn_waiting(&self) -> bool {
+        !self.mail_turn_waiting.is_empty()
+    }
+
+    /// The mailbox finished a pass, so mail that was journaled but not yet published may be there.
+    pub(super) fn mail_pass_finished(&mut self) {
+        let agents: Vec<AgentId> = self.mail_turn_waiting.keys().copied().collect();
+        for agent in agents {
+            self.request_mail_turn(agent);
+        }
+    }
+
     /// The agents whose candidates the beat should look at again.
     pub(super) fn mail_turn_sweep(&mut self) {
         let agents: Vec<AgentId> = self
@@ -226,32 +244,34 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         present.sort();
         present.dedup();
-        let Some((candidate, covered)) = self
-            .world
-            .mail_turn_candidates(agent)
-            .into_iter()
-            .find_map(|candidate| {
-                let covered: Vec<MailRef> = candidate
-                    .mail
-                    .iter()
-                    .filter(|mail| present.binary_search(&mail.id).is_ok())
-                    .copied()
-                    .collect();
-                (!covered.is_empty()).then_some((candidate, covered))
-            })
-        else {
+        let candidates = self.world.mail_turn_candidates(agent);
+        let complete = candidates.iter().all(|other| {
+            other
+                .mail
+                .iter()
+                .all(|mail| present.binary_search(&mail.id).is_ok())
+        });
+        if complete {
+            self.mail_turn_waiting.remove(&agent);
+        } else {
+            let retries = self.mail_turn_waiting.get(&agent).copied().unwrap_or(0);
+            if retries < MAIL_TURN_PASS_RETRIES {
+                self.mail_turn_waiting.insert(agent, retries + 1);
+            } else {
+                self.mail_turn_waiting.remove(&agent);
+            }
+        }
+        let Some((candidate, covered)) = candidates.into_iter().find_map(|candidate| {
+            let covered: Vec<MailRef> = candidate
+                .mail
+                .iter()
+                .filter(|mail| present.binary_search(&mail.id).is_ok())
+                .copied()
+                .collect();
+            (!covered.is_empty()).then_some((candidate, covered))
+        }) else {
             return;
         };
-        let complete = self
-            .world
-            .mail_turn_candidates(agent)
-            .iter()
-            .all(|other| {
-                other
-                    .mail
-                    .iter()
-                    .all(|mail| present.binary_search(&mail.id).is_ok())
-            });
         let Ok(report) = serde_json::to_vec(&("mail_turn_inspection_v1", agent, &present)) else {
             return;
         };

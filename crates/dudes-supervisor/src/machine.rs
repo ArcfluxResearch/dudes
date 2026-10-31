@@ -558,6 +558,7 @@ pub struct Supervisor<C: Clock, R: Rng> {
     next_mail_request: u64,
     mail_turn_inspections: BTreeMap<AgentId, mail_turns::MailTurnInspection>,
     mail_turn_handled: BTreeMap<AgentId, String>,
+    mail_turn_waiting: BTreeMap<AgentId, u8>,
     /// Gate 7's card, mail count and memory digest per agent, as the caller last pushed them on
     /// [`Input::Work`]. Run-local like [`Self::spend`] and journaled nowhere: an agent with no
     /// entry gets `WorkInput::default()`, which is the goal text alone.
@@ -766,6 +767,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             next_mail_request: 0,
             mail_turn_inspections: BTreeMap::new(),
             mail_turn_handled: BTreeMap::new(),
+            mail_turn_waiting: BTreeMap::new(),
             work: BTreeMap::new(),
             goals_awaiting_board_result: BTreeSet::new(),
             ticket_review: ticket_review::State::default(),
@@ -1272,6 +1274,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 request,
                 result,
             } => self.mail_wake_ready(agent, request, result, operation),
+            Input::MailPassFinished => self.mail_pass_finished(),
             Input::MailTurnInspected {
                 agent,
                 request,

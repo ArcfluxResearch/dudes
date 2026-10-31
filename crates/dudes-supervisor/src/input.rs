@@ -524,6 +524,8 @@ pub enum Input {
         /// One clock sample, its spend and a volatile projection cursor, or failure.
         result: Result<(dudes_types::Timestamp, SpendView, Lsn), MailWakeRefreshFailure>,
     },
+    /// The mailbox finished a pass; mail it journaled earlier may only now sit in an inbox.
+    MailPassFinished,
     /// What the mailbox found in one agent's inbox for one still-owned inspection.
     MailTurnInspected {
         /// Recipient.
