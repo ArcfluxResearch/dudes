@@ -183,6 +183,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             || self.closing_recovery
             || !self.browser_delivery_open
             || self.launch_held(agent, operation)
+            || self.issue_in_flight(agent)
             || self
                 .world
                 .conversation_message(agent, note_lsn, context_lsn)

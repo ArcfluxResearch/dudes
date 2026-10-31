@@ -97,6 +97,7 @@ fn policy_sources_name_no_clock_and_no_io() {
             "lib.rs",
             "loop.rs",
             "mail.rs",
+            "mail_turn.rs",
             "predicate.rs",
             "proptest.rs",
             "purity_witness/mod.rs",

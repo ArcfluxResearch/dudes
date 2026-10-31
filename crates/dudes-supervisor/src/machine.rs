@@ -55,6 +55,7 @@ mod conversations;
 mod floor_stop_tests;
 mod instruction_observations;
 pub use instruction_observations::InstructionSource;
+mod mail_turns;
 mod mail_wakes;
 mod recovery;
 mod repositories;
@@ -200,6 +201,10 @@ enum Then {
     },
     MailWakeContinue {
         agent: AgentId,
+    },
+    MailTurnIssue {
+        agent: AgentId,
+        at: Timestamp,
     },
     MailWakeCheckIssue {
         agent: AgentId,
@@ -551,6 +556,9 @@ pub struct Supervisor<C: Clock, R: Rng> {
     spend: BTreeMap<AgentId, SpendView>,
     mail_refreshes: BTreeMap<AgentId, MailRefresh>,
     next_mail_request: u64,
+    mail_turn_inspections: BTreeMap<AgentId, mail_turns::MailTurnInspection>,
+    mail_turn_handled: BTreeMap<AgentId, String>,
+    mail_turn_waiting: BTreeMap<AgentId, u8>,
     /// Gate 7's card, mail count and memory digest per agent, as the caller last pushed them on
     /// [`Input::Work`]. Run-local like [`Self::spend`] and journaled nowhere: an agent with no
     /// entry gets `WorkInput::default()`, which is the goal text alone.
@@ -757,6 +765,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             spend: BTreeMap::new(),
             mail_refreshes: BTreeMap::new(),
             next_mail_request: 0,
+            mail_turn_inspections: BTreeMap::new(),
+            mail_turn_handled: BTreeMap::new(),
+            mail_turn_waiting: BTreeMap::new(),
             work: BTreeMap::new(),
             goals_awaiting_board_result: BTreeSet::new(),
             ticket_review: ticket_review::State::default(),
@@ -1263,6 +1274,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 request,
                 result,
             } => self.mail_wake_ready(agent, request, result, operation),
+            Input::MailPassFinished => self.mail_pass_finished(),
+            Input::MailTurnInspected {
+                agent,
+                request,
+                result,
+            } => self.mail_turn_inspected(agent, request, result),
             Input::Replayed { lsn, entry } => {
                 self.apply_entry(lsn, &entry)?;
                 return Ok(Handled::folded(lsn));
@@ -1959,6 +1976,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.record_browser_dispatch(turn, generation, operation);
             }
             Then::MailWakeContinue { agent } => self.request_mail_wake(agent),
+            Then::MailTurnIssue { agent, at } => self.issue_mail_turn(agent, lsn, at, operation),
             Then::MailWakeCheckIssue {
                 agent,
                 root_lsn,
@@ -2808,7 +2826,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             && !(self.consented_issues.contains(&turn)
                 && self.world.instructions.current_for_turn(turn).is_some())
             && !launch_begun
-            && !self.world.mail_wake_origin(turn)
+            && !(self.world.mail_wake_origin(turn) || self.world.mail_turn_origin(turn))
             && (self.world.instructions.current_for_turn(turn).is_none()
                 || self.no_host_attempt(agent, Some(turn)).is_some())
             && self.world.browser_issue(turn).is_none_or(|issue| {
@@ -3891,6 +3909,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
     }
 
+    /// Whether an issue for this agent is written but not yet acknowledged, so the agent has no
+    /// open turn in the fold yet and a second issue would race the first.
+    fn issue_in_flight(&self, agent: AgentId) -> bool {
+        self.ledger.values().any(|parked| {
+            parked
+                .entry
+                .record
+                .turn_issue()
+                .is_some_and(|issue| issue.agent == agent)
+        })
+    }
+
     fn protection_pending(&self, agent: AgentId) -> bool {
         self.ledger
             .values()
@@ -4359,6 +4389,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         self.signals.clear();
         self.reap();
         self.re_examine_exhausted(operation);
+        self.mail_turn_sweep();
     }
 
     /// The third part of the beat: re-decide an `Exhausted` agent whose loop input

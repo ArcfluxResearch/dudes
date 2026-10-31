@@ -224,6 +224,9 @@ fn placement(kind: RecordKind) -> Placement {
         | RecordKind::IdentifiedMailWakeOnlyTurnIssued => Placement::Out(
             "matched wake authority uses the checkpointed same-journal rebuild case below; standalone samples do not form valid joins",
         ),
+        RecordKind::MailTurnDecided | RecordKind::MailTurnIssued => Placement::Out(
+            "mail turn authority needs the mail it covers and a goal-free agent; the daemon replay tests cover the lifecycle",
+        ),
         RecordKind::TicketCreated
         | RecordKind::TicketEdited
         | RecordKind::TicketAssigned

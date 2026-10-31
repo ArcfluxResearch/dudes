@@ -1028,8 +1028,35 @@ impl Mailbox {
         &self,
         agent: AgentId,
         rows: &[&Row],
-        mut before_read: impl FnMut(&str),
+        before_read: impl FnMut(&str),
     ) -> io::Result<u32> {
+        let present = self.sample_present_with(agent, rows, before_read)?;
+        Ok(u32::try_from(present.len()).unwrap_or(u32::MAX))
+    }
+
+    /// Which of the given pending items sit unread in the agent's inbox.
+    pub(super) fn unix_inbox_present(
+        &self,
+        agent: AgentId,
+        ids: &[MailId],
+    ) -> io::Result<Vec<MailId>> {
+        let rows: Vec<&Row> = ids
+            .iter()
+            .filter_map(|id| self.rows.get(id))
+            .filter(|row| row.item.to == (MailTo::Agent { agent }) && !row.bounce)
+            .collect();
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.sample_present_with(agent, &rows, |_| {})
+    }
+
+    fn sample_present_with(
+        &self,
+        agent: AgentId,
+        rows: &[&Row],
+        mut before_read: impl FnMut(&str),
+    ) -> io::Result<Vec<MailId>> {
         let budget = Rc::new(Budget::default());
         let tree = match Tree::open(&self.root, agent, self.opening(&budget, agent, false)) {
             Ok(tree) => tree,
@@ -1043,7 +1070,7 @@ impl Mailbox {
                     )
                     .is_err_and(|error| error.kind() == io::ErrorKind::NotFound) =>
             {
-                return Ok(0);
+                return Ok(Vec::new());
             }
             Err(error) => return Err(error),
         };
@@ -1092,20 +1119,20 @@ impl Mailbox {
         tree.validate()?;
         let done_after = snapshot(&tree.done, INBOX_CAP)?
             .ok_or_else(|| io::Error::other("incomplete acknowledgement sample"))?;
-        let mut count = 0;
+        let mut present = Vec::new();
         for (name, id, marker) in markers {
             if observed_done(&tree.done, &done_after, &name)? {
                 continue;
             }
             match marker {
-                Ok(()) => count += 1,
+                Ok(()) => present.push(id),
                 Err(error)
                     if error.kind() == io::ErrorKind::NotFound && !self.published.contains(&id) => {
                 }
                 Err(error) => return Err(error),
             }
         }
-        Ok(count)
+        Ok(present)
     }
 
     /// Directory searches for `recipient` allow for every entry the journal accounts for: its

@@ -1834,6 +1834,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             | dudes_proto::issue::ManagedIssueRef::IdentifiedMailWake(issue) => {
                 self.delayed_mail_wake_admitted(issue, entry.at, self.clock.now())
             }
+            dudes_proto::issue::ManagedIssueRef::MailTurn(issue) => {
+                self.delayed_mail_turn_admitted(issue, entry.at)
+            }
         }
     }
 

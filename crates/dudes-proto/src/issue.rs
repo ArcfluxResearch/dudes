@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::record::ConversationChargeScope;
-use crate::{Record, mail_wake::MailWakeIssue};
+use crate::{Record, mail_turn::MailTurnIssue, mail_wake::MailWakeIssue};
 
 macro_rules! managed_issues {
     ($( $record:ident => $kind:ident { $( $(#[$attribute:meta])* $field:ident: $ty:ty, )* }, )*) => {
@@ -21,6 +21,8 @@ macro_rules! managed_issues {
             MailWake(#[serde(deserialize_with = "crate::mail_wake::legacy_issue")] MailWakeIssue),
             /// Identified mail-only work under its exact preparation.
             IdentifiedMailWake(#[serde(deserialize_with = "crate::mail_wake::identified_issue")] MailWakeIssue),
+            /// A goal-free turn that wake-worthy mail started.
+            MailTurn(MailTurnIssue),
         }
 
         /// Semantic issue family, independent of its physical journal carrier.
@@ -32,6 +34,8 @@ macro_rules! managed_issues {
             MailWake,
             /// Identified mail-only work.
             IdentifiedMailWake,
+            /// A goal-free turn that wake-worthy mail started.
+            MailTurn,
         }
 
         /// Borrowed task and source-specific admission facts.
@@ -45,6 +49,8 @@ macro_rules! managed_issues {
             MailWake(&'a MailWakeIssue),
             /// Identified mail-only work.
             IdentifiedMailWake(&'a MailWakeIssue),
+            /// A goal-free turn that wake-worthy mail started.
+            MailTurn(&'a MailTurnIssue),
         }
 
         impl ManagedIssuePayload {
@@ -55,6 +61,7 @@ macro_rules! managed_issues {
                     $( Self::$kind { $($field,)* } => Record::$record { $($field,)* }, )*
                     Self::MailWake(issue) => Record::MailWakeOnlyTurnIssued(issue),
                     Self::IdentifiedMailWake(issue) => Record::IdentifiedMailWakeOnlyTurnIssued(issue),
+                    Self::MailTurn(issue) => Record::MailTurnIssued(issue),
                 }
             }
 
@@ -65,6 +72,7 @@ macro_rules! managed_issues {
                     $( Self::$kind { $($field,)* } => ManagedIssueRef::$kind { $($field,)* }, )*
                     Self::MailWake(issue) => ManagedIssueRef::MailWake(issue),
                     Self::IdentifiedMailWake(issue) => ManagedIssueRef::IdentifiedMailWake(issue),
+                    Self::MailTurn(issue) => ManagedIssueRef::MailTurn(issue),
                 }
             }
         }
@@ -77,6 +85,7 @@ macro_rules! managed_issues {
                     $( Self::$kind { $($field,)* } => ManagedIssuePayload::$kind { $($field: $field.to_owned(),)* }, )*
                     Self::MailWake(issue) => ManagedIssuePayload::MailWake(issue.clone()),
                     Self::IdentifiedMailWake(issue) => ManagedIssuePayload::IdentifiedMailWake(issue.clone()),
+                    Self::MailTurn(issue) => ManagedIssuePayload::MailTurn(issue.clone()),
                 }
             }
 
@@ -87,6 +96,7 @@ macro_rules! managed_issues {
                     $( Self::$kind { .. } => ManagedIssueKind::$kind, )*
                     Self::MailWake(_) => ManagedIssueKind::MailWake,
                     Self::IdentifiedMailWake(_) => ManagedIssueKind::IdentifiedMailWake,
+                    Self::MailTurn(_) => ManagedIssueKind::MailTurn,
                 }
             }
         }
@@ -99,6 +109,7 @@ macro_rules! managed_issues {
                     $( Self::$record { $($field,)* } => ManagedIssueRef::$kind { $($field,)* }, )*
                     Self::MailWakeOnlyTurnIssued(issue) => ManagedIssueRef::MailWake(issue),
                     Self::IdentifiedMailWakeOnlyTurnIssued(issue) => ManagedIssueRef::IdentifiedMailWake(issue),
+                    Self::MailTurnIssued(issue) => ManagedIssueRef::MailTurn(issue),
                     Self::TurnIssuedWithRepositories(issue) => issue.payload.as_ref(),
                     _ => return None,
                 })
@@ -356,6 +367,7 @@ mod tests {
             RecordKind::IdentifiedConversationTurnIssued,
             RecordKind::MailWakeOnlyTurnIssued,
             RecordKind::IdentifiedMailWakeOnlyTurnIssued,
+            RecordKind::MailTurnIssued,
         ] {
             let legacy = samples::record(kind);
             assert_eq!(

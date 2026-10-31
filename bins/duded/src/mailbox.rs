@@ -18,11 +18,11 @@ use dudes_proto::rpc::system::{MailboxDiagnostic, MailboxProblem};
 use dudes_proto::{Entry, Record};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use dudes_proto::{MailAct, MailFrom, MailTo};
-use dudes_types::AgentId;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use dudes_types::MailState;
+use dudes_types::{AgentId, MailId};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use dudes_types::{Lsn, MailId, ThreadId, Timestamp};
+use dudes_types::{Lsn, ThreadId, Timestamp};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use serde::{Deserialize, Serialize};
 
@@ -311,6 +311,24 @@ impl Mailbox {
         {
             let _ = (mailbox, agent);
             UnreadObservation::Complete(0)
+        }
+    }
+
+    /// Which of the given mail items sit unread in the agent's inbox, or none when the mailbox
+    /// cannot say.
+    pub(crate) fn inbox_present(
+        mailbox: Option<&Self>,
+        agent: AgentId,
+        ids: &[MailId],
+    ) -> Option<Vec<MailId>> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            mailbox?.unix_inbox_present(agent, ids).ok()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = (mailbox, agent, ids);
+            None
         }
     }
 

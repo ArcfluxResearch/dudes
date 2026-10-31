@@ -131,6 +131,16 @@ pub enum Effect {
         /// Volatile correlation identity.
         request: MailWakeRequest,
     },
+    /// Read which of these mail items sit in the agent's inbox, with one daemon clock sample;
+    /// starts no child and writes nothing.
+    MailTurnInspect {
+        /// Recipient.
+        agent: AgentId,
+        /// Volatile correlation identity.
+        request: MailWakeRequest,
+        /// The wake-worthy mail to look for.
+        mail: Vec<dudes_types::MailId>,
+    },
     /// Ask the mailbox to append one exact advance owned by an acknowledged preparation.
     MailWakeNotify {
         /// Recipient.
@@ -388,6 +398,16 @@ impl fmt::Debug for Effect {
                 .field("owner", owner)
                 .finish_non_exhaustive(),
             Self::MailWakeRefresh { .. } | Self::MailWakeNotify { .. } => self.fmt_mail_wake(f),
+            Self::MailTurnInspect {
+                agent,
+                request,
+                mail,
+            } => f
+                .debug_struct("MailTurnInspect")
+                .field("agent", agent)
+                .field("request", request)
+                .field("mail", mail)
+                .finish(),
             Self::Persist { token, entry } => f
                 .debug_struct("Persist")
                 .field("token", token)
@@ -550,6 +570,7 @@ impl Effect {
             Self::SampleRepositoryInstructions { .. } => "SampleRepositoryInstructions",
             Self::MailWakeRefresh { .. } => "MailWakeRefresh",
             Self::MailWakeNotify { .. } => "MailWakeNotify",
+            Self::MailTurnInspect { .. } => "MailTurnInspect",
             Self::PrepareBrowserLaunch { .. } => "PrepareBrowserLaunch",
             Self::Persist { .. } => "Persist",
             Self::Spawn { .. } => "Spawn",

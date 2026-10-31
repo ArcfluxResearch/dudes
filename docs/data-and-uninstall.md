@@ -58,7 +58,7 @@ find ~/.codex/shell_snapshots ~/.local/share/dudes/providers/codex/shell_snapsho
 ## Going back to an earlier release
 
 Starting with the release that added the identity line, the first Chat message, completed-goal
-note or mail wake that a managed agent takes writes records that earlier releases do not know.
+note, mail wake or mail turn that a managed agent takes writes records that earlier releases do not know.
 An earlier release stops at the first of them and refuses to start, naming the record, rather
 than reading the journal wrongly. Back up the state directory before you upgrade if you might
 go back. Turns that were already in the journal, and ordinary goal turns, are unaffected.

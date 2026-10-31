@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 mod attached_turn_end_tests;
 mod devices;
 mod instructions;
+mod mail_turns;
 mod mail_wakes;
 mod mcp;
 mod recovery;
@@ -34,6 +35,7 @@ mod worktrees;
 pub use dudes_proto::repository_review::TicketReview;
 
 pub use devices::DeviceRow;
+pub use mail_turns::{Candidate as MailTurnCandidate, Latest as MailTurnLatest};
 pub use mcp::{McpGrant, McpHistoryError, McpPolicy};
 pub use worktrees::{TrustGrant, WorktreeRow, WorktreeState};
 
@@ -575,6 +577,7 @@ pub struct World {
     note_decisions: BTreeMap<AgentId, NoteDecisionRow>,
     ordinary_continues: BTreeMap<Lsn, (AgentId, GoalId)>,
     mail_wakes: mail_wakes::Fold,
+    mail_turns: mail_turns::Fold,
     /// Every lease the journal holds, by id, removed ones included.
     pub worktrees: BTreeMap<WorktreeId, WorktreeRow>,
     /// The projects the operator trusts, by project id: the latest `WorkspaceTrustSet` per id,
@@ -856,6 +859,9 @@ impl World {
         let mut wakes = std::mem::take(&mut self.mail_wakes);
         wakes.apply(self, lsn, entry);
         self.mail_wakes = wakes;
+        let mut turns = std::mem::take(&mut self.mail_turns);
+        turns.apply(self, lsn, entry);
+        self.mail_turns = turns;
         let prepared_hire = self.apply_repository_change(repository_change);
         self.last_applied_lsn = Some(lsn);
         if matches!(
@@ -2034,6 +2040,8 @@ impl World {
             | Record::IdentifiedConversationTurnIssued { .. }
             | Record::MailWakeOnlyTurnIssued(_)
             | Record::IdentifiedMailWakeOnlyTurnIssued(_)
+            | Record::MailTurnDecided(_)
+            | Record::MailTurnIssued(_)
             | Record::TurnIssuedWithRepositories(_) => {}
 
             Record::Checkpoint { .. } => {} // the writer's own record
@@ -2465,6 +2473,33 @@ impl World {
                     },
                 );
             }
+            dudes_proto::issue::ManagedIssueRef::MailTurn(issue) => {
+                if self.mail_turns.accepted(lsn) {
+                    self.install_managed_turn(
+                        issue.turn,
+                        TurnRow {
+                            repositories: None,
+                            issue_lsn: lsn,
+                            agent: issue.agent,
+                            goal: None,
+                            status: TurnStatus::Issued,
+                            session: issue.session.clone(),
+                            announced: issue.session.clone(),
+                            session_confirmed: false,
+                            task: issue.task.as_str().to_owned(),
+                            answers: Vec::new(),
+                            model_selection: Some(issue.model_selection.clone()),
+                            pid: None,
+                            start_time: None,
+                            boot: None,
+                            spawn_lsn: None,
+                            end_lsn: None,
+                            confirmation_lsn: None,
+                            mcp_grant: None,
+                        },
+                    );
+                }
+            }
             dudes_proto::issue::ManagedIssueRef::MailWake(issue)
             | dudes_proto::issue::ManagedIssueRef::IdentifiedMailWake(issue) => {
                 if self.mail_wakes.accepted(lsn) {
@@ -2753,6 +2788,65 @@ impl World {
     }
     pub(crate) fn mail_wake_origin(&self, turn: TurnId) -> bool {
         self.mail_wakes.origin(turn)
+    }
+    /// The wake-worthy mail of a goal-free agent, one entry per thread, the oldest first.
+    #[must_use]
+    pub fn mail_turn_candidates(&self, agent: AgentId) -> Vec<MailTurnCandidate> {
+        if self
+            .agents
+            .get(&agent)
+            .is_some_and(|row| row.goal.is_none() && !row.retired)
+        {
+            self.mail_turns.candidates(agent)
+        } else {
+            Vec::new()
+        }
+    }
+    /// The agent's newest accepted mail turn decision.
+    #[must_use]
+    pub fn mail_turn_latest(&self, agent: AgentId) -> Option<&MailTurnLatest> {
+        self.mail_turns.latest(agent)
+    }
+    /// The newest accepted mail turn decision for one thread of the agent.
+    #[must_use]
+    pub fn mail_turn_latest_for_thread(
+        &self,
+        agent: AgentId,
+        thread: dudes_types::ThreadId,
+    ) -> Option<&MailTurnLatest> {
+        self.mail_turns.latest_for_thread(agent, thread)
+    }
+    /// Whether a mail turn already covers this mail.
+    #[must_use]
+    pub fn mail_turn_covered(&self, id: dudes_types::MailId) -> bool {
+        self.mail_turns.is_covered(id)
+    }
+    /// What the issued mail turns used of each cap on `day`, with the mail wakes of that day
+    /// counted into the daily total.
+    #[must_use]
+    pub fn mail_turn_used(
+        &self,
+        agent: AgentId,
+        thread: dudes_types::ThreadId,
+        sender: AgentId,
+        day: dudes_types::UtcDay,
+    ) -> dudes_policy::MailTurnUse {
+        dudes_policy::MailTurnUse {
+            thread: self.mail_turns.issues_for_thread(agent, thread),
+            sender_today: self.mail_turns.issues_for_sender_day(agent, sender, day),
+            agent_today: u32::from(self.mail_issues_today(agent, day)),
+        }
+    }
+    /// Mail wakes and mail turns issued for the agent on `day`, which share one daily limit.
+    pub(crate) fn mail_issues_today(&self, agent: AgentId, day: dudes_types::UtcDay) -> u8 {
+        u8::try_from(
+            u32::from(self.mail_wake_count(agent, day))
+                .saturating_add(self.mail_turns.issues_on_day(agent, day)),
+        )
+        .unwrap_or(u8::MAX)
+    }
+    pub(crate) fn mail_turn_origin(&self, turn: TurnId) -> bool {
+        self.mail_turns.origin(turn)
     }
     pub(crate) fn mail_wake_entry_accepted(&self, lsn: Lsn) -> bool {
         self.mail_wakes.accepted(lsn)

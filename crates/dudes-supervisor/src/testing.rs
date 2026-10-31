@@ -348,6 +348,15 @@ pub enum Seen {
         /// Volatile correlation.
         request: crate::input::MailWakeRequest,
     },
+    /// Request to find which wake-worthy mail sits in an inbox.
+    MailTurnInspect {
+        /// Recipient.
+        agent: AgentId,
+        /// Volatile correlation.
+        request: crate::input::MailWakeRequest,
+        /// The mail to look for.
+        mail: Vec<dudes_types::MailId>,
+    },
     /// One exact mailbox advance request.
     MailWakeNotify {
         /// Recipient.
@@ -570,6 +579,15 @@ impl Seen {
                 goal: *goal,
                 request: *request,
             },
+            Effect::MailTurnInspect {
+                agent,
+                request,
+                mail,
+            } => Self::MailTurnInspect {
+                agent: *agent,
+                request: *request,
+                mail: mail.clone(),
+            },
             Effect::MailWakeNotify {
                 agent,
                 root_lsn,
@@ -699,6 +717,7 @@ impl Seen {
             Self::SampleInstructions { .. } => "SampleInstructions",
             Self::SampleRepositoryInstructions { .. } => "SampleRepositoryInstructions",
             Self::MailWakeRefresh { .. } => "MailWakeRefresh",
+            Self::MailTurnInspect { .. } => "MailTurnInspect",
             Self::MailWakeNotify { .. } => "MailWakeNotify",
             Self::PrepareBrowserLaunch { .. } => "PrepareBrowserLaunch",
             Self::PrepareScopedBrowserLaunch { .. } => "PrepareScopedBrowserLaunch",
@@ -986,6 +1005,15 @@ impl Harness {
         self.journal.push(entry);
         self.next_lsn += 1;
         Lsn(self.next_lsn)
+    }
+
+    /// Append `entry` the way the mailbox does and fold it through [`Input::Journaled`].
+    #[cfg(test)]
+    pub(crate) fn journaled(&mut self, entry: Entry) -> Vec<Seen> {
+        let lsn = self.append_entry(entry.clone());
+        self.step(Input::Journaled {
+            append: recorded_append(lsn, entry),
+        })
     }
 
     /// Append and replay one explicit fixture record after the current contiguous prefix.

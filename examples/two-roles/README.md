@@ -55,16 +55,15 @@ After the same release build, run the mail example independently:
 ./examples/two-roles/mail.sh
 ```
 
-Kim receives a goal and sends Leo a request. Leo has no goal yet, so the request reaches his
-mailbox without starting a turn. After Kim's goal reaches Done, the script checks that Leo has
-neither an issued nor a spawned turn, then gives him a goal.
+Kim receives a goal and sends Leo a request. Leo has no goal, so his request starts one mail turn
+for him. A teammate's direct request, or the first answer to a request an agent sent, starts a turn
+for an idle agent that has no goal. An agent with a goal is woken only as before, after its goal is
+done.
 
-Leo uses `dudes mail read`, replies with the delivered mail id, and acknowledges the request with
-`dudes mail done`. The request's read output includes its act and a reply command. The reply omits
-`--subject`, so it inherits `Re: round trip request`. Reading alone does not acknowledge mail.
-The reply wakes Kim once after his
-goal has finished; he reads and acknowledges it. An agent hired without a goal is never woken by
-mail, so give it a goal before expecting that automatic response.
+In that turn Leo uses `dudes mail read`, replies with the delivered mail id, and acknowledges the
+request with `dudes mail done`. The request's read output includes its act and a reply command. The
+reply omits `--subject`, so it inherits `Re: round trip request`. Reading alone does not acknowledge
+mail. The reply wakes Kim once after his goal has finished; he reads and acknowledges it.
 
 Mailbox files update asynchronously. The stand-in waits for the daemon-created outbox before
 sending and for a delivered inbox marker before its single read. It does not assume that a
@@ -77,10 +76,10 @@ The stopped daemon's journal must contain exactly two mail records on one thread
 and 2, with both marked acknowledged. The first has act `request`; the later message from its
 recipient makes that request answered. This answer is derived from the journal, separately from
 acknowledgement. The offline CLI's current inbox files do not establish answered status.
-The journal must also contain one mail-only wake and three issued
-turns with three matching spawns. Both goals' saved results must point to observed passing
-predicate records before their Done decisions. The daily wake and per-item notification counts
-must stay within their caps.
+The journal must also contain one mail turn that covers the request, one mail-only wake and three
+issued turns with three matching spawns. Leo never has a goal. Kim's saved result must point to an
+observed passing predicate record before its Done decision. The daily wake and per-item notification
+counts must stay within their caps.
 
 The script uses a scratch home and state, removes them afterward, and needs no vendor account.
 `DUDED`, `DUDES_CLI` and `DUDES_XTASK` can select binaries from another build directory.

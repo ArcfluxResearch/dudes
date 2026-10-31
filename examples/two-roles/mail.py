@@ -11,6 +11,8 @@ import time
 import traceback
 
 MAIL_WAKE_ISSUED = "identified_mail_wake_only_turn_issued"
+MAIL_TURN_ISSUED = "mail_turn_issued"
+MAIL_TURN_DECIDED = "mail_turn_decided"
 
 
 def command(argv, env=None):
@@ -22,7 +24,8 @@ def command(argv, env=None):
 
 def failure_snapshot(records, work):
     kinds = {"turn_issued", "turn_spawned", "turn_ended", "predicate_result",
-             "loop_decided", "mail", "mail_state", MAIL_WAKE_ISSUED}
+             "loop_decided", "mail", "mail_state", MAIL_WAKE_ISSUED,
+             MAIL_TURN_DECIDED, MAIL_TURN_ISSUED}
     counts = {kind: len(rows(records, kind)) for kind in sorted(kinds)}
     events = []
     for record in records:
@@ -116,30 +119,25 @@ def run(cli, runtime, work, home, config):
         return reply["goal"]
 
     agents["sender_goal"] = goal(sender)
-    before_goal = wait_for("the sender finished and its request became durable", journal,
-                           lambda records: done(records, sender) is not None
-                           and len(rows(records, "mail")) == 1, work)
-    assert not [record for record in before_goal
-                if record["t"] in ("turn_issued", "turn_spawned", MAIL_WAKE_ISSUED)
-                and record["agent"] == recipient], "mail never wakes an agent with no goal"
-    assert not (work / "agents" / recipient / "started.1").exists()
+    records = wait_for("the recipient answered in its mail turn and the reply was acknowledged after one mail wake",
+                       journal,
+                       lambda records: done(records, sender) is not None
+                       and len(rows(records, "mail")) == 2
+                       and len([record for record in rows(records, "mail_state")
+                                if record["state"]["state"] == "acked"]) == 2
+                       and len(rows(records, "turn_ended")) == 3, work)
+    assert not [record for record in rows(records, "goal_set") if record["agent"] == recipient], \
+        "the recipient never had a goal"
     ready = json.loads((work / "agents" / sender / "ready.1.json").read_text())
     if ready["outbox_at_start"]:
         print("PASS the sender's outbox was ready before its first send")
     else:
         print("PASS the sender waited for the daemon's outbox before its first send")
-    agents["recipient_goal"] = goal(recipient)
-    wait_for("the reply was acknowledged after one mail wake", journal,
-             lambda records: done(records, recipient) is not None
-             and len(rows(records, "mail")) == 2
-             and len([record for record in rows(records, "mail_state")
-                      if record["state"]["state"] == "acked"]) == 2
-             and len(rows(records, "turn_ended")) == 3, work)
     readiness = [json.loads(path.read_text()) for path in (work / "agents").glob("*/ready.*.json")]
     if any(ready.get("inbox_at_read") is False for ready in readiness):
         print("PASS mail reads waited for the daemon's delivered inbox markers")
     (work / "actors.json").write_text(json.dumps(agents))
-    print("PASS mail to an agent with no goal created no turn before its goal was assigned")
+    print("PASS a request to an agent with no goal started one mail turn that answered it")
 
 
 def verify(journal_path, store_path, work):
@@ -167,14 +165,20 @@ def verify(journal_path, store_path, work):
     assert reply["subject"] == "Re: " + request["subject"]
     assert answered(records, request), "the request's recipient later wrote in the same thread"
     assert not answered(records, reply), "a message does not expect another reply"
-    recipient_goal = next(record for record in rows(records, "goal_set")
-                          if record["agent"] == agents["recipient"])
-    assert request["lsn"] < recipient_goal["lsn"], "the request arrived before its recipient had a goal"
+    assert not [record for record in rows(records, "goal_set")
+                if record["agent"] == agents["recipient"]], "the recipient never had a goal"
     assert not [record for record in records
-                if record["t"] in ("turn_issued", "turn_spawned", MAIL_WAKE_ISSUED)
-                and record["agent"] == agents["recipient"]
-                and record["lsn"] < recipient_goal["lsn"]], "no turn preceded the recipient's goal"
-    assert done(records, agents["sender"])["lsn"] < reply["lsn"], "the reply follows sender completion"
+                if record["t"] in ("turn_issued", MAIL_WAKE_ISSUED)
+                and record["agent"] == agents["recipient"]], "only a mail turn ran for the recipient"
+    decisions = [record for record in rows(records, MAIL_TURN_DECIDED)
+                 if record["agent"] == agents["recipient"]]
+    assert decisions and all(record["decision"]["kind"] == "issue" for record in decisions)
+    turns = rows(records, MAIL_TURN_ISSUED)
+    assert len(turns) == 1 and turns[0]["agent"] == agents["recipient"]
+    assert turns[0]["covered"] == [{"id": request["id"], "lsn": request["lsn"]}]
+    assert turns[0]["thread"] == request["thread"]
+    assert turns[0]["lsn_of_decision"] in [record["lsn"] for record in decisions]
+    assert request["lsn"] < turns[0]["lsn"] < reply["lsn"], "the turn answered the request it covers"
     states = rows(records, "mail_state")
     acked = [record["id"] for record in states if record["state"]["state"] == "acked"]
     assert sorted(acked) == sorted(record["id"] for record in mail)
@@ -194,13 +198,13 @@ def verify(journal_path, store_path, work):
     assert wakes[0]["goal"] == agents["sender_goal"]
     assert wakes[0]["completion_lsn"] == done(records, agents["sender"])["lsn"]
     assert len(wakes) <= 20, "mail wakes stay within the daily cap"
-    issued = rows(records, "turn_issued") + wakes
+    issued = rows(records, "turn_issued") + wakes + turns
     assert len(issued) == 3
     assert sorted(record["turn"] for record in rows(records, "turn_spawned")) == sorted(
         record["turn"] for record in issued)
     goal_rows = [json.loads(line.split(" ", 2)[2]) for line in Path(store_path).read_text().splitlines()
                  if line.startswith("goals ")]
-    assert len(goal_rows) == 2
+    assert len(goal_rows) == 1
     for goal_row in goal_rows:
         assert goal_row["status"] == "achieved", "both goals have the saved achieved state"
         result = goal_row["last_result"]
@@ -212,7 +216,8 @@ def verify(journal_path, store_path, work):
     print("PASS 2 mail records share one thread with sequences 1 and 2 and both are acknowledged")
     print("PASS the request is answered by a later journaled message from its recipient")
     print("PASS 1 mail-only wake, within the daily cap of 20; notifications stay within 5 per item")
-    print("PASS 3 issued turns have exactly 3 spawns and both goals have observed completion checks")
+    print("PASS 1 mail turn answered the request it covers; the recipient never had a goal")
+    print("PASS 3 issued turns have exactly 3 spawns and the goal has an observed completion check")
 
 
 def agent(session):
