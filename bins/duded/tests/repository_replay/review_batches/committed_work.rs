@@ -164,6 +164,15 @@ fn a_file_left_uncommitted_before_the_round_does_not_pass_but_one_changed_again_
     let round = Round::start_after(&fixture, |copies| {
         std::fs::write(copies[0].join("tracked.txt"), "left by an earlier ticket\n").unwrap();
         std::fs::write(copies[1].join("left.txt"), "an earlier ticket's new file\n").unwrap();
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        for left in [copies[0].join("tracked.txt"), copies[1].join("left.txt")] {
+            std::fs::File::options()
+                .write(true)
+                .open(left)
+                .unwrap()
+                .set_modified(long_ago)
+                .unwrap();
+        }
     });
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(

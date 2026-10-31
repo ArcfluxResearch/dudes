@@ -4115,6 +4115,12 @@ fn leftover_from_an_earlier_ticket(
     flow.end_turn(&fixture, turn, Some("Edited."));
     flow.await_completed_review(first);
     assert!(flow.accept(first).error.is_none());
+    std::fs::File::options()
+        .write(true)
+        .open(repo.join("tracked.txt"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .unwrap();
 
     let second = flow.create("Look around");
     assert_eq!(
