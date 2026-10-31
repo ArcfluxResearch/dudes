@@ -2807,6 +2807,15 @@ impl World {
     pub fn mail_turn_latest(&self, agent: AgentId) -> Option<&MailTurnLatest> {
         self.mail_turns.latest(agent)
     }
+    /// The newest accepted mail turn decision for one thread of the agent.
+    #[must_use]
+    pub fn mail_turn_latest_for_thread(
+        &self,
+        agent: AgentId,
+        thread: dudes_types::ThreadId,
+    ) -> Option<&MailTurnLatest> {
+        self.mail_turns.latest_for_thread(agent, thread)
+    }
     /// Whether a mail turn already covers this mail.
     #[must_use]
     pub fn mail_turn_covered(&self, id: dudes_types::MailId) -> bool {
