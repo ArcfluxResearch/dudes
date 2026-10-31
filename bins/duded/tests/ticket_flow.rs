@@ -107,6 +107,9 @@ struct Options {
     /// The engine refuses its first launch outright.
     fail_spawn: bool,
     retained_native: Option<SharedHost>,
+    /// Run every check for real and stamp the journal with the current time, so a check that
+    /// reads a directory's state can be compared with the round's recorded start.
+    real_checks: bool,
 }
 
 impl ProcessHost for WatchHost {
@@ -289,7 +292,16 @@ impl Flow {
     ) -> Self {
         let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
         let host = SharedHost::with_native_evidence(fixture.journal_dir());
-        let runner = Arc::new(ScriptedRunner::scripted(answers));
+        let runner = Arc::new(if options.real_checks {
+            ScriptedRunner::real()
+        } else {
+            ScriptedRunner::scripted(answers)
+        });
+        let clock = Arc::new(if options.real_checks {
+            TestClock::wall()
+        } else {
+            TestClock::new()
+        });
         let durable_at_spawn = Arc::new(Mutex::new(Vec::new()));
         let seams = common::seams_with(
             &settings,
@@ -302,7 +314,7 @@ impl Flow {
                 retained_native: options.retained_native,
             },
             Arc::clone(&runner),
-            Arc::new(TestClock::new()),
+            clock,
             Witness::default(),
             Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
         );
@@ -4009,5 +4021,201 @@ fn two_agents_sharing_the_folder_still_take_turns() {
         }
     );
     assert_eq!(started_goals(&fixture.records()).len(), 1);
+    flow.stop();
+}
+
+fn git_in(repo: &Path, args: &[&str]) {
+    let timeout = std::time::Duration::from_secs(10);
+    let git = duded::worktree::git::Git::new(
+        Arc::new(ScriptedRunner::real()),
+        std::env::var_os("PATH"),
+        timeout,
+    );
+    let mut full = vec![
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "commit.gpgsign=false",
+    ];
+    full.extend_from_slice(args);
+    let full: Vec<_> = full.iter().map(std::ffi::OsStr::new).collect();
+    git.exec(repo, &full, timeout).unwrap();
+}
+
+/// A real repository, enrolled with the default "files changed" check.
+fn enrolled_with_changed_check(fixture: &Fixture) -> (duded::Settings, PathBuf) {
+    let repo = fixture.state.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let repo = repo.canonicalize().unwrap();
+    git_in(&repo, &["init", "--quiet", "-b", "main"]);
+    std::fs::write(repo.join("tracked.txt"), "initial\n").unwrap();
+    git_in(&repo, &["add", "tracked.txt"]);
+    git_in(&repo, &["commit", "--quiet", "-m", "initial"]);
+    let mut settings = fixture.settings();
+    let mut profile = profile(
+        "service",
+        &repo,
+        vec![EnrolledCheck {
+            id: "default".into(),
+            label: "files changed".into(),
+            predicate: Predicate::Command {
+                argv: dudes_config::check::changed_check(),
+                timeout_s: 10,
+            },
+            may_already_pass: true,
+            check_repo: None,
+        }],
+    );
+    profile.label = "Service".into();
+    settings.enrollment = Enrollment {
+        profiles: vec![profile],
+    };
+    (settings, repo)
+}
+
+fn predicate_verdict(fixture: &Fixture, turn: TurnId) -> bool {
+    fixture.await_record("the check after the turn", |record| match record {
+        Record::PredicateResult {
+            turn: Some(ended),
+            pass,
+            ..
+        } if *ended == turn => Some(*pass),
+        _ => None,
+    })
+}
+
+/// The first ticket leaves `tracked.txt` edited and uncommitted. The next ticket's turn changes
+/// nothing, so its check must not pass on the file the first one left behind.
+fn leftover_from_an_earlier_ticket(
+    end_second: impl FnOnce(&mut Flow, &Fixture, TurnId),
+    then: impl FnOnce(&mut Flow, &Fixture, CardId),
+) {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled_with_changed_check(&fixture);
+    let mut flow = Flow::boot_with(
+        &fixture,
+        settings,
+        repo.clone(),
+        [],
+        Options {
+            real_checks: true,
+            ..Options::default()
+        },
+    );
+    let cody = flow.hire("Cody");
+    let first = flow.create("Edit the file");
+    assert_eq!(
+        flow.give_ok(first, cody, None),
+        TicketAssignOutcome::Started
+    );
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+    std::fs::write(repo.join("tracked.txt"), "left by the first ticket\n").unwrap();
+    flow.end_turn(&fixture, turn, Some("Edited."));
+    flow.await_completed_review(first);
+    assert!(flow.accept(first).error.is_none());
+    std::fs::File::options()
+        .write(true)
+        .open(repo.join("tracked.txt"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .unwrap();
+
+    let second = flow.create("Look around");
+    assert_eq!(
+        flow.give_ok(second, cody, None),
+        TicketAssignOutcome::Started
+    );
+    let (turn, ..) = Flow::await_turn_number(&fixture, 2);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    end_second(&mut flow, &fixture, turn);
+    assert!(
+        !predicate_verdict(&fixture, turn),
+        "the second ticket changed nothing, so its check must fail"
+    );
+    then(&mut flow, &fixture, second);
+    flow.stop();
+}
+
+#[test]
+fn a_file_an_earlier_ticket_left_uncommitted_does_not_pass_the_next_tickets_check() {
+    leftover_from_an_earlier_ticket(
+        |flow, fixture, turn| {
+            flow.end_turn(fixture, turn, Some("Nothing to change."));
+        },
+        |flow, _, card| assert_eq!(flow.card(card).status, CardStatus::Doing),
+    );
+}
+
+#[test]
+fn a_vanished_turn_does_not_pass_on_a_file_an_earlier_ticket_left_uncommitted() {
+    leftover_from_an_earlier_ticket(
+        |flow, fixture, turn| {
+            flow.running.handle.input(Input::Liveness {
+                turn,
+                liveness: Liveness::Gone,
+            });
+            fixture.await_record("the vanished end", |record| {
+            matches!(record, Record::TurnEnded { turn: ended, outcome: Some(TurnOutcome::Vanished), .. } if *ended == turn)
+                .then_some(())
+        });
+        },
+        |_, fixture, _| {
+            let done = fixture
+                .records()
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record,
+                        Record::LoopDecided {
+                            decision: LoopDecision::Done,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            assert_eq!(done, 1, "only the first ticket's goal was judged done");
+        },
+    );
+}
+
+/// Work done again in a later round still counts, whatever an earlier ticket left behind.
+#[test]
+fn a_file_changed_again_in_the_round_still_passes_the_check() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled_with_changed_check(&fixture);
+    let mut flow = Flow::boot_with(
+        &fixture,
+        settings,
+        repo.clone(),
+        [],
+        Options {
+            real_checks: true,
+            ..Options::default()
+        },
+    );
+    let cody = flow.hire("Cody");
+    let first = flow.create("Edit the file");
+    assert_eq!(
+        flow.give_ok(first, cody, None),
+        TicketAssignOutcome::Started
+    );
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+    std::fs::write(repo.join("tracked.txt"), "left by the first ticket\n").unwrap();
+    flow.end_turn(&fixture, turn, Some("Edited."));
+    flow.await_completed_review(first);
+    assert!(flow.accept(first).error.is_none());
+
+    let second = flow.create("Edit it again");
+    assert_eq!(
+        flow.give_ok(second, cody, None),
+        TicketAssignOutcome::Started
+    );
+    let (turn, ..) = Flow::await_turn_number(&fixture, 2);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(repo.join("tracked.txt"), "edited by the second ticket\n").unwrap();
+    flow.end_turn(&fixture, turn, Some("Edited."));
+    assert!(predicate_verdict(&fixture, turn));
     flow.stop();
 }

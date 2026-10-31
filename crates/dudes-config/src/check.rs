@@ -60,7 +60,8 @@ pub fn suggest_check(dir: &Path) -> Option<Vec<String>> {
 
 /// What the daemon runs when a repository names no test command: git lists a file that is edited
 /// or added and left uncommitted, and `--error-unmatch` makes that exit 0 and an unchanged tree
-/// exit 1. Nothing is interpolated and no shell runs it.
+/// exit 1. For a ticket the daemon asks [`changed_listing`] instead and counts only files written
+/// since the round's baseline. Nothing is interpolated and no shell runs it.
 #[must_use]
 pub fn changed_check() -> Vec<String> {
     [
@@ -95,6 +96,27 @@ fn npm_test(manifest: &str) -> bool {
         .ok()
         .and_then(|json| json["scripts"]["test"].as_str().map(str::to_owned))
         .is_some_and(|script| !script.contains("no test specified"))
+}
+
+/// [`changed_check`] as a listing: the same files, named one after another and ended by a NUL, so
+/// the daemon can tell which of them changed during a round. Nothing is interpolated and no shell
+/// runs it.
+#[must_use]
+pub fn changed_listing() -> Vec<String> {
+    [
+        "git",
+        "ls-files",
+        "-z",
+        "--modified",
+        "--deleted",
+        "--others",
+        "--exclude-standard",
+        "--",
+        ".",
+    ]
+    .iter()
+    .map(|word| (*word).to_owned())
+    .collect()
 }
 
 #[cfg(test)]

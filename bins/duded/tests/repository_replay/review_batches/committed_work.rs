@@ -21,10 +21,17 @@ struct Round {
     runner: RealRunner,
     queries: Vec<PathBuf>,
     probes: Vec<(Tree, BaselineCapture)>,
+    began: std::time::SystemTime,
 }
 
 impl Round {
     fn start(fixture: &Fixture) -> Self {
+        Self::start_after(fixture, |_| {})
+    }
+
+    /// A round whose baseline is taken after `before` has touched the copies, the way an earlier
+    /// ticket leaves them.
+    fn start_after(fixture: &Fixture, before: impl FnOnce(&[PathBuf])) -> Self {
         let story = Story::seed(fixture);
         let hire = &story.hire.repositories;
         let service = DiffCapture::new(
@@ -41,6 +48,12 @@ impl Round {
                 .unwrap()
                 .clone()
         });
+        before(
+            &copies
+                .iter()
+                .map(|copy| copy.execution.directory.clone())
+                .collect::<Vec<_>>(),
+        );
         let probes = copies
             .iter()
             .map(|copy| {
@@ -53,6 +66,7 @@ impl Round {
             })
             .collect();
         Self {
+            began: std::time::SystemTime::now(),
             service,
             runner: RealRunner(OneShot::new()),
             queries: copies
@@ -85,7 +99,7 @@ impl Round {
     }
 
     fn run(&self, committed: Option<duded::predicate::CommittedSince<'_>>) -> Option<bool> {
-        duded::predicate::files_changed_or_committed(
+        duded::predicate::files_changed_in_round(
             &self.runner,
             &dudes_config::check::changed_check(),
             &self.queries,
@@ -93,7 +107,10 @@ impl Round {
             git_path().as_deref(),
             &self.queries,
             Duration::from_secs(3),
-            committed,
+            Some(&duded::predicate::RoundStart {
+                began: vec![Some(self.began); self.queries.len()],
+                committed,
+            }),
         )
         .unwrap()
         .map(|(pass, _)| pass)
@@ -139,4 +156,32 @@ fn a_copy_whose_commit_query_fails_reads_unknown() {
     let mut round = Round::start(&fixture);
     round.probes[1].1.head = GitCommit::parse(&"ab".repeat(20)).unwrap();
     assert_eq!(round.unconfined(), None, "never read as nothing changed");
+}
+
+#[test]
+fn a_file_left_uncommitted_before_the_round_does_not_pass_but_one_changed_again_does() {
+    let fixture = Fixture::new();
+    let round = Round::start_after(&fixture, |copies| {
+        std::fs::write(copies[0].join("tracked.txt"), "left by an earlier ticket\n").unwrap();
+        std::fs::write(copies[1].join("left.txt"), "an earlier ticket's new file\n").unwrap();
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        for left in [copies[0].join("tracked.txt"), copies[1].join("left.txt")] {
+            std::fs::File::options()
+                .write(true)
+                .open(left)
+                .unwrap()
+                .set_modified(long_ago)
+                .unwrap();
+        }
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        round.unconfined(),
+        Some(false),
+        "nothing changed since the round began"
+    );
+    assert_eq!(round.confined(), Some(false));
+    std::fs::write(round.queries[0].join("tracked.txt"), "edited again\n").unwrap();
+    assert_eq!(round.unconfined(), Some(true));
+    assert_eq!(round.confined(), Some(true));
 }

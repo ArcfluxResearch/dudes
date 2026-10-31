@@ -34,7 +34,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use dudes_proto::goal::Evidence;
 use dudes_providers::launch::{EnvVar, LaunchSpec};
@@ -371,7 +371,7 @@ pub fn files_changed(
     hired_roots: &[std::path::PathBuf],
     timeout: Duration,
 ) -> io::Result<Option<(bool, Evidence)>> {
-    files_changed_or_committed(
+    files_changed_in_round(
         runner,
         argv,
         directories,
@@ -388,16 +388,38 @@ pub fn files_changed(
 /// unanswered query.
 pub type CommittedSince<'a> = &'a dyn Fn(usize) -> Option<bool>;
 
-/// [`files_changed`], where `committed` also counts work an agent committed. A directory with no
-/// uncommitted change is asked; one with an uncommitted change already passes and is not.
+/// What a round's recorded start adds to [`files_changed`], so the check counts what the round
+/// changed and not what an earlier round left in the same checkouts.
+pub struct RoundStart<'a> {
+    /// For the declared directory at an index, when its baseline was taken. A file last written
+    /// before that moment's whole second was there when the round began and does not count, and a
+    /// file written after it does, whatever it held before. The moment is rounded down to the
+    /// second so a filesystem with one- or two-second times still counts work done just after the
+    /// baseline. A listed directory (a changed submodule or nested repository) counts whatever its
+    /// own time. `None` counts every uncommitted file.
+    ///
+    /// Known limit: work that keeps an old modification time (`cp -p`, `rsync -t`, `tar x`, a move
+    /// from outside the tree, `touch -d`) is read as a leftover and does not count.
+    pub began: Vec<Option<SystemTime>>,
+    /// Whether the directory's checkout holds work the agent committed since the baseline.
+    pub committed: Option<CommittedSince<'a>>,
+}
+
+/// The most listing bytes read from one directory. A longer listing counts as changed: that many
+/// files cannot be told apart cheaply, and the operator reviews the change before accepting it.
+const LISTING_CAP: usize = 1 << 20;
+
+/// [`files_changed`], where `round` makes the check count only what changed since the round began
+/// and what the agent committed. A directory with no such change is asked about commits; one
+/// that has a change already passes and is not.
 ///
 /// # Errors
 /// As [`files_changed`].
 #[expect(
     clippy::too_many_arguments,
-    reason = "files_changed's arguments plus the one query only an unconfined hire adds"
+    reason = "files_changed's arguments plus the round's start"
 )]
-pub fn files_changed_or_committed(
+pub fn files_changed_in_round(
     runner: &dyn PredicateRunner,
     argv: &[String],
     directories: &[std::path::PathBuf],
@@ -405,7 +427,7 @@ pub fn files_changed_or_committed(
     path: Option<&OsStr>,
     hired_roots: &[std::path::PathBuf],
     timeout: Duration,
-    committed: Option<CommittedSince<'_>>,
+    round: Option<&RoundStart<'_>>,
 ) -> io::Result<Option<(bool, Evidence)>> {
     if directories.is_empty() {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -415,7 +437,13 @@ pub fn files_changed_or_committed(
     let mut complete = true;
     let mut program = None;
     for (index, directory) in directories.iter().enumerate() {
-        let (resolved, spec) = spec_for_repositories(argv, directory, env, path, hired_roots)?;
+        let began = round.and_then(|round| round.began.get(index).copied().flatten());
+        let asked = if began.is_some() {
+            dudes_config::check::changed_listing()
+        } else {
+            argv.to_vec()
+        };
+        let (resolved, spec) = spec_for_repositories(&asked, directory, env, path, hired_roots)?;
         if program.as_ref().is_some_and(|program| program != &resolved) {
             return Err(io::ErrorKind::InvalidData.into());
         }
@@ -424,15 +452,14 @@ pub fn files_changed_or_committed(
         if remaining.is_zero() {
             return Ok(None);
         }
-        match runner.run(&spec, remaining) {
-            Ok(PredicateOutcome::Finished {
-                exit: Some(exit),
-                timed_out: false,
-                ..
-            }) if exit == 0 || exit == 1 => {
-                if exit == 0 {
-                    changed += 1;
-                } else if let Some(committed) = committed {
+        let answer = match began {
+            Some(began) => changed_since(runner, &spec, directory, began, remaining),
+            None => changed_by_exit(runner, &spec, remaining),
+        };
+        match answer {
+            Answer::Changed => changed += 1,
+            Answer::Unchanged => {
+                if let Some(committed) = round.and_then(|round| round.committed) {
                     match committed(index) {
                         Some(true) => changed += 1,
                         Some(false) => {}
@@ -440,12 +467,19 @@ pub fn files_changed_or_committed(
                     }
                 }
             }
-            Ok(PredicateOutcome::Swept) => return Ok(None),
-            Ok(_) | Err(_) => complete = false,
+            Answer::Unknown => complete = false,
+            Answer::Swept => return Ok(None),
         }
     }
     Ok(complete.then(|| {
         let pass = changed > 0;
+        let counted = match round {
+            Some(RoundStart {
+                committed: Some(_), ..
+            }) => "uncommitted changes or commits since the round baseline",
+            Some(_) => "uncommitted changes since the round baseline",
+            None => "uncommitted changes",
+        };
         (
             pass,
             Evidence::Command {
@@ -453,17 +487,113 @@ pub fn files_changed_or_committed(
                 program,
                 exit: Some(i32::from(!pass)),
                 output_tail: format!(
-                    "Queried all {} declared repositories; {changed} contain {}.",
+                    "Queried all {} declared repositories; {changed} contain {counted}.",
                     directories.len(),
-                    if committed.is_some() {
-                        "uncommitted changes or commits since the round baseline"
-                    } else {
-                        "uncommitted changes"
-                    }
                 ),
             },
         )
     }))
+}
+
+/// What the check learned about one directory.
+enum Answer {
+    Changed,
+    Unchanged,
+    Unknown,
+    Swept,
+}
+
+/// The exit status of the check itself: 0 names a file, 1 names none.
+fn changed_by_exit(runner: &dyn PredicateRunner, spec: &LaunchSpec, timeout: Duration) -> Answer {
+    match runner.run(spec, timeout) {
+        Ok(PredicateOutcome::Finished {
+            exit: Some(0),
+            timed_out: false,
+            ..
+        }) => Answer::Changed,
+        Ok(PredicateOutcome::Finished {
+            exit: Some(1),
+            timed_out: false,
+            ..
+        }) => Answer::Unchanged,
+        Ok(PredicateOutcome::Swept) => Answer::Swept,
+        Ok(_) | Err(_) => Answer::Unknown,
+    }
+}
+
+/// Whether any file the listing names was written after `began`. A runner that cannot capture
+/// output is asked the plain question instead, which counts every uncommitted file.
+fn changed_since(
+    runner: &dyn PredicateRunner,
+    spec: &LaunchSpec,
+    directory: &Path,
+    began: SystemTime,
+    timeout: Duration,
+) -> Answer {
+    match runner.run_captured(spec, timeout, LISTING_CAP) {
+        Ok(PredicateCaptured::Finished {
+            exit: Some(0),
+            stdout,
+            truncated,
+            timed_out: false,
+        }) => {
+            if truncated
+                || stdout
+                    .split(|byte| *byte == 0)
+                    .filter(|name| !name.is_empty())
+                    .any(|name| written_after(directory, name, began))
+            {
+                Answer::Changed
+            } else {
+                Answer::Unchanged
+            }
+        }
+        Ok(PredicateCaptured::Swept) => Answer::Swept,
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+            let mut plain = spec.clone();
+            plain.argv.truncate(1);
+            plain.argv.extend(
+                dudes_config::check::changed_check()
+                    .into_iter()
+                    .skip(1)
+                    .map(OsString::from),
+            );
+            changed_by_exit(runner, &plain, timeout)
+        }
+        Ok(_) | Err(_) => Answer::Unknown,
+    }
+}
+
+/// Whether the file named `name`, relative to `directory`, was last written since `began`, rounded
+/// down to the whole second. A file that is gone was removed when its nearest folder that still
+/// exists last changed. A listed directory counts. Whatever cannot be read counts as written, so an
+/// unreadable file is never hidden.
+fn written_after(directory: &Path, name: &[u8], began: SystemTime) -> bool {
+    let whole_second = began
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(began, |since| {
+            SystemTime::UNIX_EPOCH + Duration::from_secs(since.as_secs())
+        });
+    #[cfg(unix)]
+    let relative = Path::new(<OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
+    #[cfg(not(unix))]
+    let relative = Path::new(std::str::from_utf8(name).unwrap_or_default());
+    let mut path = directory.join(relative);
+    let listed = path.clone();
+    loop {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                return (path == listed && metadata.is_dir())
+                    || metadata.modified().map_or(true, |at| at >= whole_second);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound && path != directory => {
+                if !path.pop() {
+                    return true;
+                }
+            }
+            Err(_) => return true,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -857,6 +987,198 @@ mod tests {
         assert!(
             matches!(spec.stdin, dudes_providers::launch::LaunchInput::Null),
             "a predicate is given no standard input"
+        );
+    }
+
+    /// A runner that answers the null-separated listing with `listing` (cut off when `truncated`)
+    /// and the plain exit check with `plain_exit`.
+    #[cfg(unix)]
+    struct StubRunner {
+        listing: Vec<u8>,
+        truncated: bool,
+        plain_exit: i32,
+    }
+
+    #[cfg(unix)]
+    impl PredicateRunner for StubRunner {
+        fn run(&self, _: &LaunchSpec, _: Duration) -> io::Result<PredicateOutcome> {
+            Ok(PredicateOutcome::Finished {
+                exit: Some(self.plain_exit),
+                output_tail: String::new(),
+                timed_out: false,
+            })
+        }
+
+        fn run_captured(
+            &self,
+            _: &LaunchSpec,
+            _: Duration,
+            _: usize,
+        ) -> io::Result<PredicateCaptured> {
+            Ok(PredicateCaptured::Finished {
+                exit: Some(0),
+                stdout: self.listing.clone(),
+                truncated: self.truncated,
+                timed_out: false,
+            })
+        }
+
+        fn sweep(&self) {}
+    }
+
+    #[cfg(unix)]
+    fn at(seconds: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
+    }
+
+    #[cfg(unix)]
+    fn touch(path: &Path, when: SystemTime) {
+        let file = std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open");
+        file.set_modified(when).expect("set time");
+    }
+
+    /// The round's verdict over `directories`, each with its baseline moment, for a runner whose
+    /// listing is `runner`'s.
+    #[cfg(unix)]
+    fn round_passes(
+        runner: &StubRunner,
+        directories: &[PathBuf],
+        began: Vec<Option<SystemTime>>,
+    ) -> bool {
+        let path = OsString::from("/usr/bin:/bin");
+        let round = RoundStart {
+            began,
+            committed: None,
+        };
+        files_changed_in_round(
+            runner,
+            &dudes_config::check::changed_check(),
+            directories,
+            &[],
+            Some(&path),
+            &[],
+            Duration::from_secs(5),
+            Some(&round),
+        )
+        .expect("the check runs")
+        .expect("the check is answered")
+        .0
+    }
+
+    #[cfg(unix)]
+    fn listing(names: &[&str], truncated: bool) -> StubRunner {
+        StubRunner {
+            listing: names
+                .iter()
+                .flat_map(|n| format!("{n}\0").into_bytes())
+                .collect(),
+            truncated,
+            plain_exit: 0,
+        }
+    }
+
+    /// A deleted file counts through its nearest surviving folder, and a file an earlier round
+    /// deleted does not count while that folder is otherwise untouched.
+    #[cfg(unix)]
+    #[test]
+    fn a_deleted_file_counts_by_its_folder_and_an_earlier_deletion_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/kept.txt"), "x").unwrap();
+        let folder = std::fs::File::open(dir.path().join("src")).unwrap();
+        let began = vec![Some(at(1_000))];
+        let directories = [dir.path().to_path_buf()];
+        let gone = listing(&["src/gone.txt"], false);
+
+        folder.set_modified(at(2_000)).unwrap();
+        assert!(
+            round_passes(&gone, &directories, began.clone()),
+            "the folder changed after the baseline, so the deletion is this round's"
+        );
+        folder.set_modified(at(500)).unwrap();
+        assert!(
+            !round_passes(&gone, &directories, began),
+            "the folder is untouched since before the baseline, so the deletion is a leftover"
+        );
+    }
+
+    /// A listing longer than the cap cannot be told apart cheaply and counts as changed.
+    #[cfg(unix)]
+    #[test]
+    fn a_listing_over_the_size_limit_counts_as_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("old.txt"), "x").unwrap();
+        touch(&dir.path().join("old.txt"), at(500));
+        let directories = [dir.path().to_path_buf()];
+        let began = vec![Some(at(1_000))];
+        assert!(
+            !round_passes(&listing(&["old.txt"], false), &directories, began.clone()),
+            "control: the same untouched file, listed in full, does not count"
+        );
+        assert!(round_passes(
+            &listing(&["old.txt"], true),
+            &directories,
+            began
+        ));
+    }
+
+    /// A listed directory (a changed submodule or nested repository) counts whatever its own time.
+    #[cfg(unix)]
+    #[test]
+    fn a_listed_directory_counts_whatever_its_time() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("vendor")).unwrap();
+        std::fs::File::open(dir.path().join("vendor"))
+            .unwrap()
+            .set_modified(at(500))
+            .unwrap();
+        assert!(round_passes(
+            &listing(&["vendor"], false),
+            &[dir.path().to_path_buf()],
+            vec![Some(at(1_000))],
+        ));
+    }
+
+    /// Times on a coarse filesystem round down, so a write within the baseline's second counts and
+    /// one a second earlier does not.
+    #[cfg(unix)]
+    #[test]
+    fn the_baseline_rounds_down_to_the_whole_second() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        let directories = [dir.path().to_path_buf()];
+        let began = vec![Some(at(1_000) + Duration::from_millis(900))];
+        let names = listing(&["a.txt"], false);
+        touch(&file, at(1_000));
+        assert!(round_passes(&names, &directories, began.clone()));
+        touch(&file, at(999));
+        assert!(!round_passes(&names, &directories, began));
+    }
+
+    /// One copy with a captured baseline and one without: the second keeps the plain check, which
+    /// counts every uncommitted file.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_without_a_baseline_keeps_the_plain_check() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        std::fs::write(first.path().join("old.txt"), "x").unwrap();
+        touch(&first.path().join("old.txt"), at(500));
+        let directories = [first.path().to_path_buf(), second.path().to_path_buf()];
+        let mut runner = listing(&["old.txt"], false);
+        runner.plain_exit = 1;
+        assert!(
+            !round_passes(&runner, &directories, vec![Some(at(1_000)), None]),
+            "control: the leftover does not count and the plain check names no file"
+        );
+        runner.plain_exit = 0;
+        assert!(
+            round_passes(&runner, &directories, vec![Some(at(1_000)), None]),
+            "the copy with no baseline counts its uncommitted file"
         );
     }
 }

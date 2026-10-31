@@ -347,6 +347,60 @@ pub(super) fn commit_probes(
         .collect()
 }
 
+/// When each granted copy's round baseline finished, in grant order. A copy with no captured
+/// baseline has none, so every uncommitted file in it counts.
+pub(super) fn baseline_times(
+    world: &dudes_supervisor::World,
+    goal: GoalId,
+    grant: &dudes_proto::repository::RepositoryTurnGrant,
+) -> Vec<Option<std::time::SystemTime>> {
+    let batch = world
+        .repository_review(goal)
+        .and_then(|review| review.baseline.as_ref())
+        .map(|(_, batch)| batch);
+    let ids = grant
+        .repositories
+        .entries()
+        .iter()
+        .map(|entry| &entry.repo_id);
+    captured_times(batch, ids)
+}
+
+fn captured_times<'a>(
+    batch: Option<&RepositoryBaselineBatch>,
+    repos: impl Iterator<Item = &'a dudes_proto::repository::RepoId>,
+) -> Vec<Option<std::time::SystemTime>> {
+    repos
+        .map(|repo_id| {
+            let member = batch?
+                .members
+                .iter()
+                .find(|member| &member.repo_id == repo_id)?;
+            captured_at(&member.outcome, member.interval.ended_at)
+        })
+        .collect()
+}
+
+/// When the round baseline of a single-folder hire finished, if it captured one.
+pub(super) fn legacy_baseline_time(
+    world: &dudes_supervisor::World,
+    goal: GoalId,
+) -> Option<std::time::SystemTime> {
+    let baseline = &world.ticket_review(goal)?.baseline;
+    captured_at(&baseline.outcome, baseline.interval.ended_at)
+}
+
+fn captured_at(
+    outcome: &BaselineOutcome,
+    ended_at: dudes_types::Timestamp,
+) -> Option<std::time::SystemTime> {
+    let millis = u64::try_from(ended_at.unix_millis()).ok()?;
+    // The record keeps whole milliseconds, which round down; the next one is the earliest moment a
+    // file written by the round can carry.
+    matches!(outcome, BaselineOutcome::Captured { .. })
+        .then(|| std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis + 1))
+}
+
 /// The baseline a round records for `target`. A target that cannot be read records an
 /// unavailable one, and a capture the daemon's stop cancels records the stop's timeout.
 fn baseline_input(
@@ -447,6 +501,65 @@ mod tests {
             panic!("a baseline answer");
         };
         baseline.outcome
+    }
+
+    #[test]
+    fn a_copy_is_dated_only_by_a_baseline_that_was_captured() {
+        use dudes_proto::diff_stamp::{CaptureInterval, SamplerVersions};
+        use dudes_proto::repository::RepoId;
+        use dudes_proto::repository_review::{RepositoryBaselineMember, RepositoryReviewBinding};
+
+        let at = |millis| CaptureInterval {
+            started_at: Timestamp::from_unix_millis(millis - 5),
+            ended_at: Timestamp::from_unix_millis(millis),
+        };
+        let versions = SamplerVersions {
+            sampler: 1,
+            policy: 1,
+        };
+        let member = |name: &str, outcome| RepositoryBaselineMember {
+            repo_id: RepoId::parse(name).unwrap(),
+            interval: at(5_000),
+            versions,
+            outcome,
+        };
+        let batch = RepositoryBaselineBatch {
+            v: 1,
+            binding: RepositoryReviewBinding {
+                ticket: binding(),
+                start_lsn: Lsn::ZERO,
+                hired_lsn: Lsn::ZERO,
+            },
+            members: vec![
+                member(
+                    "web",
+                    BaselineOutcome::Captured {
+                        device: 1,
+                        inode: 2,
+                        head: dudes_types::GitCommit::parse(&"ab".repeat(20)).unwrap(),
+                        preexisting_tracked: true,
+                        preexisting_untracked: false,
+                    },
+                ),
+                member(
+                    "api",
+                    BaselineOutcome::Unavailable {
+                        reason: DiffRefusal::Unreadable,
+                    },
+                ),
+            ],
+        };
+        let ids = ["web", "api", "docs"].map(|name| RepoId::parse(name).unwrap());
+        assert_eq!(
+            captured_times(Some(&batch), ids.iter()),
+            vec![
+                Some(std::time::UNIX_EPOCH + Duration::from_millis(5_001)),
+                None,
+                None
+            ],
+            "a captured baseline dates its copy; an unavailable or absent one dates nothing"
+        );
+        assert_eq!(captured_times(None, ids.iter()), vec![None, None, None]);
     }
 
     #[test]
