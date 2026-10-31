@@ -3911,6 +3911,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
     }
 
+    /// Whether an issue for this agent is written but not yet acknowledged, so the agent has no
+    /// open turn in the fold yet and a second issue would race the first.
+    fn issue_in_flight(&self, agent: AgentId) -> bool {
+        self.ledger.values().any(|parked| {
+            parked
+                .entry
+                .record
+                .turn_issue()
+                .is_some_and(|issue| issue.agent == agent)
+        })
+    }
+
     fn protection_pending(&self, agent: AgentId) -> bool {
         self.ledger
             .values()

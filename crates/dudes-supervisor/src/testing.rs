@@ -1007,6 +1007,14 @@ impl Harness {
         Lsn(self.next_lsn)
     }
 
+    /// Append `entry` the way the mailbox does and fold it through [`Input::Journaled`].
+    pub(crate) fn journaled(&mut self, entry: Entry) -> Vec<Seen> {
+        let lsn = self.append_entry(entry.clone());
+        self.step(Input::Journaled {
+            append: recorded_append(lsn, entry),
+        })
+    }
+
     /// Append and replay one explicit fixture record after the current contiguous prefix.
     pub fn append_replayed(&mut self, entry: Entry) -> Lsn {
         let lsn = self.append_entry(entry.clone());

@@ -370,7 +370,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         at: Timestamp,
         operation: &crate::RecoveryOperation<'_>,
     ) {
-        if !self.mail_turn_open(agent) || self.launch_held(agent, operation) {
+        if !self.mail_turn_open(agent)
+            || self.issue_in_flight(agent)
+            || self.launch_held(agent, operation)
+        {
             return;
         }
         let Some(row) = self.world.agents.get(&agent).cloned() else {
@@ -461,5 +464,185 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 launch,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::SpendView;
+    use crate::testing::{Harness, Seen};
+    use crate::Input;
+    use dudes_proto::{Entry, RecordKind};
+    use dudes_types::ThreadId;
+
+    fn at(millis: i64) -> Timestamp {
+        Timestamp::from_unix_millis(millis)
+    }
+
+    struct Flow {
+        h: Harness,
+        a: AgentId,
+        b: AgentId,
+        next: u128,
+    }
+
+    impl Flow {
+        fn new() -> Self {
+            let mut h = Harness::new();
+            let a = h.hire();
+            let b = h.hire();
+            let mut flow = Self { h, a, b, next: 1 };
+            flow.spend();
+            flow
+        }
+
+        fn spend(&mut self) {
+            for agent in [self.a, self.b] {
+                self.h.step(Input::Spend {
+                    agent,
+                    view: SpendView::default(),
+                });
+            }
+        }
+
+        fn mail(&mut self, from: serde_json::Value, act: &str, members: &[AgentId]) -> (MailId, Vec<Seen>) {
+            let id = MailId::from_parts(5, self.next);
+            self.next += 1;
+            let record: Record = serde_json::from_value(serde_json::json!({
+                "t": "mail", "id": id, "from": from,
+                "to": {"kind": "agent", "agent": self.b}, "act": act, "subject": "s",
+                "body_len": 0, "state": {"state": "durable"},
+                "thread": ThreadId::from_parts(5, 100 + self.next), "thread_seq": 1,
+                "members": members,
+            }))
+            .unwrap();
+            let effects = self.h.journaled(Entry { at: at(10), record });
+            (id, effects)
+        }
+
+        fn agent_mail(&mut self, act: &str, members: &[AgentId]) -> (MailId, Vec<Seen>) {
+            let from = serde_json::json!({"kind": "agent", "agent": self.a});
+            self.mail(from, act, members)
+        }
+    }
+
+    fn inspects(effects: &[Seen]) -> Vec<(crate::input::MailWakeRequest, Vec<MailId>)> {
+        effects
+            .iter()
+            .filter_map(|seen| match seen {
+                Seen::MailTurnInspect { request, mail, .. } => Some((*request, mail.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn only_a_direct_request_from_an_agent_asks_for_an_inspection() {
+        let mut f = Flow::new();
+        let (a, b) = (f.a, f.b);
+        let operator = serde_json::json!({"kind": "human"});
+        let (_, effects) = f.mail(operator, "request", &[a, b]);
+        assert!(inspects(&effects).is_empty(), "operator mail");
+        let c = AgentId::from_parts(1, 77);
+        let (_, effects) = f.agent_mail("request", &[a, b, c]);
+        assert!(inspects(&effects).is_empty(), "a group thread");
+        let (_, effects) = f.agent_mail("message", &[a, b]);
+        assert!(inspects(&effects).is_empty(), "a plain message");
+        let (_, effects) = f.agent_mail("card", &[a, b]);
+        assert!(inspects(&effects).is_empty(), "a card");
+        let (direct, effects) = f.agent_mail("request", &[a, b]);
+        assert_eq!(
+            inspects(&effects).into_iter().map(|(_, mail)| mail).collect::<Vec<_>>(),
+            vec![vec![direct]]
+        );
+    }
+
+    #[test]
+    fn a_decision_without_an_issue_is_decided_again_when_the_daemon_starts() {
+        let mut f = Flow::new();
+        let (a, b) = (f.a, f.b);
+        f.h.unfsynced.insert(RecordKind::MailTurnIssued);
+        let (mail, effects) = f.agent_mail("request", &[a, b]);
+        let mut found = inspects(&effects);
+        assert_eq!(found.len(), 1);
+        let (request, _) = found.remove(0);
+        let effects = f.h.step(Input::MailTurnInspected {
+            agent: b,
+            request,
+            result: Ok((at(20), vec![mail])),
+        });
+        let token = effects
+            .iter()
+            .find_map(|seen| match seen {
+                Seen::Persist {
+                    token,
+                    entry: Entry { record: Record::MailTurnDecided(_), .. },
+                } => Some(*token),
+                _ => None,
+            })
+            .expect("a decision");
+        f.h.acknowledge(token);
+        let decided = |h: &Harness| {
+            h.journal
+                .iter()
+                .filter(|entry| matches!(&entry.record, Record::MailTurnDecided(d)
+                    if matches!(d.decision, dudes_proto::MailTurnAdmission::Issue { .. })))
+                .count()
+        };
+        assert_eq!(decided(&f.h), 1);
+        assert!(!f.h.journal.iter().any(|entry| matches!(entry.record, Record::MailTurnIssued(_))));
+
+        f.h.restart();
+        f.spend();
+        let effects = f.h.step(Input::MailPassFinished);
+        let mut found = inspects(&effects);
+        assert_eq!(found.len(), 1, "the decision is made again: {effects:?}");
+        let (request, found) = found.remove(0);
+        assert_eq!(found, vec![mail]);
+        let effects = f.h.step(Input::MailTurnInspected {
+            agent: b,
+            request,
+            result: Ok((at(30), vec![mail])),
+        });
+        assert!(effects.iter().any(|seen| matches!(seen, Seen::Persist {
+            entry: Entry { record: Record::MailTurnDecided(d), .. }, ..
+        } if matches!(d.decision, dudes_proto::MailTurnAdmission::Issue { .. }))));
+    }
+
+    #[test]
+    fn covered_mail_stays_covered_when_the_agent_later_gets_a_goal() {
+        let mut f = Flow::new();
+        let (a, b) = (f.a, f.b);
+        let (mail, effects) = f.agent_mail("request", &[a, b]);
+        let mut found = inspects(&effects);
+        let (request, _) = found.remove(0);
+        let effects = f.h.step(Input::MailTurnInspected {
+            agent: b,
+            request,
+            result: Ok((at(20), vec![mail])),
+        });
+        let token = effects
+            .iter()
+            .find_map(|seen| match seen {
+                Seen::Persist {
+                    token,
+                    entry: Entry { record: Record::MailTurnDecided(_), .. },
+                } => Some(*token),
+                _ => None,
+            })
+            .expect("a decision");
+        f.h.acknowledge(token);
+        assert!(f.h.journal.iter().any(|entry| matches!(entry.record, Record::MailTurnIssued(_))));
+        let world = f.h.supervisor.world();
+        assert!(world.mail_turn_covered(mail));
+        assert!(world.mail_turn_candidates(b).is_empty());
+        let turn = world.agents[&b].open_turn.expect("the mail turn is open");
+        assert!(world.turns[&turn].goal.is_none());
+
+        f.h.set_goal(b, &["true"]);
+        let world = f.h.supervisor.world();
+        assert!(world.mail_turn_covered(mail));
+        assert!(world.mail_turn_candidates(b).is_empty());
     }
 }
