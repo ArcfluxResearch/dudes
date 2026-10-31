@@ -96,6 +96,15 @@ test('a mail-started exchange is an agent message under a header naming the send
   assert.match(html, /data-chat-turn-id="01ARZ3NDEKTSV4RRFFQ69G5FD1"/);
 });
 
+test('a reply chain shows its subject once, and a bare Re: shows no subject', () => {
+  assert.match(render([mailTurn({}, { subject: 'Re: Re: RE: What is 2+2?' })]),
+    /After mail from Grace · <bdi data-chat-mail-subject="true">What is 2\+2\?<\/bdi>/);
+  const bare = render([mailTurn({}, { subject: 'Re:' })]);
+  assert.match(bare, />After mail from Grace<\/p>/);
+  assert.doesNotMatch(bare, /data-chat-mail-subject/);
+  assert.match(render([mailTurn({}, { subject: 'Rendering fix' })]), /<bdi data-chat-mail-subject="true">Rendering fix<\/bdi>/);
+});
+
 test('a mail-started exchange without an admitted subject, from the operator or a retired agent', () => {
   assert.match(render([mailTurn({}, { subject: null })]), />After mail from Grace<\/p>/);
   assert.doesNotMatch(render([mailTurn({}, { subject: null })]), /data-chat-mail-subject/);

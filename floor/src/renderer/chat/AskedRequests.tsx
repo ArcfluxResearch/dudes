@@ -4,6 +4,7 @@ import { Badge, cn } from '../../ui/index.ts';
 import type { BadgeState } from '../../ui/index.ts';
 import type { FloorState } from '../floor/store.ts';
 import type { AskedRequest } from './asked.ts';
+import { shownSubject } from './model.ts';
 
 const STATUS: Readonly<Record<AskedRequest['status'], { readonly label: string; readonly state: BadgeState }>> = {
   awaiting: { label: 'Waiting', state: 'waiting' },
@@ -26,7 +27,7 @@ export function AskedRow({ request, from, to, onOpenMail }: {
   readonly onOpenMail?: (id: string) => void;
 }) {
   const status = STATUS[request.status];
-  const subject = request.subject !== null && request.subject !== '' ? request.subject : null;
+  const subject = shownSubject(request.subject);
   const sentence = subject === null ? `${from} asked ${to} a question` : `${from} asked ${to}: ${subject}`;
   const body = <>
     <span className={cn('min-w-0 flex-1 truncate')}>{subject === null ? sentence : <>{from} asked {to}: <bdi data-asked-subject>{subject}</bdi></>}</span>
