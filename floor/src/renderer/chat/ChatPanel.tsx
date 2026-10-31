@@ -15,6 +15,8 @@ import { advanceStopAndSend, browserChatDeps, canStopAndSend, cancelChat, stopAn
 import { formatBytes } from './chatFiles.ts';
 import type { ChatState } from './chat.ts';
 import type { ChatCause, ChatNotice, ChatReason, ChatTurn, NoticeReason, PendingNote } from './model.ts';
+import type { CardRow } from '../board.ts';
+import { requiresInstructionReview } from '../ticket/model.ts';
 import { conversationEntries } from './thread.ts';
 import type { ChatEntry } from './thread.ts';
 import { ChatText } from './ChatText.tsx';
@@ -58,9 +60,10 @@ export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   action_off: 'Stopping and sending is switched off, so the note was not sent. It is still in the box.',
 };
 
-export function ChatPanel({ floor, row, fullOutput = false, onFullOutput, onOpenMail }: {
+export function ChatPanel({ floor, row, fullOutput = false, onFullOutput, onOpenMail, onOpenTicket }: {
   readonly floor: FloorState; readonly row: AgentRow; readonly fullOutput?: boolean;
   readonly onFullOutput?: (open: boolean) => void; readonly onOpenMail?: (id: string) => void;
+  readonly onOpenTicket?: (id: string) => void;
 }) {
   const chat = useSyncExternalStore(subscribeToChat, getChatState, getChatState);
   const target = chat.answerTargets.get(row.id);
@@ -75,13 +78,13 @@ export function ChatPanel({ floor, row, fullOutput = false, onFullOutput, onOpen
     if (chatGate(floor, row).open && floor.chat !== null) reconcileChat(floor.chat);
     void advanceStopAndSend(browserChatDeps);
   }, [floor.chat, floor.phase, floor.stale, floor.epoch, floor.snapshotEpoch, row, chat.acknowledged, chat.stopSend]);
-  return <ChatPanelView floor={floor} row={row} action={chat} fullOutput={fullOutput} onFullOutput={onFullOutput} onOpenMail={onOpenMail} />;
+  return <ChatPanelView floor={floor} row={row} action={chat} fullOutput={fullOutput} onFullOutput={onFullOutput} onOpenMail={onOpenMail} onOpenTicket={onOpenTicket} />;
 }
 
-export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOutput = () => {}, onOpenMail }: {
+export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOutput = () => {}, onOpenMail, onOpenTicket }: {
   readonly floor: FloorState; readonly row: AgentRow; readonly action: ChatState;
   readonly fullOutput?: boolean; readonly onFullOutput?: (open: boolean) => void;
-  readonly onOpenMail?: (id: string) => void;
+  readonly onOpenMail?: (id: string) => void; readonly onOpenTicket?: (id: string) => void;
 }) {
   const gate = chatGate(floor, row);
   const view = floor.chat;
@@ -101,7 +104,7 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   const waitingQuestion = row.status === 'waiting' && typeof row.question === 'string' && canonicalLsn(row.question_lsn);
   return <div className="chat-panel flex min-h-full flex-col gap-3 font-sans text-base text-ink" data-chat-agent-id={row.id}>
     <ChatThread key={row.id} entries={entries} floor={floor} row={row} action={action}
-      fullOutput={fullOutput} onFullOutput={onFullOutput} onOpenMail={onOpenMail} />
+      fullOutput={fullOutput} onFullOutput={onFullOutput} onOpenMail={onOpenMail} onOpenTicket={onOpenTicket} />
     {row.mode === 'attached' ? <p className={cn('chat-guidance', NOTE)}>Attached replies are unavailable. Messages are sent as context.</p> : null}
     <section aria-labelledby="chat-compose-title" className="chat-compose sticky bottom-0 z-10 flex shrink-0 flex-col gap-2 border-t border-line bg-surface pt-3"
       onDragOver={overChatFiles} onDrop={(event) => dropChatFiles(event, gate)}>
@@ -179,10 +182,10 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   </div>;
 }
 
-function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onOpenMail }: {
+function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onOpenMail, onOpenTicket }: {
   readonly entries: readonly ChatEntry[]; readonly floor: FloorState; readonly row: AgentRow; readonly action: ChatState;
   readonly fullOutput: boolean; readonly onFullOutput: (open: boolean) => void;
-  readonly onOpenMail?: (id: string) => void;
+  readonly onOpenMail?: (id: string) => void; readonly onOpenTicket?: (id: string) => void;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
@@ -227,6 +230,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onO
   const attempt = action.attempt?.payload.agent === row.id ? action.attempt : null;
   const outcome = action.outcome;
   const names = agentNames(floor);
+  const held = heldTicketOf(floor.cards, row.id);
   const placed = placeAsked(entries.map(entry => entry.noteLsn), askedRequests(floor.messages ?? [], floor.threads ?? [], row.id));
   const askedRow = (request: AskedRequest) => <AskedRow key={request.id} request={request} from={name}
     to={names.get(request.to) || request.to} onOpenMail={onOpenMail} />;
@@ -275,6 +279,10 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onO
           {note === null ? turn === null ? <p className={cn('chat-message-state mx-2', NOTE)}>Message accepted; current status unavailable.</p> : null
             : <div className={cn('chat-message-state mx-2 flex flex-col items-start gap-1', NOTE, emphasis)}>
               <p className="m-0">{pendingText(note)}</p>
+              {note.state === 'queued' && held !== null ? <p className="chat-held m-0 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" data-chat-held-ticket={held.id}>
+                <span className="min-w-0 [overflow-wrap:anywhere]">Waits until you review the instruction change on {held.title}</span>
+                {onOpenTicket === undefined ? null : <Button size="sm" onClick={() => onOpenTicket(held.id)}>Review change</Button>}
+              </p> : null}
               {note.reason === null || note.reason === 'delivery_uncertain' ? null
                 : <p className="chat-reason m-0 font-semibold" data-chat-reason={note.reason}>{CHAT_REASON_TEXT[note.reason]}</p>}
               {note.cancellable ? <Button size="sm" className="chat-cancel" disabled={action.attempt !== null || action.clearing != null}
@@ -429,6 +437,12 @@ function outcomeText(action: ChatState): string {
     case 'unavailable': return 'Dudes could not confirm this request was saved. Choose Check status before continuing.';
     case 'unknown': return 'The result is unknown. Choose Check status before continuing.';
   }
+}
+
+/** The agent's ticket waiting on the operator's review of changed instruction files, which holds its new turns. */
+function heldTicketOf(cards: readonly CardRow[] | undefined, agent: string): CardRow | null {
+  return (cards ?? []).find(card => card.claimed_by === agent && (card.status === 'review' || card.status === 'blocked')
+    && requiresInstructionReview(card)) ?? null;
 }
 
 function pendingText(note: PendingNote): string {

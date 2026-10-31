@@ -682,3 +682,21 @@ test('mounted Clear all asks once, keeps per-note removal and clears only this a
     page.restore(); store.resetFloorStore(); chatModule.resetChat();
   }
 });
+
+test('a queued note says why it waits while the agent\'s ticket is held for an instruction review', () => {
+  const pending = { agent_id: A, note_lsn: '7', goal_id: G, text: 'Hello', state: 'queued', turn_id: null, cancellable: true, reason: null };
+  const held = { id: 'C1', title: 'Fix <b>login</b>', department: 'eng', status: 'blocked', status_by: 'agent', seq: 1, claimed_by: A, deps: [],
+    ticket: { position: null, round: 1, reason: 'shared_instructions_changed', priority: 'none', project: null, stopping: false } };
+  const open = [];
+  const draw = (patch, note = pending) => renderToStaticMarkup(createElement(ChatPanelView, {
+    floor: floor({ ...view(), pending: [note] }, patch), row, action, onOpenTicket: id => open.push(id) }));
+  const out = draw({ cards: [held] });
+  assert.match(out, /Queued\. Delivery has not started\./);
+  assert.match(out, /Waits until you review the instruction change on Fix &lt;b&gt;login&lt;\/b&gt;/);
+  assert.match(out, /data-chat-held-ticket="C1"/);
+  assert.match(out, />Review change<\/button>/);
+  assert.doesNotMatch(draw({ cards: [] }), /Waits until you review/);
+  assert.doesNotMatch(draw({ cards: [{ ...held, claimed_by: B }] }), /Waits until you review/);
+  assert.doesNotMatch(draw({ cards: [{ ...held, ticket: { ...held.ticket, reason: 'check_failed' } }] }), /Waits until you review/);
+  assert.doesNotMatch(draw({ cards: [held] }, { ...pending, state: 'reserved', turn_id: T }), /Waits until you review/);
+});
