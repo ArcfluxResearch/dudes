@@ -1759,6 +1759,24 @@ mod mail_tests {
         assert_eq!(send.act, dudes_proto::MailAct::Request);
         assert!(send.body.is_none());
     }
+
+    #[test]
+    fn the_reply_command_the_teaching_shows_parses_as_a_message_reply() {
+        let after = dudes_proto::MAIL_INSTRUCTION_WITH_REPLIES
+            .split("Answer it with `")
+            .nth(1)
+            .unwrap();
+        let shown = after.split('`').next().unwrap();
+        let line = shown.replace("<id>", AGENT).replace("<text>", "hello");
+        let mut parts: Vec<&str> = line.split(' ').collect();
+        assert_eq!(parts.remove(0), "dudes");
+        let Command::Mail(MailCommand::Send(send)) = parse(&words(&parts)).unwrap().command else {
+            panic!("mail send")
+        };
+        assert_eq!(send.route, MailRoute::Reply(AGENT.parse().unwrap()));
+        assert_eq!(send.act, dudes_proto::MailAct::Message);
+        assert_eq!(send.body.as_deref(), Some("hello"));
+    }
 }
 
 fn team(tail: &[OsString], payload: Option<&[OsString]>) -> Result<Command, ArgError> {

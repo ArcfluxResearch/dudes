@@ -1405,7 +1405,7 @@ fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
         third,
         dudes_proto::TurnOutcome::Completed,
     );
-    assert!(!fixture.records().iter().any(|record| matches!(record, Record::IdentifiedConversationTurnIssued { task, .. } if task.ends_with("\n\nqueued before loss"))));
+    assert!(!fixture.records().iter().any(|record| matches!(record, Record::IdentifiedConversationTurnIssued { task, .. } if task.contains("queued before loss"))));
     running.stop(duded::ExitCause::Signal);
 }
 
