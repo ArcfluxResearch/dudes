@@ -19,6 +19,9 @@ import { conversationEntries } from './thread.ts';
 import type { ChatEntry } from './thread.ts';
 import { ChatText } from './ChatText.tsx';
 import { Steps } from './Steps.tsx';
+import { AskedRow, agentNames } from './AskedRequests.tsx';
+import { askedRequests, placeAsked } from './asked.ts';
+import type { AskedRequest } from './asked.ts';
 import { EngineSaid } from './EngineSaid.tsx';
 import { FullOutput } from '../LiveWork.tsx';
 import { MessageSquare, Paperclip, SendHorizontal } from 'lucide-react';
@@ -55,9 +58,9 @@ export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   action_off: 'Stopping and sending is switched off, so the note was not sent. It is still in the box.',
 };
 
-export function ChatPanel({ floor, row, fullOutput = false, onFullOutput }: {
+export function ChatPanel({ floor, row, fullOutput = false, onFullOutput, onOpenMail }: {
   readonly floor: FloorState; readonly row: AgentRow; readonly fullOutput?: boolean;
-  readonly onFullOutput?: (open: boolean) => void;
+  readonly onFullOutput?: (open: boolean) => void; readonly onOpenMail?: (id: string) => void;
 }) {
   const chat = useSyncExternalStore(subscribeToChat, getChatState, getChatState);
   const target = chat.answerTargets.get(row.id);
@@ -72,12 +75,13 @@ export function ChatPanel({ floor, row, fullOutput = false, onFullOutput }: {
     if (chatGate(floor, row).open && floor.chat !== null) reconcileChat(floor.chat);
     void advanceStopAndSend(browserChatDeps);
   }, [floor.chat, floor.phase, floor.stale, floor.epoch, floor.snapshotEpoch, row, chat.acknowledged, chat.stopSend]);
-  return <ChatPanelView floor={floor} row={row} action={chat} fullOutput={fullOutput} onFullOutput={onFullOutput} />;
+  return <ChatPanelView floor={floor} row={row} action={chat} fullOutput={fullOutput} onFullOutput={onFullOutput} onOpenMail={onOpenMail} />;
 }
 
-export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOutput = () => {} }: {
+export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOutput = () => {}, onOpenMail }: {
   readonly floor: FloorState; readonly row: AgentRow; readonly action: ChatState;
   readonly fullOutput?: boolean; readonly onFullOutput?: (open: boolean) => void;
+  readonly onOpenMail?: (id: string) => void;
 }) {
   const gate = chatGate(floor, row);
   const view = floor.chat;
@@ -97,7 +101,7 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   const waitingQuestion = row.status === 'waiting' && typeof row.question === 'string' && canonicalLsn(row.question_lsn);
   return <div className="chat-panel flex min-h-full flex-col gap-3 font-sans text-base text-ink" data-chat-agent-id={row.id}>
     <ChatThread key={row.id} entries={entries} floor={floor} row={row} action={action}
-      fullOutput={fullOutput} onFullOutput={onFullOutput} />
+      fullOutput={fullOutput} onFullOutput={onFullOutput} onOpenMail={onOpenMail} />
     {row.mode === 'attached' ? <p className={cn('chat-guidance', NOTE)}>Attached replies are unavailable. Messages are sent as context.</p> : null}
     <section aria-labelledby="chat-compose-title" className="chat-compose sticky bottom-0 z-10 flex shrink-0 flex-col gap-2 border-t border-line bg-surface pt-3"
       onDragOver={overChatFiles} onDrop={(event) => dropChatFiles(event, gate)}>
@@ -175,9 +179,10 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   </div>;
 }
 
-function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
+function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onOpenMail }: {
   readonly entries: readonly ChatEntry[]; readonly floor: FloorState; readonly row: AgentRow; readonly action: ChatState;
   readonly fullOutput: boolean; readonly onFullOutput: (open: boolean) => void;
+  readonly onOpenMail?: (id: string) => void;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
@@ -221,6 +226,10 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
   const name = typeof row.name === 'string' ? row.name : 'this agent';
   const attempt = action.attempt?.payload.agent === row.id ? action.attempt : null;
   const outcome = action.outcome;
+  const names = agentNames(floor);
+  const placed = placeAsked(entries.map(entry => entry.noteLsn), askedRequests(floor.messages ?? [], floor.threads ?? [], row.id));
+  const askedRow = (request: AskedRequest) => <AskedRow key={request.id} request={request} from={name}
+    to={names.get(request.to) || request.to} onOpenMail={onOpenMail} />;
   const latestTurn = row.mode === 'managed' ? entries.filter(entry => entry.kind !== 'context' && entry.turn !== null).at(-1) : undefined;
   return <section className={cn('chat-thread flex min-h-72 min-w-0 flex-1 flex-col gap-2', SHORT_THREAD)} aria-labelledby="chat-thread-title">
     <div className="chat-thread-heading flex flex-wrap items-center justify-between gap-x-3 gap-y-1"><h3 id="chat-thread-title" className={HEADING}>Conversation</h3>
@@ -233,19 +242,20 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
         if (node.clientWidth !== size.current.width || node.clientHeight !== size.current.height) return;
         follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
       }}>
-      {entries.length === 0 && attempt === null ? <div className="chat-empty grid min-h-full content-center justify-items-center gap-1 text-center">
+      {entries.length === 0 && attempt === null && placed.leading.length === 0 ? <div className="chat-empty grid min-h-full content-center justify-items-center gap-1 text-center">
         <MessageSquare {...ICON} size={24} aria-hidden="true" className="mb-1 text-subtle" />
         <p className="m-0 font-medium">No messages in the available history</p>
         <p className={NOTE}>Write a message below to continue the conversation.</p>
-      </div> : <ol className="m-0 grid min-h-full list-none content-end gap-4 p-0">{entries.map(entry => {
-        if (entry.kind === 'context') return <li key={entry.noteLsn} className="chat-context rounded-md border border-dashed border-line-strong px-3 py-2 text-small text-muted" data-chat-context-lsn={entry.noteLsn}>
+      </div> : <ol className="m-0 grid min-h-full list-none content-end gap-4 p-0">{placed.leading.map(askedRow)}{entries.flatMap(entry => {
+        const requests = (placed.after.get(entry.noteLsn) ?? []).map(askedRow);
+        if (entry.kind === 'context') return [<li key={entry.noteLsn} className="chat-context rounded-md border border-dashed border-line-strong px-3 py-2 text-small text-muted" data-chat-context-lsn={entry.noteLsn}>
           <p className="m-0">Sent as context</p>
-        </li>;
+        </li>, ...requests];
         const { pending: note, turn } = entry;
         const preview = turn !== null && previewMatches(floor, row, turn);
         const status = turn !== null && note === null ? turnText(turn, preview ? floor.output.status : null) : null;
         const emphasis = turn?.state === 'failed' || note?.state === 'delivery_uncertain' ? 'font-semibold' : '';
-        return <li key={entry.noteLsn} className="chat-exchange grid min-w-0 gap-1.5" data-chat-note-lsn={entry.noteLsn}
+        return [<li key={entry.noteLsn} className="chat-exchange grid min-w-0 gap-1.5" data-chat-note-lsn={entry.noteLsn}
           data-chat-pending-state={note?.state} data-chat-turn-id={turn?.turn_id} data-chat-turn-state={turn?.state}>
           <div className={cn('chat-message chat-user', USER_BUBBLE)}>
             <p className={cn('chat-speaker', SPEAKER)}>You</p>
@@ -289,7 +299,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
           </div> : null}
           {entry === latestTurn
             ? <FullOutput floor={floor} row={row} id="chat-full-output" open={fullOutput} onToggle={onFullOutput} /> : null}
-        </li>;
+        </li>, ...requests];
       })}</ol>}
       {attempt === null ? null : <section className={cn('chat-receipt mt-3 flex flex-col items-start gap-2', BOX)} aria-label="Chat request" aria-live="polite"
         data-chat-outcome={action.outcome?.kind ?? 'sending'}
