@@ -177,9 +177,12 @@ pub fn run(
         Command::Login(provider) => login(*provider, terminal.is_some(), env, out),
         Command::Uninstall(options) => uninstall_command(*options, terminal, env, out, err),
         Command::Upgrade(options) => upgrade_command(*options, env, out, err),
-        Command::Mail(command) => crate::mail::run(command, env, out)
-            .map(|()| exit::SUCCESS)
-            .map_err(local),
+        Command::Mail(command) => {
+            let names = mail_sender_names(command, env);
+            crate::mail::run(command, env, &names, out)
+                .map(|()| exit::SUCCESS)
+                .map_err(local)
+        }
         Command::Retire { agent, yes } => {
             confirm_retirement(*agent, invocation.json, *yes, terminal, out)
                 .and_then(|()| dispatch(&invocation, env, out, err))
@@ -193,6 +196,47 @@ pub fn run(
             failure.code()
         }
     }
+}
+
+/// Agent names for the senders `mail read` and `mail list` print. Mail itself works without the
+/// daemon, so a daemon that cannot be reached, or an answer that cannot be read, leaves the map
+/// empty and the senders print as ids.
+fn mail_sender_names(
+    command: &args::MailCommand,
+    env: &Environment,
+) -> std::collections::HashMap<AgentId, String> {
+    let mut names = std::collections::HashMap::new();
+    if env.scoped_file_mail()
+        || !matches!(command, args::MailCommand::Read | args::MailCommand::List)
+    {
+        return names;
+    }
+    let Ok(mut client) = connect(env) else {
+        return names;
+    };
+    let response = if let Some(token) = env.agent_token() {
+        client.call(
+            Method::TeamRoster,
+            Some(serde_json::json!({"token": token})),
+        )
+    } else {
+        let Some(cred) = operator_credential(env).ok().flatten() else {
+            return names;
+        };
+        match encode(&Empty {}) {
+            Ok(params) => {
+                call_presenting(&mut client, Method::TeamRoster, Some(params), Some(cred))
+            }
+            Err(_) => return names,
+        }
+    };
+    if let Ok(response) = response
+        && let Ok(result) = answer_result(response)
+        && let Ok(rows) = serde_json::from_value::<Vec<dudes_proto::rpc::team::RosterEntry>>(result)
+    {
+        names.extend(rows.into_iter().map(|row| (row.id, row.name)));
+    }
+    names
 }
 
 fn unavailable_scoped_command(command: &Command, argv: &[OsString]) -> Option<String> {
