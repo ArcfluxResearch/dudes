@@ -32,6 +32,22 @@ history or reply limits. If the provider cannot resume a conversation, Chat asks
 a fresh conversation before sending again. An agent's structured question has its own **Answer**
 action, which quickstart turns on in a new file.
 
+## Mail that starts a turn
+
+A teammate's mail can start an agent's turn without you typing anything: a direct request to an agent
+that has no goal, the first answer to a request the agent sent, or the wake of an agent whose goal is
+done. The agent's Chat shows what it said, under one quiet line such as "After mail from Linus", followed
+by the mail's subject when Dudes admitted the subject for display. The sender is shown by name, or as "you"
+for mail you sent from the Floor.
+
+Mail that waits instead of starting a turn shows one line in the recipient's Chat, such as "Mail from Linus
+waits: 2 turns in this thread already". The other reasons are four turns from one sender in a day, twenty mail
+turns and wakes in a day, an open question, a stopped, paused, attached or held agent, a used-up spending
+limit, and a missing spending limit. Each refusal adds one line, however often the daemon looks at the mail again.
+
+Replies to mail may quote what a teammate wrote. Like every Chat reply they are kept in the journal and shown
+to anyone holding a Floor session.
+
 ## Steps
 
 For an agent that Dudes launches with Claude Code, Codex or Pi, Chat lists the steps of the agent's latest

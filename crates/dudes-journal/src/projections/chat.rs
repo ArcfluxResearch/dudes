@@ -618,7 +618,7 @@ pub(super) fn apply(
                     push_mail_exchange(&mut window, lsn, issue.agent, issue.turn, cause)?;
                 }
             }
-            _ => return Ok(()),
+            dudes_proto::issue::ManagedIssueRef::Ordinary { .. } => return Ok(()),
         }
         true
     } else {
@@ -1179,7 +1179,14 @@ pub(super) fn apply(
                     .insert(issue.note_lsn.0, encoded(&value)?.as_slice())?;
             }
             update_history(&mut window, *turn, |view| {
-                end_view(view, outcome, exit, model_usage, final_reply, last_message);
+                end_view(
+                    view,
+                    outcome.as_ref(),
+                    exit,
+                    model_usage,
+                    final_reply.as_ref(),
+                    last_message.as_deref(),
+                );
             });
         }
         Record::AgentRetired { id, .. } => {
@@ -1339,11 +1346,11 @@ fn cut(text: &str, limit: usize) -> Option<String> {
 
 fn end_view(
     view: &mut ChatTurnView,
-    outcome: &Option<TurnOutcome>,
+    outcome: Option<&TurnOutcome>,
     exit: &dudes_proto::ExitStatus,
     model_usage: &BTreeMap<String, dudes_types::Usage>,
-    final_reply: &Option<dudes_proto::ChatReply>,
-    last_message: &Option<String>,
+    final_reply: Option<&dudes_proto::ChatReply>,
+    last_message: Option<&str>,
 ) {
     view.state = if matches!(
         outcome,
@@ -1373,11 +1380,9 @@ fn end_view(
         .cloned()
         .collect();
     view.reply = final_reply
-        .as_ref()
         .map(|reply| reply.text.clone())
-        .or_else(|| last_message.clone());
+        .or_else(|| last_message.map(str::to_owned));
     view.truncated = final_reply
-        .as_ref()
         .map(|reply| reply.completeness == dudes_proto::ChatReplyCompleteness::Truncated);
     let reply_limit = if final_reply.is_some() {
         dudes_proto::MAX_CHAT_REPLY_BYTES

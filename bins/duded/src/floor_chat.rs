@@ -457,23 +457,7 @@ pub(crate) fn validate_view(view: &dudes_proto::ChatView) -> Result<()> {
     let mut turn_ids = std::collections::BTreeSet::new();
     for row in &view.turns {
         let note = crate::floor_answer::decode_canonical_lsn(&row.note_lsn)?;
-        match (&row.text, &row.cause, &row.notice, row.turn_id) {
-            (Some(text), None, None, Some(_)) => valid_text(text)?,
-            (None, Some(cause), None, Some(_)) => {
-                if cause.subject.as_ref().is_some_and(|subject| {
-                    subject.is_empty()
-                        || subject.len() > dudes_proto::messages::MAX_MAIL_SUBJECT_BYTES
-                        || subject.chars().any(char::is_control)
-                }) {
-                    bail!("invalid Chat mail cause subject");
-                }
-            }
-            (None, None, Some(_), None)
-                if row.state == ChatTurnState::Ended
-                    && row.reply.is_none()
-                    && row.truncated.is_none() => {}
-            _ => bail!("Chat turn row is neither a note turn, a mail turn nor a notice"),
-        }
+        valid_turn_shape(row)?;
         if row
             .reply
             .as_ref()
@@ -544,6 +528,28 @@ pub(crate) fn retain_current_agents(
     view.turns.retain(|row| current.contains(&row.agent_id));
     view.context_sent
         .retain(|row| current.contains(&row.agent_id));
+}
+
+fn valid_turn_shape(row: &dudes_proto::ChatTurnView) -> Result<()> {
+    use dudes_proto::ChatTurnState;
+    match (&row.text, &row.cause, &row.notice, row.turn_id) {
+        (Some(text), None, None, Some(_)) => valid_text(text)?,
+        (None, Some(cause), None, Some(_)) => {
+            if cause.subject.as_ref().is_some_and(|subject| {
+                subject.is_empty()
+                    || subject.len() > dudes_proto::messages::MAX_MAIL_SUBJECT_BYTES
+                    || subject.chars().any(char::is_control)
+            }) {
+                bail!("invalid Chat mail cause subject");
+            }
+        }
+        (None, None, Some(_), None)
+            if row.state == ChatTurnState::Ended
+                && row.reply.is_none()
+                && row.truncated.is_none() => {}
+        _ => bail!("Chat turn row is neither a note turn, a mail turn nor a notice"),
+    }
+    Ok(())
 }
 
 fn valid_text(text: &str) -> Result<()> {
@@ -775,6 +781,50 @@ mod tests {
         row.turn_id = Some(dudes_types::TurnId::from_parts(1, 5));
         row.note_lsn = "5".into();
         view.turns.push(row);
+        assert!(validate_view(&view).is_err());
+    }
+
+    #[test]
+    fn mail_started_rows_and_notices_must_keep_their_exact_shape() {
+        let agent = AgentId::parse(AGENT).unwrap();
+        let mut mail = turn(2, agent);
+        mail.text = None;
+        mail.cause = Some(dudes_proto::ChatCause {
+            sender: Some(AgentId::from_parts(1, 9)),
+            thread: None,
+            subject: Some("Release date".into()),
+        });
+        let mut notice = turn(3, agent);
+        notice.text = None;
+        notice.turn_id = None;
+        notice.reply = None;
+        notice.notice = Some(dudes_proto::ChatNotice {
+            sender: AgentId::from_parts(1, 9),
+            reason: dudes_proto::ChatNoticeReason::ThreadLimit,
+        });
+        let mut view = dudes_proto::ChatView::empty();
+        view.turns = vec![mail.clone(), notice.clone()];
+        validate_view(&view).unwrap();
+
+        let refused = |change: &dyn Fn(&mut dudes_proto::ChatTurnView)| {
+            let mut rows = [mail.clone(), notice.clone()];
+            rows.iter_mut().for_each(change);
+            let mut view = dudes_proto::ChatView::empty();
+            view.turns = rows.to_vec();
+            validate_view(&view).is_err()
+        };
+        assert!(refused(&|row| row.text = Some("operator words".into())));
+        assert!(refused(&|row| row.turn_id = None));
+        assert!(refused(
+            &|row| row.state = dudes_proto::ChatTurnState::Failed
+        ));
+        let mut long = mail.clone();
+        long.cause.as_mut().unwrap().subject = Some("x".repeat(121));
+        view.turns = vec![long];
+        assert!(validate_view(&view).is_err());
+        let mut both = notice;
+        both.cause = mail.cause;
+        view.turns = vec![both];
         assert!(validate_view(&view).is_err());
     }
 
