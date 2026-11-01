@@ -435,6 +435,8 @@ export class Journey {
     await this.screen('hire: day limit');
     await this.clickButton('Cancel', '#hire-wizard button');
     await this.until(`!document.querySelector('#hire-wizard')`, 'the limit dialog did not close');
+    await this.click('#view-settings');
+    await this.until(`Boolean(document.querySelector('button[aria-label$="(this browser)"]'))`, 'Settings did not reopen after the hire limit');
   }
 
   async otherScreens() {
