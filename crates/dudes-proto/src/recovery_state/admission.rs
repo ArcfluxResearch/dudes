@@ -23,7 +23,7 @@ mod tests;
 pub struct RecoveryAgentCurrent {
     /// Row identity.
     pub agent: AgentId,
-    /// Actual immutable hire position.
+    /// The position the agent's current place was recorded at: its hire, or its latest move.
     pub hired_lsn: Lsn,
     /// Current recorded provider.
     pub provider: Provider,

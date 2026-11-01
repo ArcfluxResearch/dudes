@@ -8,7 +8,7 @@ use super::World;
 /// Recorded origin and the desired server set for later managed launches.
 #[derive(Clone, Debug)]
 pub struct McpPolicy {
-    /// Immutable hire position.
+    /// The position the agent's current place was recorded at: its hire, or its latest move.
     pub hire_lsn: Lsn,
     /// Immutable names for historical launches without a grant.
     pub hire_servers: Vec<McpServerName>,

@@ -247,6 +247,9 @@ fn placement(kind: RecordKind) -> Placement {
         RecordKind::RecoveryRequired
         | RecordKind::RecoveryAuthorized
         | RecordKind::RecoveryInvalidated => RECOVERY_PREFIX_PLACEMENT,
+        RecordKind::AgentMoved => Placement::Out(
+            "a move needs an agent hired into a project; tests/agent_moves.rs replays it with and without checkpoints",
+        ),
         RecordKind::AgentModelChanged => Placement::Out(
             "the override is folded by the agents projection; tests/model_override.rs replays it with and without checkpoints",
         ),

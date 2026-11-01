@@ -13,7 +13,7 @@ pub struct RepositoryAdmission {
 }
 
 impl RepositoryAdmission {
-    /// A complete runtime observation, bound to the immutable hire positions.
+    /// A complete runtime observation, bound to the hire positions, which a move changes.
     #[must_use]
     pub fn new(observed: impl IntoIterator<Item = (AgentId, Lsn, bool)>) -> Self {
         Self {

@@ -154,6 +154,41 @@
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
+    "AgentMove": {
+      "additionalProperties": false,
+      "description": "The place an idle agent moves to, recorded in full so replay reads no configuration.",
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/AgentBudget",
+          "description": "The daily ceiling while the agent is here: the tighter of its hire's and the project's."
+        },
+        "cwd": {
+          "description": "The folder the agent's turns run in: the project's shared folder, or the agent's own copy\nwhen it returns to one.",
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/RecordedWorkspace",
+          "description": "The project it lands in."
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorktreeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The agent's own copy in this project. A move never creates one, so this is only ever a copy\nthe agent already holds."
+        }
+      },
+      "required": [
+        "cwd",
+        "workspace",
+        "budget"
+      ],
+      "type": "object"
+    },
     "AutomaticHold": {
       "description": "A durable automatic cause for holding an agent until Resume or a new goal.",
       "oneOf": [
@@ -12458,6 +12493,29 @@
         "session",
         "model_selection",
         "lsn_of_decision"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "An idle agent moves to another project's place. Required, because a reader that skipped it\nwould run the agent's turns in the wrong folder.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "The agent that moves."
+        },
+        "t": {
+          "const": "agent_moved",
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/AgentMove",
+          "description": "Where it lands."
+        }
+      },
+      "required": [
+        "t",
+        "agent",
+        "to"
       ],
       "type": "object"
     },
