@@ -655,6 +655,9 @@ where
         .repositories
         .as_ref()
         .ok_or(RecoveryStateError::Binding)?;
+    if turn.agent != binding.work.agent {
+        return Err(RecoveryStateError::Binding.into());
+    }
     if !repositories.matches_hire(agent.hired_lsn, &agent.repositories) {
         return Err(RecoveryStateError::Hire.into());
     }
