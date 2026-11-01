@@ -11,6 +11,7 @@ use dudes_journal::{Projections, Reader, replay};
 use dudes_proto::placement::AgentMove;
 use dudes_proto::record::{RecordedWorkspace, samples};
 use dudes_proto::{AgentBudget, Entry, Record, RecordKind};
+use dudes_supervisor::world::MoveHistoryError;
 use dudes_types::{AgentId, SessionId, Timestamp, TurnId};
 
 mod common;
@@ -81,13 +82,22 @@ fn learned(session: &str) -> Record {
 fn seed(fixture: &Fixture, records: Vec<Record>) -> duded::Settings {
     let settings = fixture.settings();
     let (mut writer, _) = dudes_journal::open(&fixture.journal_dir(), settings.journal).unwrap();
-    for record in records {
-        writer
+    let mut catalog = None;
+    for mut record in records {
+        if let Record::TicketCreatedWithRepositories(ticket) = &mut record {
+            ticket.declaration.catalog_lsn = catalog.unwrap();
+            ticket.declaration.project = "service".into();
+        }
+        let is_catalog = matches!(record, Record::ProjectRepositoriesRecorded { .. });
+        let at = writer
             .append(&Entry {
                 at: Timestamp::from_unix_millis(1_000),
                 record,
             })
             .unwrap();
+        if is_catalog {
+            catalog = Some(at);
+        }
     }
     settings
 }
@@ -120,6 +130,81 @@ fn billing(fixture: &Fixture) -> std::path::PathBuf {
     path
 }
 
+fn owned_by_agent(kind: RecordKind) -> Record {
+    let mut record = samples::record(kind);
+    match &mut record {
+        Record::TurnIssued { agent: owner, .. } | Record::GoalSet { agent: owner, .. } => {
+            *owner = agent();
+        }
+        _ => unreachable!("only issue and goal samples are owned"),
+    }
+    record
+}
+
+fn in_review() -> Vec<Record> {
+    let Record::Claim { card, .. } = samples::record(RecordKind::Claim) else {
+        unreachable!()
+    };
+    vec![
+        samples::record(RecordKind::TicketCreatedWithRepositories),
+        samples::record(RecordKind::Claim),
+        Record::CardTransition {
+            card,
+            from: dudes_types::CardStatus::Claimed,
+            to: dudes_types::CardStatus::Review,
+            by: dudes_proto::Actor::Agent { agent: agent() },
+            expected_seq: dudes_types::Seq(3),
+            reason: None,
+        },
+    ]
+}
+
+fn answered() -> Vec<Record> {
+    vec![
+        Record::HumanQuestion {
+            agent: agent(),
+            text: "which branch?".into(),
+        },
+        Record::HumanAnswer {
+            agent: agent(),
+            text: "main".into(),
+            provenance: None,
+            browser_answer: None,
+        },
+    ]
+}
+
+fn abandoned_copy(fixture: &Fixture, elsewhere: &std::path::Path) -> Vec<Record> {
+    let copy = dudes_types::WorktreeId::from_bytes([7; 16]);
+    let Record::WorktreeLeased {
+        origin,
+        branch,
+        base,
+        ..
+    } = samples::record(RecordKind::WorktreeLeased)
+    else {
+        unreachable!()
+    };
+    let mut away = hire(fixture, "billing");
+    let Record::AgentHired { worktree, cwd, .. } = &mut away else {
+        unreachable!()
+    };
+    (*worktree, *cwd) = (Some(copy), elsewhere.to_path_buf());
+    vec![
+        Record::WorktreeLeased {
+            worktree: copy,
+            origin,
+            path: elsewhere.to_path_buf(),
+            branch,
+            base,
+            from: None,
+        },
+        away,
+        moved("service", fixture.state.path()),
+        moved("billing", elsewhere),
+    ]
+}
+
 #[test]
 fn a_forged_move_stops_replay_before_the_socket_binds() {
     let fixture = Fixture::new();
@@ -130,38 +215,67 @@ fn a_forged_move_stops_replay_before_the_socket_binds() {
         records.push(moved("billing", &elsewhere));
         records
     };
-    let issued = {
-        let mut issue = samples::record(RecordKind::TurnIssued);
-        let Record::TurnIssued { agent: owner, .. } = &mut issue else {
-            unreachable!()
-        };
-        *owner = agent();
-        issue
-    };
-    let goal_set = {
-        let mut goal = samples::record(RecordKind::GoalSet);
-        let Record::GoalSet { agent: owner, .. } = &mut goal else {
-            unreachable!()
-        };
-        *owner = agent();
-        goal
-    };
+    let (issued, goal_set) = (
+        owned_by_agent(RecordKind::TurnIssued),
+        owned_by_agent(RecordKind::GoalSet),
+    );
     let retired = Record::AgentRetired {
         id: agent(),
         reason: "done".into(),
         browser_retire: None,
     };
-    let stories: [(&str, Vec<Record>); 6] = [
-        ("an unknown agent", vec![moved("billing", &elsewhere)]),
-        ("a retired agent", busy(vec![retired])),
-        ("an open turn", busy(vec![issued])),
-        ("an unfinished goal", busy(vec![goal_set])),
+    let in_review = in_review();
+    let answered = answered();
+    let abandoned = abandoned_copy(&fixture, &elsewhere);
+    let stories: [(&str, MoveHistoryError, Vec<Record>); 10] = [
+        (
+            "a copy it left behind",
+            MoveHistoryError::AbandonedCopy,
+            abandoned,
+        ),
+        ("a ticket in review", MoveHistoryError::Unfinished, {
+            let mut records = vec![
+                samples::record(RecordKind::ProjectRepositoriesRecorded),
+                hire(&fixture, "service"),
+            ];
+            records.extend(in_review);
+            records.push(moved("billing", &elsewhere));
+            records
+        }),
+        (
+            "an attached agent",
+            MoveHistoryError::Busy,
+            busy(vec![samples::record(RecordKind::Attached)]),
+        ),
+        (
+            "an answer not yet delivered",
+            MoveHistoryError::UndeliveredAnswers,
+            busy(answered),
+        ),
+        (
+            "an unknown agent",
+            MoveHistoryError::UnknownAgent,
+            vec![moved("billing", &elsewhere)],
+        ),
+        (
+            "a retired agent",
+            MoveHistoryError::UnknownAgent,
+            busy(vec![retired]),
+        ),
+        ("an open turn", MoveHistoryError::Busy, busy(vec![issued])),
+        (
+            "an unfinished goal",
+            MoveHistoryError::Unfinished,
+            busy(vec![goal_set]),
+        ),
         (
             "the project it is in",
+            MoveHistoryError::SameProject,
             vec![hire(&fixture, "service"), moved("service", &elsewhere)],
         ),
         (
             "an own copy it lacks",
+            MoveHistoryError::ForeignCopy,
             vec![hire(&fixture, "service"), {
                 let mut record = moved("billing", &elsewhere);
                 let Record::AgentMoved { to, .. } = &mut record else {
@@ -172,11 +286,12 @@ fn a_forged_move_stops_replay_before_the_socket_binds() {
             }],
         ),
     ];
-    for (name, records) in stories {
+    for (name, reason, records) in stories {
         let fixture = Fixture::new();
         let settings = seed(&fixture, records);
         let error = boot_error(&fixture, &settings);
         assert!(error.contains("invalid agent move"), "{name}: {error}");
+        assert!(error.contains(&reason.to_string()), "{name}: {error}");
         assert!(
             std::os::unix::net::UnixStream::connect(settings.socket()).is_err(),
             "{name}"

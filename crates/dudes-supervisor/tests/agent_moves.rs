@@ -273,3 +273,30 @@ fn a_move_cannot_name_an_own_copy_the_agent_does_not_hold() {
         moved(place("billing", "/repo/billing", None)),
     );
 }
+
+#[test]
+fn an_undelivered_answer_stays_in_the_project_it_belongs_to() {
+    let mut world = hired_in_service();
+    fold(
+        &mut world,
+        110,
+        Record::HumanQuestion {
+            agent: agent(),
+            text: "which branch?".into(),
+        },
+    );
+    fold(
+        &mut world,
+        120,
+        Record::HumanAnswer {
+            agent: agent(),
+            text: "main".into(),
+            provenance: None,
+            browser_answer: None,
+        },
+    );
+    assert_eq!(
+        refused(&world, moved(place("billing", "/repo/billing", None))),
+        MoveHistoryError::UndeliveredAnswers
+    );
+}
