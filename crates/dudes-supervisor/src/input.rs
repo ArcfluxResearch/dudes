@@ -1065,6 +1065,15 @@ pub enum Command {
         /// Frozen scoped authority; absent for a legacy start.
         repositories: Option<Box<TicketStartScope>>,
     },
+    /// An idle agent moves to the project of the ticket it starts next. The supervisor appends
+    /// nothing unless the history before it allows the move, so a journal never holds a move
+    /// that replay would refuse.
+    MoveAgent {
+        /// The agent that moves.
+        agent: AgentId,
+        /// Where it lands.
+        to: Box<dudes_proto::placement::AgentMove>,
+    },
     /// `goal.clear`.
     GoalClear {
         /// The agent.

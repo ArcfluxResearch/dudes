@@ -281,6 +281,14 @@ pub fn recorded(
     {
         return Err(DiffRefusal::StaleTicket);
     }
+    let moved_on = world
+        .agents
+        .get(&claimant)
+        .and_then(|row| row.repositories.workspace())
+        .is_some_and(|here| here.id != ticket.repositories.project());
+    if moved_on {
+        return Err(DiffRefusal::WorktreeMismatch);
+    }
     Ok(Recorded {
         card: view.id,
         seq: view.seq,

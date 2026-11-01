@@ -6,8 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dudes_proto::repository::HireRepositories;
 use dudes_proto::{
-    CardView, ExhaustedReason, HoldReason, QueueKey, TicketReason, TicketRow, TicketWait,
-    WorktreeRemoval,
+    CardView, ExhaustedReason, HoldReason, TicketReason, TicketRow, TicketWait, WorktreeRemoval,
 };
 use dudes_supervisor::world::{AgentRow, World};
 use dudes_types::{AgentId, CardId, CardStatus, GoalId, Seq, WorktreeId};
@@ -20,10 +19,12 @@ pub(crate) struct Facts<'a> {
     pub(crate) world: &'a World,
     /// Every ticket on the board, with its card.
     pub(crate) tickets: &'a [(CardView, TicketRow)],
-    /// The project each agent was hired into, for the agents whose hire recorded one.
+    /// The project each agent works in now, for the agents whose hire recorded one.
     pub(crate) hires: &'a BTreeMap<AgentId, String>,
     /// The agents with a turn or a check run open, whoever started it.
     pub(crate) working: &'a BTreeSet<AgentId>,
+    /// The agents with an owed recovery invalidation, which a move waits for.
+    pub(crate) invalidations_owed: &'a BTreeSet<AgentId>,
     /// The daemon is shutting down.
     pub(crate) closing: bool,
 }
@@ -88,9 +89,9 @@ impl Facts<'_> {
         let Some(row) = self.world.agents.get(&agent).filter(|row| !row.retired) else {
             return Some(TicketWait::AgentBusy);
         };
-        if self.hires.get(&agent).map(String::as_str) != Some(project) {
+        let Some(here) = self.hires.get(&agent).map(String::as_str) else {
             return Some(TicketWait::AgentBusy);
-        }
+        };
         if row.halted
             || row.paused
             || row.automatic_hold.is_some()
@@ -108,6 +109,19 @@ impl Facts<'_> {
         {
             return Some(TicketWait::AgentBusy);
         }
+        if here != project {
+            if let Some(held) = self.held_in(agent, here) {
+                return Some(TicketWait::Ticket { card: held });
+            }
+            if self.invalidations_owed.contains(&agent) {
+                return Some(TicketWait::AgentBusy);
+            }
+            if !row.pending_answers.is_empty()
+                || self.world.conversation_context_loss(agent).is_some()
+            {
+                return Some(TicketWait::AgentBusy);
+            }
+        }
         row.goal
             .filter(|goal| self.world.instructions.pending_for_goal(*goal))
             .map(|goal| {
@@ -122,6 +136,23 @@ impl Facts<'_> {
                         card: view.id,
                     })
             })
+    }
+
+    /// A ticket of `project` that `agent` holds: Working, in Needs you, or in Ready for you.
+    /// An agent holding one stays where it is, because everything that reads the ticket finds
+    /// the agent in the ticket's project.
+    fn held_in(&self, agent: AgentId, project: &str) -> Option<CardId> {
+        self.tickets
+            .iter()
+            .find(|(view, ticket)| {
+                view.claimed_by == Some(agent)
+                    && ticket.repositories.project() == project
+                    && matches!(
+                        view.status,
+                        CardStatus::Doing | CardStatus::Blocked | CardStatus::Review
+                    )
+            })
+            .map(|(view, _)| view.id)
     }
 
     /// Whether every agent of `project` shares one working tree: the project records more than one
@@ -146,24 +177,27 @@ impl Facts<'_> {
             })
     }
 
-    /// The working tree of `agent` hired into `project`: the copy its hire leased, whatever the
-    /// lease's state, or `None` for the project's shared folder. A failed lease belongs to no agent.
+    /// The working tree `agent` works in when it takes a ticket of `project`.
     #[cfg(test)]
     pub(crate) fn tree_of(&self, agent: AgentId, project: &str) -> Tree {
-        self.tree_in(agent, self.is_one_tree(project))
+        self.tree_at(agent, project, self.is_one_tree(project))
     }
 
-    /// `tree_of` for a project whose `is_one_tree` the caller already computed.
-    fn tree_in(&self, agent: AgentId, one_tree: bool) -> Tree {
+    /// The working tree `agent` works in for `project`, whose `is_one_tree` the caller already
+    /// computed: the copy it holds there, whatever the lease's state, or `None` for the project's
+    /// shared folder. An agent that is elsewhere is judged in the place a move would choose, which
+    /// is the copy it left in `project`, never the place it is leaving. A failed lease belongs to
+    /// no agent.
+    fn tree_at(&self, agent: AgentId, project: &str, one_tree: bool) -> Tree {
         if one_tree {
             return None;
         }
-        let lease = self
-            .world
-            .agents
-            .get(&agent)?
-            .repositories
-            .primary_worktree()?;
+        let row = self.world.agents.get(&agent)?;
+        let lease = if self.hires.get(&agent).is_none_or(|here| here == project) {
+            row.repositories.primary_worktree()?
+        } else {
+            row.other_projects.get(project)?.repository.worktree()?
+        };
         self.world
             .worktrees
             .get(&lease)
@@ -180,7 +214,7 @@ impl Facts<'_> {
 
     fn tree_wait_in(&self, project: &str, tree: Tree, one_tree: bool) -> Option<TicketWait> {
         let in_tree = |agent: Option<AgentId>| {
-            agent.is_none_or(|agent| self.tree_in(agent, one_tree) == tree)
+            agent.is_none_or(|agent| self.tree_at(agent, project, one_tree) == tree)
         };
         let holder = self
             .tickets
@@ -214,9 +248,9 @@ impl Facts<'_> {
             .then_some(TicketWait::ProjectBusy)
     }
 
-    /// The tickets waiting in `project`'s queues, in serving order: given-again work first, then by
-    /// priority, then by the position of the assignment, across every agent hired into the project.
-    pub(crate) fn queue(&self, project: &str) -> Vec<(CardId, AgentId, QueueKey)> {
+    /// The tickets waiting in `project`'s queues, in serving order.
+    #[cfg(test)]
+    pub(crate) fn queue(&self, project: &str) -> Vec<(CardId, AgentId, dudes_proto::QueueKey)> {
         let mut queue: Vec<_> = self
             .tickets
             .iter()
@@ -229,34 +263,72 @@ impl Facts<'_> {
         queue
     }
 
-    /// The projects that have a ticket waiting.
-    pub(crate) fn queued_projects(&self) -> BTreeSet<&str> {
-        self.tickets
+    /// The tickets waiting to start, in serving order: given-again work first, then by priority,
+    /// then by the position of the assignment, across every project.
+    fn waiting_in_order(&self) -> Vec<(CardId, AgentId, &str)> {
+        let mut queue: Vec<_> = self
+            .tickets
             .iter()
             .filter(|(view, _)| view.status == CardStatus::Claimed)
-            .map(|(_, ticket)| ticket.repositories.project())
+            .filter_map(|(view, ticket)| {
+                Some((
+                    ticket.queue?,
+                    view.id,
+                    view.claimed_by?,
+                    ticket.repositories.project(),
+                ))
+            })
+            .collect();
+        queue.sort_by_key(|(key, ..)| *key);
+        queue
+            .into_iter()
+            .map(|(_, card, agent, project)| (card, agent, project))
             .collect()
     }
 
-    /// The tickets `project` starts now, at most one per free working tree: walking its queue in
-    /// order, the first whose agent can take it in each tree that no ticket or turn holds. An
-    /// agent that cannot is skipped, so one stuck agent does not hold its tree.
-    pub(crate) fn next_tickets(&self, project: &str) -> Vec<CardId> {
-        let one_tree = self.is_one_tree(project);
+    /// The tickets that start now, at most one per free working tree and one per agent. Walking
+    /// every project's queue in order, a ticket starts when its agent can take it and no ticket
+    /// or turn holds the tree it would work in. An agent that cannot is skipped, so one stuck
+    /// agent does not hold its tree, and an agent with tickets in several projects takes the
+    /// first in queue order that can start. A card in `failed` is one this pass already tried
+    /// and could not advance, so it reserves neither its agent nor its tree.
+    pub(crate) fn next_starts(&self, failed: &BTreeSet<CardId>) -> Vec<CardId> {
+        let mut one_tree = BTreeMap::new();
         let mut taken = BTreeSet::new();
+        let mut busy = BTreeSet::new();
         let mut next = Vec::new();
-        for (card, agent, _) in self.queue(project) {
-            let tree = self.tree_in(agent, one_tree);
-            if taken.contains(&tree)
-                || self.tree_wait_in(project, tree, one_tree).is_some()
+        for (card, agent, project) in self.waiting_in_order() {
+            if failed.contains(&card) {
+                continue;
+            }
+            let single = *one_tree
+                .entry(project)
+                .or_insert_with(|| self.is_one_tree(project));
+            let tree = self.tree_at(agent, project, single);
+            if busy.contains(&agent)
+                || taken.contains(&(project, tree))
+                || self.tree_wait_in(project, tree, single).is_some()
                 || self.agent_wait(agent, project).is_some()
             {
                 continue;
             }
-            taken.insert(tree);
+            busy.insert(agent);
+            taken.insert((project, tree));
             next.push(card);
         }
         next
+    }
+
+    /// The tickets `project` starts now.
+    #[cfg(test)]
+    pub(crate) fn next_tickets(&self, project: &str) -> Vec<CardId> {
+        self.next_starts(&BTreeSet::new())
+            .into_iter()
+            .filter(|card| {
+                self.ticket(*card)
+                    .is_some_and(|(_, ticket)| ticket.repositories.project() == project)
+            })
+            .collect()
     }
 
     /// Why a ticket is not working yet, or `None` when it is working, finished, or about to start.
@@ -280,19 +352,21 @@ impl Facts<'_> {
                 let agent = view.claimed_by?;
                 let project = ticket.repositories.project();
                 let one_tree = self.is_one_tree(project);
-                let tree = self.tree_in(agent, one_tree);
+                let tree = self.tree_at(agent, project, one_tree);
                 self.agent_wait(agent, project)
                     .or_else(|| self.tree_wait_in(project, tree, one_tree))
                     .or_else(|| {
-                        let starting = self.next_tickets(project);
-                        starting
+                        self.next_starts(&BTreeSet::new())
                             .into_iter()
                             .find(|next| {
                                 *next != card
-                                    && self
-                                        .ticket(*next)
-                                        .and_then(|(other, _)| other.claimed_by)
-                                        .is_some_and(|other| self.tree_in(other, one_tree) == tree)
+                                    && self.ticket(*next).is_some_and(|(other, behind)| {
+                                        other.claimed_by == Some(agent)
+                                            || (behind.repositories.project() == project
+                                                && other.claimed_by.is_some_and(|other| {
+                                                    self.tree_at(other, project, one_tree) == tree
+                                                }))
+                                    })
                             })
                             .map(|next| TicketWait::Ticket { card: next })
                     })
@@ -560,6 +634,7 @@ mod tests {
             tickets,
             hires: &hires,
             working: &working,
+            invalidations_owed: &BTreeSet::new(),
             closing: false,
         })
     }
@@ -772,6 +847,7 @@ mod tests {
             tickets: &tickets,
             hires: &hires,
             working: &working,
+            invalidations_owed: &BTreeSet::new(),
             closing: false,
         };
         assert_eq!(facts.queue(PROJECT)[0].0, CardId::from_parts(4, 1));
@@ -1081,5 +1157,176 @@ mod tests {
             assert_eq!(facts.tree_wait(PROJECT, None), None);
             assert_eq!(facts.next_tickets(PROJECT), [card(2), card(3)]);
         });
+    }
+
+    const DOCS: &str = "docs";
+
+    fn in_docs(mut ticket: (CardView, TicketRow)) -> (CardView, TicketRow) {
+        ticket.1.repositories = DOCS.into();
+        ticket
+    }
+
+    fn placed<T>(
+        world: &World,
+        tickets: &[(CardView, TicketRow)],
+        agents: &[(AgentId, &str)],
+        read: impl FnOnce(&Facts<'_>) -> T,
+    ) -> T {
+        let hires = agents
+            .iter()
+            .map(|(id, project)| (*id, (*project).to_owned()))
+            .collect();
+        let working = BTreeSet::new();
+        read(&Facts {
+            world,
+            tickets,
+            hires: &hires,
+            working: &working,
+            invalidations_owed: &BTreeSet::new(),
+            closing: false,
+        })
+    }
+
+    /// An agent arriving in a project is judged in the folder it will use there, so a ticket
+    /// already working in that folder holds it back.
+    #[test]
+    fn an_arriving_agent_waits_behind_the_ticket_in_the_folder_it_will_use() {
+        let [away, local] = [agent(1), agent(2)];
+        let world = world(&[away, local], &[]);
+        let tickets = [
+            in_docs(ticket(1, CardStatus::Doing, Some(local), None)),
+            in_docs(ticket(2, CardStatus::Claimed, Some(away), Some(10))),
+        ];
+        placed(
+            &world,
+            &tickets,
+            &[(away, PROJECT), (local, DOCS)],
+            |facts| {
+                assert!(facts.next_starts(&BTreeSet::new()).is_empty());
+                assert_eq!(
+                    facts.wait_of(card(2)),
+                    Some(TicketWait::Ticket { card: card(1) })
+                );
+            },
+        );
+    }
+
+    /// An agent that holds a ticket in its own project does not leave it, and waits naming it.
+    #[test]
+    fn a_held_ticket_keeps_an_agent_from_leaving_its_project() {
+        let away = agent(1);
+        let world = world(&[away], &[]);
+        for status in [CardStatus::Doing, CardStatus::Blocked, CardStatus::Review] {
+            let tickets = [
+                ticket(1, status, Some(away), None),
+                in_docs(ticket(2, CardStatus::Claimed, Some(away), Some(10))),
+            ];
+            placed(&world, &tickets, &[(away, PROJECT)], |facts| {
+                assert_eq!(
+                    facts.agent_wait(away, DOCS),
+                    Some(TicketWait::Ticket { card: card(1) }),
+                    "{status:?}"
+                );
+            });
+        }
+    }
+
+    /// With tickets in two projects, an agent takes the first in queue order that can start now,
+    /// whatever the order of the project names.
+    #[test]
+    fn an_agent_takes_its_first_startable_ticket_across_projects() {
+        let [away, holder] = [agent(1), agent(2)];
+        let world = world(&[away, holder], &[]);
+        let ready = |holder_busy: bool| {
+            let mut tickets = vec![
+                ticket(1, CardStatus::Claimed, Some(away), Some(10)),
+                in_docs(ticket(2, CardStatus::Claimed, Some(away), Some(11))),
+            ];
+            if holder_busy {
+                tickets.push(ticket(3, CardStatus::Doing, Some(holder), None));
+            }
+            tickets
+        };
+        let agents = [(away, PROJECT), (holder, PROJECT)];
+        placed(&world, &ready(false), &agents, |facts| {
+            assert_eq!(
+                facts.next_starts(&BTreeSet::new()),
+                [card(1)],
+                "the earlier ticket first"
+            );
+            assert_eq!(
+                facts.wait_of(card(2)),
+                Some(TicketWait::Ticket { card: card(1) })
+            );
+        });
+        placed(&world, &ready(true), &agents, |facts| {
+            assert_eq!(
+                facts.next_starts(&BTreeSet::new()),
+                [card(2)],
+                "a ticket that cannot start does not hold the agent"
+            );
+        });
+    }
+
+    /// A card the pass already failed reserves neither its agent nor its tree, so the agent's
+    /// later ticket in the project it is in, and another agent's ticket in the folder the failed
+    /// card would have used, still start.
+    #[test]
+    fn a_card_the_pass_failed_reserves_neither_its_agent_nor_its_tree() {
+        let [away, local] = [agent(1), agent(2)];
+        let world = world(&[away, local], &[]);
+        let tickets = [
+            in_docs(ticket(1, CardStatus::Claimed, Some(away), Some(10))),
+            ticket(2, CardStatus::Claimed, Some(away), Some(11)),
+            in_docs(ticket(3, CardStatus::Claimed, Some(local), Some(12))),
+        ];
+        placed(
+            &world,
+            &tickets,
+            &[(away, PROJECT), (local, DOCS)],
+            |facts| {
+                assert_eq!(facts.next_starts(&BTreeSet::new()), [card(1)]);
+                assert_eq!(
+                    facts.next_starts(&BTreeSet::from([card(1)])),
+                    [card(2), card(3)]
+                );
+            },
+        );
+    }
+
+    /// While a recovery invalidation is owed, a move waits and the ticket says the agent is busy.
+    #[test]
+    fn an_owed_invalidation_makes_a_move_wait_as_busy() {
+        let away = agent(1);
+        let world = world(&[away], &[]);
+        let tickets = [in_docs(ticket(
+            1,
+            CardStatus::Claimed,
+            Some(away),
+            Some(10),
+        ))];
+        let hires = BTreeMap::from([(away, PROJECT.to_owned())]);
+        let working = BTreeSet::new();
+        for (owed, wait) in [(false, None), (true, Some(TicketWait::AgentBusy))] {
+            let owed = if owed {
+                BTreeSet::from([away])
+            } else {
+                BTreeSet::new()
+            };
+            let facts = Facts {
+                world: &world,
+                tickets: &tickets,
+                hires: &hires,
+                working: &working,
+                invalidations_owed: &owed,
+                closing: false,
+            };
+            assert_eq!(facts.wait_of(card(1)), wait);
+            assert_eq!(
+                facts.agent_wait(away, PROJECT),
+                None,
+                "its own project is unaffected"
+            );
+        }
     }
 }

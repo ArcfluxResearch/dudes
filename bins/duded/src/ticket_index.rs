@@ -88,7 +88,7 @@ impl TicketIndex {
         );
         ensure!(
             self.hires.get(agent) == Some(&Some(ticket.project.clone())),
-            "a ticket start names an agent that was not hired into the ticket's project"
+            "a ticket start names an agent that is not in the ticket's project"
         );
         ensure!(
             goal.predicate == ticket.check.predicate,
@@ -189,6 +189,9 @@ impl TicketIndex {
                     ticket.holder = None;
                 }
             }),
+            Record::AgentMoved { agent, to } => {
+                self.hires.insert(*agent, Some(to.workspace.id.clone()));
+            }
             Record::TicketRemoved { card, .. } => self.with(*card, |ticket| ticket.removed = true),
             Record::AgentRetired { id, .. } => {
                 for ticket in self.tickets.values_mut() {

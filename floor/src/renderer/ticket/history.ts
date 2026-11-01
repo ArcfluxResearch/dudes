@@ -121,7 +121,7 @@ export function decodeHistory(events: unknown, omitted: unknown): TicketHistory 
 
 /** Why a ticket moved into Needs you, in a few words. */
 const MOVED: Readonly<Record<TicketReason, string>> = Object.freeze({
-  project_unavailable: 'its project is not set up any more',
+  project_unavailable: 'the agent could not start it in its project',
   check_cannot_run: 'the completion check could not run',
   ceiling_required: 'a spending limit is needed',
   reserve_missing: 'a spending reserve is missing',

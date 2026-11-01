@@ -59,6 +59,9 @@ impl World {
             .repositories
             .as_ref()
             .ok_or(RecoveryStateError::Binding)?;
+        if turn.agent != binding.work.agent {
+            return Err(RecoveryStateError::Binding);
+        }
         if !repositories.matches_hire(agent.mcp.hire_lsn, &agent.repositories) {
             return Err(RecoveryStateError::Hire);
         }
