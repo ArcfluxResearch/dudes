@@ -35,7 +35,7 @@ import { currentFloorSession } from '../../session.ts';
 import { AGENT_ID, getFloorState } from '../floor/store.ts';
 import type { FloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
-import { HIRE_ENGINES, hireLimitText, isHireEngine, decodeProjectHireTarget, groupPinsModel } from './catalog.ts';
+import { HIRE_ENGINES, hireLimitText, isHireEngine, snapshotCurrent, decodeProjectHireTarget, groupPinsModel } from './catalog.ts';
 import type { EnrolledWorkspace, HireEngine, OnboardingCatalog, ProjectHireTarget } from './catalog.ts';
 import { floorFetch } from '../../transport.ts';
 
@@ -666,7 +666,7 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
 
 /** Whether a snapshot taken after `sinceEpoch` is the view on screen now. */
 export function freshSince(floor: FloorState, sinceEpoch: number): boolean {
-  return floor.phase === 'live' && floor.snapshotEpoch === floor.epoch && floor.snapshotEpoch > sinceEpoch;
+  return snapshotCurrent(floor) && floor.snapshotEpoch > sinceEpoch;
 }
 
 /**

@@ -582,7 +582,8 @@ impl HireLimitView {
     }
 }
 
-/// The hires a session made on the latest UTC day it hired on.
+/// The hires a session made on the latest UTC day it hired on. A record stamped
+/// on an earlier day, after a clock stepped back, leaves that count alone.
 #[derive(Clone, Copy, Debug)]
 struct DayCount {
     day: i64,
@@ -633,18 +634,7 @@ impl OnboardingIndex {
             if self.attempts.contains_key(&metadata.attempt_id) {
                 bail!("duplicate browser onboarding attempt in journal");
             }
-            let day = utc_day(entry.at);
-            let count = self
-                .hires_per_session
-                .entry(metadata.session_digest)
-                .or_insert(DayCount { day, hires: 0 });
-            if count.day != day {
-                *count = DayCount { day, hires: 0 };
-            }
-            count.hires = count
-                .hires
-                .checked_add(1)
-                .context("browser hire count overflow")?;
+            self.count_hire(metadata.session_digest, entry.at)?;
             self.attempts.insert(
                 metadata.attempt_id,
                 Attempt {
@@ -653,6 +643,24 @@ impl OnboardingIndex {
                     project,
                 },
             );
+        }
+        Ok(())
+    }
+
+    fn count_hire(&mut self, session: Hex32, at: Timestamp) -> Result<()> {
+        let day = utc_day(at);
+        let count = self
+            .hires_per_session
+            .entry(session)
+            .or_insert(DayCount { day, hires: 0 });
+        if day > count.day {
+            *count = DayCount { day, hires: 0 };
+        }
+        if day == count.day {
+            count.hires = count
+                .hires
+                .checked_add(1)
+                .context("browser hire count overflow")?;
         }
         Ok(())
     }
@@ -1254,6 +1262,24 @@ fn valid_checks(profile: &Profile) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_record_stamped_before_the_latest_day_leaves_that_days_count_alone() {
+        let session = Hex32::new([7; 32]);
+        let day = |n: i64| Timestamp::from_unix_millis(n * MILLIS_PER_DAY + 1);
+        let mut index = OnboardingIndex::default();
+        for _ in 0..BROWSER_HIRES_PER_DAY {
+            index.count_hire(session, day(20_000)).unwrap();
+        }
+        index.count_hire(session, day(19_999)).unwrap();
+        assert!(index.day_limit_reached(session, day(20_000)));
+        assert_eq!(
+            index.hires_today(session, day(20_000)),
+            BROWSER_HIRES_PER_DAY
+        );
+        index.count_hire(session, day(20_001)).unwrap();
+        assert_eq!(index.hires_today(session, day(20_001)), 1);
+    }
 
     fn project_request() -> serde_json::Value {
         serde_json::json!({"attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",

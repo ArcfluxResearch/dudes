@@ -80,16 +80,29 @@ test('Hire refreshes the snapshot only once the limit has lifted', async () => {
 
 test('while the page reconnects after the limit lifts, the entry waits instead of pointing at Settings', async () => {
   applyServerFrame(snapshot({ hire_limit: LIMIT }), getFloorState().epoch);
-  const floor = { ...getFloorState(), settings: null, hireLimit: null, onboarding: null };
+  const floor = { ...getFloorState(), phase: 'resyncing', settings: null, hireLimit: null, onboarding: null };
   const server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-hire-limit'),
     server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   try {
     const { HireEntry } = await server.ssrLoadModule('/src/renderer/onboarding/HireEntry.tsx');
-    const show = (waiting) => renderToStaticMarkup(createElement(HireEntry, { floor, id: 'hire-open', onAddAgent() {}, folded: true, waiting }));
-    assert.match(show(false), /Check Engines and Projects in Settings/);
-    const html = show(true);
+    const html = renderToStaticMarkup(createElement(HireEntry, { floor, id: 'hire-open', onAddAgent() {}, folded: true }));
     assert.match(html, /Waiting for a snapshot from the daemon\./);
     assert.doesNotMatch(html, /Settings/);
+  } finally { await server.close(); }
+});
+
+test('a stale snapshot never shows the Settings text, and a current one without a catalog still does', async () => {
+  applyServerFrame(snapshot({}), getFloorState().epoch);
+  const current = getFloorState();
+  const server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-hire-limit'),
+    server: { middlewareMode: true, hmr: false }, appType: 'custom' });
+  try {
+    const { hireUnavailable } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
+    const base = { ...current, settings: null, onboarding: null, hireLimit: null };
+    for (const stale of [{ phase: 'resyncing' }, { snapshotEpoch: current.epoch - 1 }]) {
+      assert.equal(hireUnavailable({ ...base, ...stale }), 'Waiting for a snapshot from the daemon.');
+    }
+    assert.match(hireUnavailable({ ...base, phase: 'live', snapshotEpoch: current.epoch }), /Check Engines and Projects in Settings/);
   } finally { await server.close(); }
 });
 
@@ -115,9 +128,7 @@ test('the dialog says nothing about Settings or reloading while it waits for the
   try {
     const { HireWizardView } = await server.ssrLoadModule('/src/renderer/onboarding/HireWizard.tsx');
     const { getHireState } = await server.ssrLoadModule('/src/renderer/onboarding/hire.ts');
-    const show = (waiting) => renderToStaticMarkup(createElement(HireWizardView, { hire: getHireState(), floor, onClose() {}, waiting }));
-    assert.match(show(false), /Check Engines and Projects in Settings/);
-    const html = show(true);
+    const html = renderToStaticMarkup(createElement(HireWizardView, { hire: getHireState(), floor, onClose() {} }));
     assert.match(html, /Waiting for a snapshot from the daemon\./);
     assert.doesNotMatch(html, /Settings|Reload/);
   } finally { await server.close(); }

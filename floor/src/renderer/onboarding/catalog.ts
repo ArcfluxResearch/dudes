@@ -291,6 +291,11 @@ export function sameHireLimit(a: HireLimit | null, b: HireLimit | null): boolean
   return a === b || (a !== null && b !== null && a.perDay === b.perDay && a.reopensAt.getTime() === b.reopensAt.getTime());
 }
 
+/** Whether the page holds the snapshot of its current stream; a stale one carries no catalog and no limit. */
+export function snapshotCurrent(floor: { readonly phase: string; readonly snapshotEpoch: number; readonly epoch: number }): boolean {
+  return floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;
+}
+
 /** Whether the moment the limit lifts has passed, the only time a fresh snapshot can change the answer. */
 export function hireLimitElapsed(limit: HireLimit, now: number): boolean {
   return now >= limit.reopensAt.getTime();

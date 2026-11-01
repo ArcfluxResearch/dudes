@@ -12,7 +12,7 @@ import { handFocusOnLeave } from '../focus.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
-import { hireUnavailable, UnavailableControls } from '../settings/SettingsView.tsx';
+import { hireUnavailable, UnavailableControls, WAITING_FOR_SNAPSHOT } from '../settings/SettingsView.tsx';
 import { INSTALL_COMMANDS, rowFor } from '../setup/daemon.ts';
 import { changeSetting } from '../settings/edit.ts';
 import { copyToClipboard } from '../setup/SetupView.tsx';
@@ -22,7 +22,7 @@ import { EngineSignIn } from '../login/EngineSignIn.tsx';
 import type { ModelItem, ProviderRow } from '../setup/daemon.ts';
 import { ModelListBar } from '../model/ModelListBar.tsx';
 import { modelItems, searchModels } from '../model/lists.ts';
-import { groupPinsModel, HIRE_ENGINES, hireLimitText, isHireEngine } from './catalog.ts';
+import { groupPinsModel, HIRE_ENGINES, hireLimitText, isHireEngine, snapshotCurrent } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
 import {
   LIMITS, NO_PROJECT_LIST, agentsIn, checkHireStatus, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenWorkspace,
@@ -188,7 +188,7 @@ function ModelChoice({ engine, items, draft, frozen, configured, fixed, invalid 
 /** Why Hire cannot be pressed right now, or `null` when it can. */
 function unavailable(floor: FloorState): string | null {
   if (floor.phase === 'closed') return 'The Floor stream is disconnected, so Hire is unavailable.';
-  if (floor.phase !== 'live' || floor.snapshotEpoch !== floor.epoch) return 'Waiting for a snapshot from the daemon.';
+  if (!snapshotCurrent(floor)) return WAITING_FOR_SNAPSHOT;
   if (floor.stale) return 'The view is unconfirmed, so Hire waits for the stream.';
   if (floor.onboarding === null) {
     return floor.hireLimit === null ? NO_PROJECT_LIST : hireLimitText(floor.hireLimit);
@@ -196,23 +196,20 @@ function unavailable(floor: FloorState): string | null {
   return null;
 }
 
-export function HireWizard({ floor, onClose, onSettings, waiting = false }: {
+export function HireWizard({ floor, onClose, onSettings }: {
   readonly floor: FloorState;
   readonly onClose: () => void;
   readonly onSettings?: () => void;
-  /** The page is reconnecting to learn whether a daily limit has lifted, so no reason is known yet. */
-  readonly waiting?: boolean;
 }) {
   const hire = useSyncExternalStore(subscribeToHire, getHireState, getHireState);
-  return <HireWizardView hire={hire} floor={floor} onClose={onClose} onSettings={onSettings} waiting={waiting} />;
+  return <HireWizardView hire={hire} floor={floor} onClose={onClose} onSettings={onSettings} />;
 }
 
-export function HireWizardView({ hire, floor, onClose, onSettings, waiting = false }: {
+export function HireWizardView({ hire, floor, onClose, onSettings }: {
   readonly hire: HireState;
   readonly floor: FloorState;
   readonly onClose: () => void;
   readonly onSettings?: () => void;
-  readonly waiting?: boolean;
 }) {
   return (
     <section className="flex flex-col font-sans text-ink" id="hire-wizard" data-hire-wizard="true" aria-labelledby="hire-title">
@@ -222,9 +219,9 @@ export function HireWizardView({ hire, floor, onClose, onSettings, waiting = fal
         {hire.outcome === null ? null : <Button ref={handFocusOnLeave}
           data-focus-on-leave="hire-open" onClick={onClose}>Close</Button>}
       </header>
-      {waiting || (floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false)
+      {(floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false)
         ? null : <div className="px-6 pt-4 max-[641px]:px-4"><UnavailableControls floor={floor} control="hire" /></div>}
-      {hire.outcome === null ? <HireForm hire={hire} floor={floor} onClose={onClose} onSettings={onSettings} waiting={waiting} />
+      {hire.outcome === null ? <HireForm hire={hire} floor={floor} onClose={onClose} onSettings={onSettings} />
         : <HireAnswer hire={hire} floor={floor} onClose={onClose} />}
     </section>
   );
@@ -236,12 +233,11 @@ function Actions({ children }: { readonly children: ReactNode }) {
     className="sticky bottom-0 z-10 flex flex-wrap justify-end gap-2 border-t border-line bg-surface px-6 py-3 max-[641px]:px-4">{children}</footer>;
 }
 
-function HireForm({ hire, floor, onClose, onSettings, waiting }: {
+function HireForm({ hire, floor, onClose, onSettings }: {
   readonly hire: HireState;
   readonly floor: FloorState;
   readonly onClose: () => void;
   readonly onSettings?: () => void;
-  readonly waiting: boolean;
 }) {
   const catalog = floor.onboarding;
   const noProject = catalog === null && noProjects(floor);
@@ -330,7 +326,7 @@ function HireForm({ hire, floor, onClose, onSettings, waiting }: {
           )}
           {hire.section !== 'workspace' ? null : (
             <>
-              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? (floor.hireLimit === null && !waiting ? <p className={NOTE}>{NO_PROJECT_LIST}</p> : null) : (
+              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? (floor.hireLimit === null && snapshotCurrent(floor) ? <p className={NOTE}>{NO_PROJECT_LIST}</p> : null) : (
                 <fieldset className={FIELDSET} aria-invalid={flagged('workspace_id')}
                   aria-describedby={described('workspace_id')}>
                   <legend className={LEGEND}>Which project?</legend>

@@ -24,7 +24,7 @@ import { refreshFloorSnapshot } from './renderer/floor/stream';
 import { Dialog, Notice } from './ui/index.ts';
 import { HireWizard } from './renderer/onboarding/HireWizard';
 import { HireEntry, hireSwitchOn } from './renderer/onboarding/HireEntry';
-import { hireLimitElapsed } from './renderer/onboarding/catalog';
+import { hireLimitElapsed, snapshotCurrent } from './renderer/onboarding/catalog';
 import { FirstRunGuide } from './renderer/setup/FirstRunGuide';
 import { NotificationOffer } from './renderer/NotificationOffer.tsx';
 import { FirstTask } from './renderer/setup/FirstTask.tsx';
@@ -158,16 +158,12 @@ function SignedInShell() {
   const { signOutFailed } = useSyncExternalStore(subscribeToDevices, getDevicesState, getDevicesState);
   const signOut = () => { void signOutHere(); };
   const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
-  const listIsCurrent = floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;
-  useEffect(() => {
-    if (listIsCurrent) setReopening(false);
-  }, [listIsCurrent]);
+  const listIsCurrent = snapshotCurrent(floor);
   useEffect(() => {
     if (listIsCurrent) void loadDevices();
   }, [listIsCurrent, floor.epoch]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hiring, setHiring] = useState(false);
-  const [reopening, setReopening] = useState(false);
   const [guide, setGuide] = useState<'open' | 'closed'>('closed');
   const [archiveHireKept, setArchiveHireKept] = useState(false);
   const [officeBar, setOfficeBar] = useState<HTMLDivElement | null>(null);
@@ -446,7 +442,7 @@ function SignedInShell() {
     hireOpener.current = opener;
     prepareHire(floor);
     setHiring(true);
-    if (floor.hireLimit !== null && hireLimitElapsed(floor.hireLimit, Date.now())) setReopening(refreshFloorSnapshot());
+    if (floor.hireLimit !== null && hireLimitElapsed(floor.hireLimit, Date.now())) refreshFloorSnapshot();
   }
 
   function openSettingsFromHire(): void {
@@ -614,7 +610,7 @@ function SignedInShell() {
           selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent}
           onOpenQuestion={openQuestion} onOpenTicket={openCard} sheet hidden={fullPanel}
           addAgent={floor.agents.length === 0 && hireSwitchOn(floor) ? null
-            : <HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded waiting={reopening} />} /> : null}
+            : <HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
         {view === null || view === 'overview' || focused ? null : <Control key={view} floor={floor} view={view}
           onClose={closeView} onView={openView}
           onReviewRecovery={reviewRecovery} onOpenGit={openAgentChanges} onHire={openHire}
@@ -678,7 +674,7 @@ function SignedInShell() {
         }}
         onPointerCancel={() => { backdropPress.current = null; }}>
         {archiveHireKept ? <div className="px-6 pt-4"><Notice tone="warn" role="status">The current Hire is kept. Resolve it before preparing another agent.</Notice></div> : null}
-        <HireWizard floor={floor} onClose={() => closeHire()} onSettings={openSettingsFromHire} waiting={reopening} />
+        <HireWizard floor={floor} onClose={() => closeHire()} onSettings={openSettingsFromHire} />
       </Dialog> : null}
     </main></TicketNoticeHost>
   );
