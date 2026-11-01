@@ -1640,3 +1640,99 @@ fn a_reserved_new_turn_refuses_attached_issue_before_persistent_and_world_mutati
         )
     );
 }
+
+fn project_prefix(moves: bool) -> (Prefix, RecoveryBinding) {
+    let mut prefix = Prefix::new();
+    let mut record = samples::record(RecordKind::AgentHired);
+    let Record::AgentHired {
+        id,
+        provider,
+        worktree,
+        workspace,
+        ..
+    } = &mut record
+    else {
+        unreachable!()
+    };
+    *id = agent();
+    *provider = Provider::Codex;
+    *worktree = None;
+    *workspace = Some(dudes_proto::record::RecordedWorkspace {
+        id: "service".into(),
+        label: "Service".into(),
+    });
+    let hired = prefix.append(record);
+    let mut current = hired;
+    if moves {
+        current = prefix.append(Record::AgentMoved {
+            agent: agent(),
+            to: dudes_proto::placement::AgentMove {
+                cwd: "/repo/billing".into(),
+                workspace: dudes_proto::record::RecordedWorkspace {
+                    id: "billing".into(),
+                    label: "Billing".into(),
+                },
+                worktree: None,
+                budget: dudes_proto::AgentBudget {
+                    usd_per_day: None,
+                    tokens_per_day: None,
+                },
+            },
+        });
+    }
+    prefix.append(Record::GoalSet {
+        agent: agent(),
+        goal: definition(command()),
+        browser_onboarding: None,
+        browser_goal: None,
+        goal_replacement: None,
+    });
+    let issue = prefix.issue(Vec::new());
+    (
+        prefix,
+        RecoveryBinding {
+            work: RecoveryWork {
+                agent: agent(),
+                goal: goal(),
+                turn: turn(),
+            },
+            issue_lsn: issue,
+            hired_lsn: current,
+            ticket: None,
+            worktree: None,
+            provider: Provider::Codex,
+            model_selection: Some(ModelSelection::provider_default()),
+        },
+    )
+}
+
+/// A move makes its position the agent's hire position in the World and in the saved projection,
+/// and recovery resolves a hire position to a hire record. Until recovery can name a move as that
+/// source, a crashed turn of a moved agent is refused by both folds, never bound to the wrong hire.
+#[test]
+fn a_moved_agents_recovery_binding_is_refused_by_both_folds_and_an_unmoved_one_is_not() {
+    let (mut unmoved, binding) = project_prefix(false);
+    unmoved.facts(&binding).unwrap();
+
+    let (mut moved, binding) = project_prefix(true);
+    let original = unmoved.world.agents[&agent()].mcp.hire_lsn;
+    assert_eq!(moved.world.agents[&agent()].mcp.hire_lsn, binding.hired_lsn);
+    assert_eq!(
+        moved.persistent.agent(agent()).unwrap().unwrap().hired_lsn,
+        binding.hired_lsn
+    );
+    for hired_lsn in [binding.hired_lsn, original] {
+        let target = RecoveryBinding {
+            hired_lsn,
+            ..binding.clone()
+        };
+        assert!(moved.world.recovery_facts(&target).is_err());
+        assert!(
+            moved
+                .writer
+                .checked_recovery(&mut moved.persistent)
+                .and_then(|store| store.facts(&target))
+                .is_err()
+        );
+    }
+}
