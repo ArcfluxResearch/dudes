@@ -418,6 +418,13 @@ enum PumpFailure {
     Uncertain,
 }
 
+/// What the Floor may offer a session that wants to hire.
+enum HireOffer {
+    Open(crate::floor_actions::OnboardingView),
+    DayLimit(crate::floor_actions::HireLimitView),
+    Unavailable,
+}
+
 /// Release-unreachable cut points for onboarding ordering tests.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2313,7 +2320,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .as_ref()
             .ok_or_else(|| "Floor stream unavailable".to_owned())?;
         let live = self.ctx.switches.load();
-        let onboarding = self.onboarding_catalog(session);
+        let (onboarding, hire_limit) = match self.onboarding_offer(session) {
+            HireOffer::Open(view) => (Some(view), None),
+            HireOffer::DayLimit(limit) => (None, Some(limit)),
+            HireOffer::Unavailable => (None, None),
+        };
         let checks = (live.hire || live.control.goal()).then(|| self.ctx.enrollment.checks_view());
         let mut switches = dudes_proto::rpc::floor::SettingsSwitches::default();
         switches.answer = live.answer;
@@ -2351,6 +2362,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 |day| crate::floor::finished_in(projections, day),
                 crate::floor_stream::Siblings {
                     onboarding: onboarding.as_ref(),
+                    hire_limit: hire_limit.as_ref(),
                     checks: checks.as_ref(),
                     answer: live.answer.then_some(&crate::floor_answer::ANSWER_VIEW),
                     control: live
@@ -2576,15 +2588,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
-    fn onboarding_catalog(
-        &self,
-        session: &crate::floor_session::SessionIdentity,
-    ) -> Option<crate::floor_actions::OnboardingView> {
-        if !self.ctx.switches.load().hire
-            || self.ctx.journal_writes_stopped()
-            || self.ctx.onboarding_index.count(session.digest()) >= 4
+    fn onboarding_offer(&self, session: &crate::floor_session::SessionIdentity) -> HireOffer {
+        if !self.ctx.switches.load().hire || self.ctx.journal_writes_stopped() {
+            return HireOffer::Unavailable;
+        }
+        let now = self.ctx.clock.now();
+        if self
+            .ctx
+            .onboarding_index
+            .day_limit_reached(session.digest(), now)
         {
-            return None;
+            return HireOffer::DayLimit(crate::floor_actions::HireLimitView::reopening_after(now));
         }
         let offered = self
             .ctx
@@ -2607,7 +2621,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             self.browser_repository_offer(profile)
                 .map(|group| (profile, group))
         }));
-        (!view.is_empty() && view.fits()).then_some(view)
+        if view.is_empty() || !view.fits() {
+            return HireOffer::Unavailable;
+        }
+        HireOffer::Open(view)
     }
 
     fn onboarding_profile_eligible(&self, profile: &crate::floor_actions::Profile) -> bool {
@@ -2813,7 +2830,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
     ) -> Result<Profile, OnboardRefusal> {
-        if !self.ctx.switches.load().hire || self.ctx.onboarding_index.count(session.digest()) >= 4
+        if !self.ctx.switches.load().hire
+            || self
+                .ctx
+                .onboarding_index
+                .day_limit_reached(session.digest(), self.ctx.clock.now())
         {
             return Err(OnboardRefusal::Forbidden);
         }
@@ -9034,7 +9055,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 mailbox.apply_entry(lsn, entry);
             }
             self.last_lsn.store(lsn.0, Ordering::Relaxed);
-            self.index_browser_record(lsn, &entry.record)?;
+            self.index_browser_record(lsn, entry)?;
             let output_notice = self.output_notice(&entry.record)?;
             if let Some(streams) = self.floor_streams.clone() {
                 let snapshot = self
@@ -9082,9 +9103,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         Ok(committed)
     }
 
-    fn index_browser_record(&mut self, lsn: Lsn, record: &Record) -> Result<()> {
+    fn index_browser_record(&mut self, lsn: Lsn, entry: &Entry) -> Result<()> {
+        let record = &entry.record;
         self.onboarding_index
-            .apply(record)
+            .apply(entry)
             .context("indexing durable browser onboarding record")?;
         self.answer_index
             .apply(record)

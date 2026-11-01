@@ -286,6 +286,9 @@ struct SnapshotMessage<'a> {
 pub(crate) struct Siblings<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) onboarding: Option<&'a OnboardingView>,
+    /// Present only when the session's daily hire limit is why `onboarding` is absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) hire_limit: Option<&'a crate::floor_actions::HireLimitView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) checks: Option<&'a dudes_proto::rpc::floor::ChecksView>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -319,6 +322,7 @@ pub(crate) struct Siblings<'a> {
 impl Siblings<'_> {
     fn is_empty(&self) -> bool {
         self.onboarding.is_none()
+            && self.hire_limit.is_none()
             && self.answer.is_none()
             && self.chat.is_none()
             && self.control.is_none()
@@ -863,6 +867,7 @@ impl FloorStreams {
             state.subscriptions.push(Arc::downgrade(&queue));
             let siblings = Siblings {
                 onboarding: siblings.onboarding,
+                hire_limit: siblings.hire_limit,
                 checks: siblings.checks,
                 answer: siblings.answer,
                 control: siblings.control,

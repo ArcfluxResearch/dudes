@@ -35,7 +35,7 @@ import { currentFloorSession } from '../../session.ts';
 import { AGENT_ID, getFloorState } from '../floor/store.ts';
 import type { FloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
-import { HIRE_ENGINES, isHireEngine, decodeProjectHireTarget, groupPinsModel } from './catalog.ts';
+import { HIRE_ENGINES, hireLimitText, isHireEngine, snapshotCurrent, decodeProjectHireTarget, groupPinsModel } from './catalog.ts';
 import type { EnrolledWorkspace, HireEngine, OnboardingCatalog, ProjectHireTarget } from './catalog.ts';
 import { floorFetch } from '../../transport.ts';
 
@@ -64,7 +64,7 @@ export function lengthNote(value: string, limit: number): string | null {
 
 export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine' | 'model';
 
-export type HireOffer = Pick<FloorState, 'onboarding' | 'agents' | 'daemon'>;
+export type HireOffer = Pick<FloorState, 'onboarding' | 'hireLimit' | 'agents' | 'daemon'>;
 
 /** Whether the confirmed view says tickets are off, so nobody can give a new agent a task from the Floor. */
 export function ticketsOff(floor: FloorState): boolean {
@@ -323,7 +323,7 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
   const workspace = chosenWorkspace(draft, catalog);
   if (catalog === null) {
     problems.push({ field: 'workspace_id', section: 'workspace',
-      message: NO_PROJECT_LIST });
+      message: offer.hireLimit === null ? NO_PROJECT_LIST : hireLimitText(offer.hireLimit) });
   } else if (draft.workspaceId === '') {
     problems.push({ field: 'workspace_id', section: 'workspace', message: 'Choose a project.' });
   } else if (workspace === null) {
@@ -666,7 +666,7 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
 
 /** Whether a snapshot taken after `sinceEpoch` is the view on screen now. */
 export function freshSince(floor: FloorState, sinceEpoch: number): boolean {
-  return floor.phase === 'live' && floor.snapshotEpoch === floor.epoch && floor.snapshotEpoch > sinceEpoch;
+  return snapshotCurrent(floor) && floor.snapshotEpoch > sinceEpoch;
 }
 
 /**

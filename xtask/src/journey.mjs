@@ -407,6 +407,38 @@ export class Journey {
     await this.viewportHeights(16);
   }
 
+  /** The journey's hire was the first of the day; seven more from the page reach the daily limit, and the page says so. */
+  async hireToTheLimit() {
+    const says = 'This browser has hired 8 agents today. You can hire more after ';
+    for (let count = 2; count <= 8; count += 1) {
+      await this.click('#hire-open');
+      await this.until(`Boolean(document.querySelector('#hire-name'))`, `hire ${count}: the dialog did not open`);
+      await this.fill('#hire-name', `Limit agent ${count}`);
+      await this.clickButton('Next', '[data-hire-action="next"]');
+      await this.until(`Boolean(document.querySelector('input[name="workspace_id"]'))`, `hire ${count}: no project was offered`);
+      await this.click('input[name="workspace_id"]');
+      await this.clickButton('Next', '[data-hire-action="next"]');
+      await this.until(`Boolean(document.querySelector('input[name="engine"][value="codex"]'))`, `hire ${count}: no engine was offered`);
+      await this.click('input[name="engine"][value="codex"]');
+      await this.click('[data-hire-action="submit"]');
+      await this.until(`!document.querySelector('#hire-wizard')`, `hire ${count}: the dialog did not close after the hire`);
+    }
+    await this.click('#office-open');
+    await this.until(`document.querySelector('[data-hire-entry="limit"]')?.textContent.startsWith(${JSON.stringify(says)})`,
+      'Add agent does not say the day\'s limit was reached');
+    await this.screen('hire: add agent at the limit');
+    await this.click('#hire-open');
+    await this.until(`document.querySelector('#hire-wizard')?.innerText.includes(${JSON.stringify(says)})`,
+      'the Hire dialog does not say the day\'s limit was reached');
+    check(!/reload|restart/i.test(await this.evaluate(`document.querySelector('#hire-wizard').innerText`)),
+      'the limit text advises a reload or a restart');
+    await this.screen('hire: day limit');
+    await this.clickButton('Cancel', '#hire-wizard button');
+    await this.until(`!document.querySelector('#hire-wizard')`, 'the limit dialog did not close');
+    await this.click('#view-settings');
+    await this.until(`Boolean(document.querySelector('button[aria-label$="(this browser)"]'))`, 'Settings did not reopen after the hire limit');
+  }
+
   async otherScreens() {
     for (const name of ['projects', 'log', 'setup', 'settings']) {
       await this.click(`#view-${name}`);
@@ -462,6 +494,7 @@ export class Journey {
     await this.viewportHeights(1);
     await this.crowdedViewportHeights();
     await this.otherScreens();
+    await this.hireToTheLimit();
     await this.signOut();
     await this.finish();
   }

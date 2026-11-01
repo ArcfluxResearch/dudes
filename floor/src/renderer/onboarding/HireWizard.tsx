@@ -12,7 +12,7 @@ import { handFocusOnLeave } from '../focus.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
-import { UnavailableControls } from '../settings/SettingsView.tsx';
+import { hireUnavailable, UnavailableControls, WAITING_FOR_SNAPSHOT } from '../settings/SettingsView.tsx';
 import { INSTALL_COMMANDS, rowFor } from '../setup/daemon.ts';
 import { changeSetting } from '../settings/edit.ts';
 import { copyToClipboard } from '../setup/SetupView.tsx';
@@ -22,7 +22,7 @@ import { EngineSignIn } from '../login/EngineSignIn.tsx';
 import type { ModelItem, ProviderRow } from '../setup/daemon.ts';
 import { ModelListBar } from '../model/ModelListBar.tsx';
 import { modelItems, searchModels } from '../model/lists.ts';
-import { groupPinsModel, HIRE_ENGINES, isHireEngine } from './catalog.ts';
+import { groupPinsModel, HIRE_ENGINES, hireLimitText, isHireEngine, snapshotCurrent } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
 import {
   LIMITS, NO_PROJECT_LIST, agentsIn, checkHireStatus, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenWorkspace,
@@ -188,10 +188,10 @@ function ModelChoice({ engine, items, draft, frozen, configured, fixed, invalid 
 /** Why Hire cannot be pressed right now, or `null` when it can. */
 function unavailable(floor: FloorState): string | null {
   if (floor.phase === 'closed') return 'The Floor stream is disconnected, so Hire is unavailable.';
-  if (floor.phase !== 'live' || floor.snapshotEpoch !== floor.epoch) return 'Waiting for a snapshot from the daemon.';
+  if (!snapshotCurrent(floor)) return WAITING_FOR_SNAPSHOT;
   if (floor.stale) return 'The view is unconfirmed, so Hire waits for the stream.';
   if (floor.onboarding === null) {
-    return NO_PROJECT_LIST;
+    return floor.hireLimit === null ? NO_PROJECT_LIST : hireLimitText(floor.hireLimit);
   }
   return null;
 }
@@ -219,7 +219,7 @@ export function HireWizardView({ hire, floor, onClose, onSettings }: {
         {hire.outcome === null ? null : <Button ref={handFocusOnLeave}
           data-focus-on-leave="hire-open" onClick={onClose}>Close</Button>}
       </header>
-      {floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false
+      {(floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false)
         ? null : <div className="px-6 pt-4 max-[641px]:px-4"><UnavailableControls floor={floor} control="hire" /></div>}
       {hire.outcome === null ? <HireForm hire={hire} floor={floor} onClose={onClose} onSettings={onSettings} />
         : <HireAnswer hire={hire} floor={floor} onClose={onClose} />}
@@ -251,6 +251,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
   const withdrawn = workspace !== null && (floor.settings?.providers
     .some((name) => isHireEngine(name) && !workspace.engines.includes(name)) ?? false);
   const blocked = unavailable(floor) ?? missing;
+  const saidAbove = blocked !== null && hireUnavailable(floor) === blocked;
   // A missing or signed-out engine holds the wizard on Engine, where its reason, Sign in and Check again are.
   const stuck = hire.section === 'engine' && missing !== null;
   const frozen = hire.attempt !== null;
@@ -325,7 +326,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
           )}
           {hire.section !== 'workspace' ? null : (
             <>
-              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? <p className={NOTE}>{NO_PROJECT_LIST}</p> : (
+              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? (floor.hireLimit === null && snapshotCurrent(floor) ? <p className={NOTE}>{NO_PROJECT_LIST}</p> : null) : (
                 <fieldset className={FIELDSET} aria-invalid={flagged('workspace_id')}
                   aria-describedby={described('workspace_id')}>
                   <legend className={LEGEND}>Which project?</legend>
@@ -425,7 +426,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
             onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</button>}
       </Actions>
       {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <div className="px-6 pb-4 max-[641px]:px-4"><NoHireProjectHint floor={floor} /></div>)
-        : blocked === null || stuck ? null : <p className={cn(NOTE, 'px-6 pb-4 max-[641px]:px-4')} role="status">{blocked}</p>}
+        : blocked === null || stuck || saidAbove ? null : <p className={cn(NOTE, 'px-6 pb-4 max-[641px]:px-4')} role="status">{blocked}</p>}
     </>
   );
 }
@@ -516,7 +517,7 @@ function HireAnswer({ hire, floor, onClose }: {
       <div className="flex flex-col gap-4 p-6 max-[641px]:p-4">
         <AnswerBody outcome={outcome} hire={hire} floor={floor} />
         {!settled ? null : !fresh ? <p className={NOTE}>You can hire another once the Floor has refreshed.</p>
-          : floor.onboarding === null ? <p className={NOTE}>This session offers no further hires.</p> : null}
+          : floor.onboarding === null ? <p className={NOTE}>{floor.hireLimit === null ? 'This session offers no further hires.' : hireLimitText(floor.hireLimit)}</p> : null}
       </div>
       <Actions>
         {settled ? null : (
@@ -646,7 +647,7 @@ function AnswerBody({ outcome, hire, floor }: {
                 + 'again with the same attempt.'
               : floor.onboarding === null
                 ? 'Hiring is no longer available to this session. The daemon refused before any effect: the '
-                  + 'session may have used its four hires, or its enrollment is no longer eligible. No agent was hired.'
+                  + 'session may have reached its daily hire limit, or its enrollment is no longer eligible. No agent was hired.'
                 : !offered
                   ? 'This project is no longer offered. No agent was hired. Choose another project.'
                   : 'The daemon refused this Hire before any effect. No agent was hired.'}

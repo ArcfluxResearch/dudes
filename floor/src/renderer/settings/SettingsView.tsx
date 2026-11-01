@@ -13,7 +13,7 @@ import type { FloorState } from '../floor/store.ts';
 import type { SettingsReport } from './report.ts';
 import { engineName } from '../engines.ts';
 import { OFFICES } from '../office3d/offices.ts';
-import { formatUsdMicros } from '../onboarding/catalog.ts';
+import { formatUsdMicros, hireLimitText, snapshotCurrent } from '../onboarding/catalog.ts';
 import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import { getOfficePin, setOfficePin, subscribeToOfficePin } from '../view.ts';
 import { desktopNotificationPreference } from '../desktopNotifications.ts';
@@ -47,12 +47,16 @@ function spendingLimit(value: string | null, dollars = true): string {
   return value === null ? 'No limit' : dollars ? formatUsdMicros(value) : `${value} tokens`;
 }
 
+export const WAITING_FOR_SNAPSHOT = 'Waiting for a snapshot from the daemon.';
+
 /** Why this session is offered no Hire, or `null` when it is offered one. */
 export function hireUnavailable(floor: FloorState): string | null {
   if (floor.settings?.switches.hire === false) {
     return 'Hire is off. Turn on Hire agents under Floor switches in Settings.';
   }
   if (floor.onboarding !== null) return null;
+  if (floor.hireLimit !== null) return hireLimitText(floor.hireLimit);
+  if (!snapshotCurrent(floor)) return WAITING_FOR_SNAPSHOT;
   return 'Hire is unavailable. Check Engines and Projects in Settings.';
 }
 

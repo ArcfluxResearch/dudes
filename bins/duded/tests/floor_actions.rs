@@ -269,7 +269,7 @@ fn real_stub_seams_with(
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v11"
+    "/tests/fixtures/floor-release-v12"
 );
 
 fn enrolled_settings(fixture: &Fixture) -> duded::Settings {
@@ -1534,12 +1534,14 @@ fn a_browser_hire_is_complete_with_the_hire_alone() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
+const HIRE_ATTEMPT_ENDS: [&str; 10] = ["A", "E", "I", "M", "Q", "U", "Y", "c", "g", "k"];
+
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one authenticated session exercises each admission and cumulative hire gate"
 )]
-fn browser_admission_and_four_hire_limit_are_journal_derived() {
+fn browser_admission_and_daily_hire_limit_are_journal_derived() {
     let fixture = Fixture::new();
     let repo = fixture.state.path().join("enrolled-repo");
     std::fs::create_dir_all(repo.join(".git")).expect("repository marker");
@@ -1570,13 +1572,14 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
             mark: None,
         }],
     };
+    let clock = Arc::new(TestClock::new());
     let daemon = boot(
         &settings,
         seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
+            Arc::clone(&clock),
             Witness::default(),
         ),
     )
@@ -1617,19 +1620,22 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
     assert_eq!(fixture.records().len(), initial);
 
     let mut first = None;
-    for final_char in ["A", "E", "I", "M"] {
+    let mut last = None;
+    for final_char in &HIRE_ATTEMPT_ENDS[..8] {
         request["attempt_id"] = json!(format!("{}{}", "A".repeat(42), final_char));
         let (head, outcome) = post_onboard(&page, &request);
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         if first.is_none() {
             first = Some((request.clone(), outcome.clone()));
         }
-        if final_char == "I" {
+        last = Some((request.clone(), outcome));
+        if *final_char == "Y" {
             let (frame, _) = snapshot(&page);
             assert!(
                 frame["onboarding"].is_object(),
-                "three hires leave one slot"
+                "seven hires leave one slot"
             );
+            assert!(frame.get("hire_limit").is_none());
         }
     }
     let first_agent =
@@ -1642,7 +1648,7 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
             reason: "operator retired".into(),
         })))
         .expect("retire admitted");
-    request["attempt_id"] = json!(format!("{}Q", "A".repeat(42)));
+    request["attempt_id"] = json!(format!("{}g", "A".repeat(42)));
     let (head, body) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
     assert!(body.is_null());
@@ -1659,14 +1665,25 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
             )
         })
         .count();
-    assert_eq!(hires, 4);
+    assert_eq!(hires, 8);
     let (first_request, first_outcome) = first.expect("first hire");
     let (_, retry) = post_onboard(&page, &first_request);
     assert_eq!(retry, first_outcome);
+    let (last_request, last_outcome) = last.expect("eighth hire");
+    let (_, retry) = post_onboard(&page, &last_request);
+    assert_eq!(
+        retry, last_outcome,
+        "a retry of the eighth attempt is answered from the journal"
+    );
     let (frame, _) = snapshot(&page);
     assert!(
         frame.get("onboarding").is_none(),
-        "four durable hires hide this session's catalog"
+        "eight durable hires hide this session's catalog"
+    );
+    assert_eq!(
+        frame["hire_limit"],
+        json!({"per_day": 8, "reopens_at": "2026-08-23T00:00:00Z"}),
+        "the day's limit is why the catalog is absent"
     );
     let second_page = exchange(addr, &issue(&settings).bootstrap);
     let (other, _) = snapshot(&second_page);
@@ -1674,6 +1691,16 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
         other["onboarding"].is_object(),
         "a separate session has independent slots"
     );
+    assert!(other.get("hire_limit").is_none());
+    clock.advance(86_400_000);
+    let (next_day, _) = snapshot(&page);
+    assert!(
+        next_day["onboarding"].is_object() && next_day.get("hire_limit").is_none(),
+        "the next UTC day reopens Hire"
+    );
+    request["attempt_id"] = json!(format!("{}g", "A".repeat(42)));
+    let (head, _) = post_onboard(&page, &request);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -2789,7 +2816,7 @@ fn fresh_snapshot_omits_predicate_that_disappeared_after_enrollment() {
 }
 
 #[test]
-fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
+fn eighth_durable_hire_precedes_queued_session_catalog_snapshot() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
     let daemon = boot(
@@ -2811,23 +2838,23 @@ fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
-    for last in ["A", "E", "I"] {
+    for last in &HIRE_ATTEMPT_ENDS[..7] {
         request["attempt_id"] = json!(format!("{}{}", "A".repeat(42), last));
         let (head, _) = post_onboard(&page, &request);
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     }
     assert!(
         snapshot(&page).0["onboarding"].is_object(),
-        "three durable hires still show one available slot"
+        "seven durable hires still show one available slot"
     );
     pause.arm(OnboardingPausePoint::BetweenEffects);
-    request["attempt_id"] = json!(format!("{}M", "A".repeat(42)));
+    request["attempt_id"] = json!(format!("{}c", "A".repeat(42)));
     let owner_request = request.clone();
     let owner_page = Arc::clone(&page);
     let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
-        "fourth hire folded before its goal"
+        "eighth hire folded before its goal"
     );
     assert_eq!(
         fixture
@@ -2841,7 +2868,7 @@ fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
                 }
             ))
             .count(),
-        4
+        8
     );
     let (sent_tx, sent_rx) = std::sync::mpsc::channel();
     let read_page = Arc::clone(&page);
@@ -2851,7 +2878,7 @@ fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
         .recv_timeout(Duration::from_secs(3))
         .expect("snapshot subscribe sent while writer held");
     pause.release();
-    let (head, complete) = owner.join().expect("fourth Hire response");
+    let (head, complete) = owner.join().expect("eighth Hire response");
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(complete["state"], "complete");
     let (frame, _) = queued_snapshot
@@ -2859,14 +2886,14 @@ fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
         .expect("queued snapshot result")
         .expect("authenticated snapshot");
     assert!(
-        frame.get("onboarding").is_none(),
-        "the fourth committed hire omits the sibling"
+        frame.get("onboarding").is_none() && frame["hire_limit"]["per_day"] == 8,
+        "the eighth committed hire swaps the catalog for the limit"
     );
-    request["attempt_id"] = json!(format!("{}Q", "A".repeat(42)));
+    request["attempt_id"] = json!(format!("{}g", "A".repeat(42)));
     let (head, _) = post_onboard(&page, &request);
     assert!(
         head.starts_with("HTTP/1.1 403 Forbidden"),
-        "stale catalog cannot admit a fifth hire: {head}"
+        "stale catalog cannot admit a ninth hire: {head}"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -2896,7 +2923,7 @@ fn operator_current(
 }
 
 /// A browser's session carries its hire count across `dudes upgrade`: the count is rebuilt from the
-/// journal by the digest the imported session keeps, so four hires before the upgrade are still four
+/// journal by the digest the imported session keeps, so eight hires before the upgrade are still eight
 /// after it, and a session the upgrade did not carry starts from none.
 #[test]
 fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
@@ -2933,20 +2960,20 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let page = exchange(addr, &issue(&settings).bootstrap);
-    for last in ["A", "E", "I", "M"] {
+    for last in &HIRE_ATTEMPT_ENDS[..8] {
         let head = hire(&page, last);
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-        if last == "A" {
+        if *last == "A" {
             assert!(
                 snapshot(&page).0["onboarding"].is_object(),
                 "control: a session with one hire is still offered another"
             );
         }
     }
-    let head = hire(&page, "Q");
+    let head = hire(&page, "g");
     assert!(
         head.starts_with("HTTP/1.1 403 Forbidden"),
-        "control: a session that hired four times is refused a fifth: {head}"
+        "control: a session that hired eight times is refused a ninth: {head}"
     );
     let exported = operator_current(&settings, CurrentMethod::FloorSessionExport, None);
     // Stop only once the journal has stopped growing, so the next run replays a settled history.
@@ -2973,14 +3000,15 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
         Some(json!({ "exported": exported })),
     );
     assert_eq!(imported, json!({ "restored": 1 }));
-    let head = hire(&page, "U");
+    let head = hire(&page, "k");
     assert!(
         head.starts_with("HTTP/1.1 403 Forbidden"),
-        "the four hires before the upgrade still count: {head}"
+        "the eight hires before the upgrade still count: {head}"
     );
+    let (frame, _) = snapshot(&page);
     assert!(
-        snapshot(&page).0.get("onboarding").is_none(),
-        "the carried session is offered no further hire"
+        frame.get("onboarding").is_none() && frame["hire_limit"]["per_day"] == 8,
+        "the carried session is offered no further hire today"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -12025,7 +12053,7 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
             "workspaces": [{ "workspace_id": "repo_1", "label": "Service workspace",
                 "agent_usd_per_day_micros": "10000000", "agent_tokens_per_day": "123",
                 "goal_usd_micros": "5000000", "goal_tokens": "456" }],
-            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 11 }
+            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 12 }
         })
     );
     let bytes = frame["settings"].to_string();
