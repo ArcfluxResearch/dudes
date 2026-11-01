@@ -391,3 +391,33 @@ fn an_unconfined_hire_witness_folds_like_a_confined_one_under_its_own_kind() {
     wrong.reference.kind = RecordKind::AgentHiredWithRepositories;
     assert_eq!(wrong.validate(), Err(RecoveryHistoryError::Identity));
 }
+
+#[test]
+fn a_move_is_a_place_witness_owned_by_its_agent_and_carries_no_provider_of_its_own() {
+    let Record::AgentHired { id, provider, .. } = samples::record(RecordKind::AgentHired) else {
+        unreachable!()
+    };
+    let to = crate::placement::AgentMove {
+        cwd: "/repo/billing".into(),
+        workspace: crate::record::RecordedWorkspace {
+            id: "billing".into(),
+            label: "Billing".into(),
+        },
+        worktree: None,
+        budget: crate::AgentBudget {
+            usd_per_day: None,
+            tokens_per_day: None,
+        },
+    };
+    let moved = witness(Lsn(30), &Record::AgentMoved { agent: id, to }, hash)
+        .unwrap()
+        .unwrap();
+    moved.validate().unwrap();
+    assert_eq!(moved.reference.owner, RecoveryWitnessOwner::Agent(id));
+    assert!(moved.is_place_of(provider, None));
+    assert!(!moved.is_place_of(provider, Some(WorktreeId::from_bytes([1; 16]))));
+
+    let mut hired = moved;
+    hired.reference.kind = RecordKind::AgentHired;
+    assert_eq!(hired.validate(), Err(RecoveryHistoryError::Identity));
+}

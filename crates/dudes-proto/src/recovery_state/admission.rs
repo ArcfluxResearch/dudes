@@ -208,8 +208,7 @@ impl RecoveryCurrent<'_> {
             .at(requested.hired_lsn)
             .map_err(|_| RecoveryStateError::Binding)?;
         if source.reference().owner != RecoveryWitnessOwner::Agent(requested.work.agent)
-            || !matches!(source.evidence(), RecoveryEvidence::Hire { provider, worktree, .. }
-                if *provider == requested.provider && *worktree == requested.worktree)
+            || !source.is_place_of(requested.provider, requested.worktree)
             || self.repositories.hired_lsn() != requested.hired_lsn
         {
             return Err(RecoveryStateError::Binding);
@@ -219,8 +218,10 @@ impl RecoveryCurrent<'_> {
             .map_err(|_| RecoveryStateError::Binding)?;
         match (self.repositories.hire(), self.repositories.grant()) {
             (HireRepositories::Legacy(hire), None) => {
-                if source.reference().kind != RecordKind::AgentHired
-                    || hire.worktree() != requested.worktree
+                if !matches!(
+                    source.reference().kind,
+                    RecordKind::AgentHired | RecordKind::AgentMoved
+                ) || hire.worktree() != requested.worktree
                     || issued.grant().is_some()
                     || self.leases.len() != usize::from(requested.worktree.is_some())
                     || self.leases.iter().any(|lease| {
