@@ -19,7 +19,7 @@ pub(crate) struct Facts<'a> {
     pub(crate) world: &'a World,
     /// Every ticket on the board, with its card.
     pub(crate) tickets: &'a [(CardView, TicketRow)],
-    /// The project each agent was hired into, for the agents whose hire recorded one.
+    /// The project each agent works in now, for the agents whose hire recorded one.
     pub(crate) hires: &'a BTreeMap<AgentId, String>,
     /// The agents with a turn or a check run open, whoever started it.
     pub(crate) working: &'a BTreeSet<AgentId>,
@@ -1145,6 +1145,110 @@ mod tests {
             );
             assert_eq!(facts.tree_wait(PROJECT, None), None);
             assert_eq!(facts.next_tickets(PROJECT), [card(2), card(3)]);
+        });
+    }
+
+    const DOCS: &str = "docs";
+
+    fn in_docs(mut ticket: (CardView, TicketRow)) -> (CardView, TicketRow) {
+        ticket.1.repositories = DOCS.into();
+        ticket
+    }
+
+    fn placed<T>(
+        world: &World,
+        tickets: &[(CardView, TicketRow)],
+        agents: &[(AgentId, &str)],
+        read: impl FnOnce(&Facts<'_>) -> T,
+    ) -> T {
+        let hires = agents
+            .iter()
+            .map(|(id, project)| (*id, (*project).to_owned()))
+            .collect();
+        let working = BTreeSet::new();
+        read(&Facts {
+            world,
+            tickets,
+            hires: &hires,
+            working: &working,
+            closing: false,
+        })
+    }
+
+    /// An agent arriving in a project is judged in the folder it will use there, so a ticket
+    /// already working in that folder holds it back.
+    #[test]
+    fn an_arriving_agent_waits_behind_the_ticket_in_the_folder_it_will_use() {
+        let [away, local] = [agent(1), agent(2)];
+        let world = world(&[away, local], &[]);
+        let tickets = [
+            in_docs(ticket(1, CardStatus::Doing, Some(local), None)),
+            in_docs(ticket(2, CardStatus::Claimed, Some(away), Some(10))),
+        ];
+        placed(
+            &world,
+            &tickets,
+            &[(away, PROJECT), (local, DOCS)],
+            |facts| {
+                assert!(facts.next_starts().is_empty());
+                assert_eq!(
+                    facts.wait_of(card(2)),
+                    Some(TicketWait::Ticket { card: card(1) })
+                );
+            },
+        );
+    }
+
+    /// An agent that holds a ticket in its own project does not leave it, and waits naming it.
+    #[test]
+    fn a_held_ticket_keeps_an_agent_from_leaving_its_project() {
+        let away = agent(1);
+        let world = world(&[away], &[]);
+        for status in [CardStatus::Doing, CardStatus::Blocked, CardStatus::Review] {
+            let tickets = [
+                ticket(1, status, Some(away), None),
+                in_docs(ticket(2, CardStatus::Claimed, Some(away), Some(10))),
+            ];
+            placed(&world, &tickets, &[(away, PROJECT)], |facts| {
+                assert_eq!(
+                    facts.agent_wait(away, DOCS),
+                    Some(TicketWait::Ticket { card: card(1) }),
+                    "{status:?}"
+                );
+            });
+        }
+    }
+
+    /// With tickets in two projects, an agent takes the first in queue order that can start now,
+    /// whatever the order of the project names.
+    #[test]
+    fn an_agent_takes_its_first_startable_ticket_across_projects() {
+        let [away, holder] = [agent(1), agent(2)];
+        let world = world(&[away, holder], &[]);
+        let ready = |holder_busy: bool| {
+            let mut tickets = vec![
+                ticket(1, CardStatus::Claimed, Some(away), Some(10)),
+                in_docs(ticket(2, CardStatus::Claimed, Some(away), Some(11))),
+            ];
+            if holder_busy {
+                tickets.push(ticket(3, CardStatus::Doing, Some(holder), None));
+            }
+            tickets
+        };
+        let agents = [(away, PROJECT), (holder, PROJECT)];
+        placed(&world, &ready(false), &agents, |facts| {
+            assert_eq!(facts.next_starts(), [card(1)], "the earlier ticket first");
+            assert_eq!(
+                facts.wait_of(card(2)),
+                Some(TicketWait::Ticket { card: card(1) })
+            );
+        });
+        placed(&world, &ready(true), &agents, |facts| {
+            assert_eq!(
+                facts.next_starts(),
+                [card(2)],
+                "a ticket that cannot start does not hold the agent"
+            );
         });
     }
 }

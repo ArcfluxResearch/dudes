@@ -622,22 +622,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(true)
     }
 
-    pub(super) fn validate_repository_enrollment(&self, candidate: &Enrollment) -> Result<()> {
-        for profile in &candidate.profiles {
-            if let Some(repositories) = catalog(
-                profile,
-                self.sup.world().repository_projects.get(&profile.id),
-                self.ctx.current_repositories.bindings.get(&profile.id),
-            )? {
-                self.sup.world().validate_repository_record(&Entry {
-                    at: self.ctx.clock.now(),
-                    record: Record::ProjectRepositoriesRecorded {
-                        project: profile.id.clone(),
-                        repositories,
-                    },
-                })?;
-            }
-        }
+    /// Every live agent keeps the place it works in and each own copy it holds elsewhere. A
+    /// shared folder an agent only visited is not held, so one visit never pins a project.
+    fn require_agents_retained(&self, candidate: &Enrollment) -> Result<()> {
         for row in self.sup.world().agents.values().filter(|row| !row.retired) {
             if let Some(project) = row.repositories.workspace() {
                 ensure!(
@@ -688,6 +675,26 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "a live hire still references the project repository"
             );
         }
+        Ok(())
+    }
+
+    pub(super) fn validate_repository_enrollment(&self, candidate: &Enrollment) -> Result<()> {
+        for profile in &candidate.profiles {
+            if let Some(repositories) = catalog(
+                profile,
+                self.sup.world().repository_projects.get(&profile.id),
+                self.ctx.current_repositories.bindings.get(&profile.id),
+            )? {
+                self.sup.world().validate_repository_record(&Entry {
+                    at: self.ctx.clock.now(),
+                    record: Record::ProjectRepositoriesRecorded {
+                        project: profile.id.clone(),
+                        repositories,
+                    },
+                })?;
+            }
+        }
+        self.require_agents_retained(candidate)?;
         for (view, ticket) in self.ctx.projections.tickets()? {
             if view.status == dudes_types::CardStatus::Done {
                 continue;

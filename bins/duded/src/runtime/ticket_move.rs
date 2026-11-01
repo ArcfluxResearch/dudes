@@ -9,7 +9,10 @@ use dudes_proto::{AgentBudget, CardView, Predicate, TicketReason, TicketRow};
 use dudes_providers::adapter::ContextMode;
 use dudes_types::{AgentId, IsolationMode, Mode, Provider};
 
+use dudes_supervisor::world::AgentRow;
+
 use super::{Clock, Daemon, PredicateRunner, ProcessHost, Rng, RpcError};
+use crate::floor_actions::Profile;
 
 /// The sentence that opens the first task an agent gets in a project it has no conversation in.
 pub(super) const FIRST_TASK_NOTE: &str = "You have just moved here from another project. Your earlier projects are not in this conversation, and your memory carries across.";
@@ -73,95 +76,31 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 )
             })?;
         let name = &row.name;
-        let here = row.repositories.singleton().ok_or_else(|| {
-            refuse(
-                TicketReason::ProjectUnavailable,
-                format!(
-                    "{name} works in several repositories, so it cannot move to another project."
-                ),
-            )
-        })?;
-        let from = here.workspace().ok_or_else(|| {
-            refuse(
-                TicketReason::ProjectUnavailable,
-                format!("{name} was hired before projects were recorded, so it cannot move to another project."),
-            )
-        })?;
-        if from.id == project {
-            return Err(refuse(
-                TicketReason::ProjectUnavailable,
-                format!("{name} is already in {project}."),
-            ));
-        }
-        let profile = self.ctx.enrollment.profile(project).ok_or_else(|| {
-            refuse(
-                TicketReason::ProjectUnavailable,
-                format!("{project} is not set up any more."),
-            )
-        })?;
         let unfit = |why: &str| {
             refuse(
                 TicketReason::ProjectUnavailable,
                 format!("{name} cannot move to {project}: {why}."),
             )
         };
-        if profile.repositories.is_some() {
-            return Err(unfit(
-                "the project holds several repositories, which a moved agent does not take",
-            ));
+        let from = row
+            .repositories
+            .singleton()
+            .ok_or_else(|| unfit("it works in several repositories"))?
+            .workspace()
+            .ok_or_else(|| unfit("it was hired before projects were recorded"))?;
+        if from.id == project {
+            return Err(unfit("it is already there"));
         }
-        if !self.onboarding_profile_eligible(profile)
-            || self.ctx.require_current_hire(world, &profile.cwd).is_err()
-        {
-            return Err(unfit(
-                "the project cannot take a new agent now, because its folder or its check is not usable",
-            ));
-        }
-        if !self.offered_engines(profile).contains(&row.provider) {
-            return Err(unfit(&format!(
-                "the project does not offer {}",
-                row.provider
-            )));
-        }
-        let adapter = self
-            .sup
-            .adapters()
-            .get(row.provider)
-            .ok_or_else(|| unfit("this daemon has no adapter for its engine"))?;
-        if row.provider == Provider::Claude {
-            let configured = match adapter.context_mode(Mode::Managed) {
-                ContextMode::ClaudeManaged(mode) => mode,
-                ContextMode::Other | ContextMode::ClaudeAttached => IsolationMode::Default,
-            };
-            if row.mcp.isolation.unwrap_or(configured) != IsolationMode::Default {
-                return Err(unfit(
-                    "its isolation is not the default one, which a shared project folder requires",
-                ));
-            }
-        }
-        let rules = dudes_providers::mcp::Rules {
-            support: adapter.mcp_support(),
-            default_isolation: true,
-            trusted: false,
-        };
-        if let Err(refusal) = self.sup.config().mcp.admit(&row.mcp.desired, rules) {
-            return Err(unfit(&format!(
-                "its MCP servers are not admitted there: {refusal}"
-            )));
-        }
-        let (cwd, worktree) = match row.other_projects.get(project) {
-            Some(stored) if stored.repository.worktree().is_some() => {
-                let copy = stored.repository.worktree();
-                let held = copy
-                    .and_then(|id| world.worktrees.get(&id))
-                    .is_some_and(|lease| lease.agent == Some(agent) && lease.removed.is_none());
-                if !held {
-                    return Err(unfit("its own copy there is gone"));
-                }
-                (stored.repository.cwd().to_path_buf(), copy)
-            }
-            _ => (profile.cwd.clone(), None),
-        };
+        let profile = self
+            .ctx
+            .enrollment
+            .profile(project)
+            .ok_or_else(|| unfit("the project is not set up any more"))?;
+        self.project_admits(row, profile)
+            .map_err(|why| unfit(&why))?;
+        let (cwd, worktree) = self
+            .landing(agent, row, profile)
+            .map_err(|why| unfit(&why))?;
         let to = AgentMove {
             cwd,
             workspace: RecordedWorkspace {
@@ -216,6 +155,83 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .validate_move_record(&entry)
             .map_err(|failure| unfit(&failure.to_string()))?;
         Ok(to)
+    }
+
+    /// Where the agent lands in the project: the own copy it left there if it holds one, else the
+    /// project's shared folder. A move never makes a copy.
+    fn landing(
+        &self,
+        agent: AgentId,
+        row: &AgentRow,
+        profile: &Profile,
+    ) -> Result<(std::path::PathBuf, Option<dudes_types::WorktreeId>), String> {
+        let Some(stored) = row
+            .other_projects
+            .get(&profile.id)
+            .filter(|stored| stored.repository.worktree().is_some())
+        else {
+            return Ok((profile.cwd.clone(), None));
+        };
+        let copy = stored.repository.worktree();
+        let held = copy
+            .and_then(|id| self.sup.world().worktrees.get(&id))
+            .is_some_and(|lease| lease.agent == Some(agent) && lease.removed.is_none());
+        if held {
+            Ok((stored.repository.cwd().to_path_buf(), copy))
+        } else {
+            Err("its own copy there is gone".to_owned())
+        }
+    }
+
+    /// What a hire into the shared folder of `profile` admits, asked of an agent that already
+    /// exists: the project is a single repository that can take a new agent, offers the agent's
+    /// engine, and the agent's isolation and MCP servers are the ones such a hire runs with.
+    fn project_admits(&self, row: &AgentRow, profile: &Profile) -> Result<(), String> {
+        if profile.repositories.is_some() {
+            return Err(
+                "the project holds several repositories, which a moved agent does not take"
+                    .to_owned(),
+            );
+        }
+        if !self.onboarding_profile_eligible(profile)
+            || self
+                .ctx
+                .require_current_hire(self.sup.world(), &profile.cwd)
+                .is_err()
+        {
+            return Err("the project cannot take a new agent now, because its folder or its check is not usable".to_owned());
+        }
+        if !self.offered_engines(profile).contains(&row.provider) {
+            return Err(format!("the project does not offer {}", row.provider));
+        }
+        let adapter = self
+            .sup
+            .adapters()
+            .get(row.provider)
+            .ok_or_else(|| "this daemon has no adapter for its engine".to_owned())?;
+        if row.provider == Provider::Claude {
+            let configured = match adapter.context_mode(Mode::Managed) {
+                ContextMode::ClaudeManaged(mode) => mode,
+                ContextMode::Other | ContextMode::ClaudeAttached => IsolationMode::Default,
+            };
+            if row.mcp.isolation.unwrap_or(configured) != IsolationMode::Default {
+                return Err(
+                    "its isolation is not the default one, which a shared project folder requires"
+                        .to_owned(),
+                );
+            }
+        }
+        let rules = dudes_providers::mcp::Rules {
+            support: adapter.mcp_support(),
+            default_isolation: true,
+            trusted: false,
+        };
+        self.sup
+            .config()
+            .mcp
+            .admit(&row.mcp.desired, rules)
+            .map(|_| ())
+            .map_err(|refusal| format!("its MCP servers are not admitted there: {refusal}"))
     }
 
     /// The agent has worked in another project and has no conversation here yet, so the task it

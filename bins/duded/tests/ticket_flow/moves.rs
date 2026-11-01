@@ -157,7 +157,7 @@ fn an_idle_agent_takes_a_ticket_in_another_project_and_runs_there() {
     });
 
     let kinds = kinds(&fixture);
-    let moved = kinds
+    let move_at = kinds
         .iter()
         .position(|kind| *kind == RecordKind::AgentMoved)
         .unwrap();
@@ -165,7 +165,7 @@ fn an_idle_agent_takes_a_ticket_in_another_project_and_runs_there() {
         .iter()
         .position(|kind| *kind == RecordKind::TicketStarted)
         .unwrap();
-    assert!(moved < started, "{kinds:?}");
+    assert!(move_at < started, "{kinds:?}");
     let moves = moved_agents(&fixture);
     assert_eq!(moves.len(), 1);
     assert_eq!(
@@ -173,7 +173,7 @@ fn an_idle_agent_takes_a_ticket_in_another_project_and_runs_there() {
         (cody(), "docs")
     );
     assert_eq!(moves[0].1.cwd, docs);
-    assert_eq!(spawn_cwds(&flow), [docs.clone()]);
+    assert_eq!(spawn_cwds(&flow), std::slice::from_ref(&docs));
     let spec = &flow.host.spawned()[0];
     assert!(
         !spec.argv.iter().any(|part| part == "--resume"),

@@ -56,8 +56,8 @@ fn admit(harness: &mut Harness, agent: AgentId) {
         .observe_repository_admission(RepositoryAdmission::new([(agent, hired, true)]));
 }
 
-fn to(project: &str, cwd: &str) -> Box<AgentMove> {
-    Box::new(AgentMove {
+fn to(project: &str, cwd: &str) -> AgentMove {
+    AgentMove {
         cwd: cwd.into(),
         workspace: workspace(project),
         worktree: None,
@@ -65,7 +65,7 @@ fn to(project: &str, cwd: &str) -> Box<AgentMove> {
             usd_per_day: None,
             tokens_per_day: None,
         },
-    })
+    }
 }
 
 fn moves(harness: &Harness) -> usize {
@@ -84,7 +84,7 @@ fn a_move_the_history_forbids_is_never_appended() {
 
     harness.drive(Input::Command(Command::MoveAgent {
         agent,
-        to: to("service", "/repo/service"),
+        to: Box::new(to("service", "/repo/service")),
     }));
     assert_eq!(moves(&harness), 0, "the project it is already in");
 
@@ -92,7 +92,7 @@ fn a_move_the_history_forbids_is_never_appended() {
         agent,
         to: Box::new(AgentMove {
             worktree: Some(dudes_types::WorktreeId::from_bytes([7; 16])),
-            ..*to("billing", "/repo/billing")
+            ..to("billing", "/repo/billing")
         }),
     }));
     assert_eq!(moves(&harness), 0, "a copy the agent does not hold");
@@ -100,7 +100,7 @@ fn a_move_the_history_forbids_is_never_appended() {
     harness.set_goal(agent, &["true"]);
     harness.drive(Input::Command(Command::MoveAgent {
         agent,
-        to: to("billing", "/repo/billing"),
+        to: Box::new(to("billing", "/repo/billing")),
     }));
     assert_eq!(moves(&harness), 0, "an unfinished goal");
     assert_eq!(
@@ -115,7 +115,7 @@ fn an_idle_agent_moves_and_its_chat_turn_runs_in_the_new_folder() {
     let agent = hire(&mut harness);
     harness.drive(Input::Command(Command::MoveAgent {
         agent,
-        to: to("billing", "/repo/billing"),
+        to: Box::new(to("billing", "/repo/billing")),
     }));
     assert_eq!(moves(&harness), 1);
     admit(&mut harness, agent);

@@ -16628,3 +16628,93 @@ fn a_model_change_is_refused_by_name_when_it_cannot_apply() {
     assert_eq!(fixture.records(), before);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
+
+/// An agent hired into `repo_1` (in its own copy when `with_copy`) that has since moved to the
+/// shared folder of `repo_2`.
+fn moved_away_records(
+    fixture: &Fixture,
+    repo_1: &std::path::Path,
+    repo_2: &std::path::Path,
+    with_copy: bool,
+) -> Vec<Record> {
+    let mut records = Vec::new();
+    let mut hire = seeded_look_hire(AgentId::from_parts(9, 7));
+    let Record::AgentHired {
+        cwd,
+        workspace,
+        worktree,
+        ..
+    } = &mut hire
+    else {
+        unreachable!("a hire");
+    };
+    *cwd = repo_1.to_path_buf();
+    *workspace = Some(dudes_proto::record::RecordedWorkspace {
+        id: "repo_1".into(),
+        label: "Workspace repo_1".into(),
+    });
+    if with_copy {
+        let copy = fixture.state.path().join("copy-7");
+        std::fs::create_dir_all(&copy).unwrap();
+        let admin = repo_1.join(".git/worktrees/copy-7");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(copy.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        let lease = dudes_types::WorktreeId::from_bytes([7; 16]);
+        records.push(Record::WorktreeLeased {
+            worktree: lease,
+            origin: repo_1.to_path_buf(),
+            path: copy.clone(),
+            branch: "dudes/070707070707".into(),
+            base: dudes_types::GitCommit::parse("0123456789abcdef0123456789abcdef01234567")
+                .expect("commit"),
+            from: None,
+        });
+        *cwd = copy;
+        *worktree = Some(lease);
+    }
+    records.push(hire);
+    records.push(Record::AgentMoved {
+        agent: AgentId::from_parts(9, 7),
+        to: dudes_proto::placement::AgentMove {
+            cwd: repo_2.to_path_buf(),
+            workspace: dudes_proto::record::RecordedWorkspace {
+                id: "repo_2".into(),
+                label: "Workspace repo_2".into(),
+            },
+            worktree: None,
+            budget: AgentBudget {
+                usd_per_day: None,
+                tokens_per_day: None,
+            },
+        },
+    });
+    records
+}
+
+#[test]
+fn removing_a_project_that_holds_a_live_agents_copy_is_refused_and_a_visited_folder_is_not() {
+    for (with_copy, removable) in [(true, false), (false, true)] {
+        let fixture = Fixture::new();
+        let repo_1 = reload_repo(&fixture, "repo_1");
+        let repo_2 = reload_repo(&fixture, "repo_2");
+        seed(
+            &fixture,
+            moved_away_records(&fixture, &repo_1, &repo_2, with_copy),
+        );
+        let both = reload_config(&[("repo_1", &repo_1), ("repo_2", &repo_2)]);
+        let settings = reload_settings(&fixture, &both);
+        let (mut running, _, _) = boot_reload(&settings);
+        let sha = rewrite(&settings, &reload_config(&[("repo_2", &repo_2)]));
+        let outcome = operator_reload(&settings, apply(&sha, &[], &["repo_1"], &[]));
+        if removable {
+            assert_eq!(
+                outcome.expect("a folder it only visited")["removed"],
+                json!(["repo_1"])
+            );
+        } else {
+            let (_, refusal) = outcome.expect_err("its own copy is still held there");
+            assert!(refusal.contains("still holds its own copy"), "{refusal}");
+        }
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+}
