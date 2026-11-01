@@ -613,12 +613,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 )
             })?
             .ok_or_else(unavailable)?;
-        match row
-            .repositories
-            .singleton()
-            .ok_or_else(unavailable)?
-            .workspace()
-        {
+        let Some(place) = row.repositories.singleton() else {
+            return Err(
+                match self.plan_move(agent, ticket.repositories.project(), None) {
+                    Err(stop) => Self::give_refusal(&stop),
+                    Ok(_) => unavailable(),
+                },
+            );
+        };
+        match place.workspace() {
             None => Err(refusal(TicketRefusal::AgentNoProject, CardStatus::Todo)),
             Some(workspace) if workspace.id == ticket.repositories.project() => Ok(()),
             Some(_) => self

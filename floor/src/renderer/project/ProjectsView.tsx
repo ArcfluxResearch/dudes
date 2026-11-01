@@ -26,7 +26,7 @@ function AgentTag({ agent }: { readonly agent: ProjectAgent }) {
 }
 
 function Agents({ row }: { readonly row: ProjectRow }) {
-  return row.agents.length === 0 ? <>No agents hired into this project yet.</>
+  return row.agents.length === 0 ? <>No agents here right now.</>
     : <ul aria-label={`Agents in ${row.label}`} className="m-0 flex list-none flex-wrap gap-x-4 gap-y-1.5 p-0">
       {row.agents.map((agent) => <AgentTag key={agent.id} agent={agent} />)}
     </ul>;

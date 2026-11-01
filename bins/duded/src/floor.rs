@@ -373,6 +373,7 @@ fn agent_view(projections: &Projections, row: AgentRow, now: Timestamp) -> Resul
         turn_model,
         last_turn,
         shares_checkout: false,
+        several_repositories: row.repositories.singleton().is_none(),
     })
 }
 

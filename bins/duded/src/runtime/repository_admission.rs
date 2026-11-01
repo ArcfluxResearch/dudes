@@ -629,7 +629,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             if let Some(project) = row.repositories.workspace() {
                 ensure!(
                     candidate.profile(&project.id).is_some(),
-                    "a live hire still references the project"
+                    "a live agent still works in the project"
                 );
             }
             for (project, place) in &row.other_projects {
@@ -672,7 +672,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             });
             ensure!(
                 retained,
-                "a live hire still references the project repository"
+                "a live agent still works in the project repository"
             );
         }
         Ok(())

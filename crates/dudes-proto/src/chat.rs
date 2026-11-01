@@ -50,6 +50,9 @@ pub const MAX_CHAT_PENDING: usize = 128;
 pub const MAX_CHAT_PENDING_BYTES: usize = 131_072;
 /// The accepted Chat bound for `MAX_CHAT_TURNS_PER_AGENT`.
 pub const MAX_CHAT_TURNS_PER_AGENT: usize = 8;
+/// How many "Moved to" lines one agent keeps. They are outside `MAX_CHAT_TURNS_PER_AGENT`, so a
+/// move never takes the place of a real turn and a real turn never takes the place of a move.
+pub const MAX_CHAT_MOVES_PER_AGENT: usize = 4;
 /// The accepted Chat bound for `MAX_CHAT_TURNS`.
 pub const MAX_CHAT_TURNS: usize = 64;
 /// The accepted Chat bound for `MAX_CHAT_TURN_BYTES_PER_AGENT`.
