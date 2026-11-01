@@ -710,8 +710,8 @@ pub fn trust_set(
         writeln!(
             out,
             "Trusted project {}. The Floor may now hire a Claude agent into its own copy of it. \
-             Anyone holding a live Floor session, including a stolen one, can then hire up to four \
-             agents into their own copies and branches of this project, and those stay until you \
+             Anyone holding a live Floor session, including a stolen one, can then hire up to eight \
+             agents a day into their own copies and branches of this project, and those stay until you \
              remove them. Those agents run the repository's own Claude settings, so the settings' \
              environment values and helper commands apply without asking. A change to the \
              repository's .claude directory, .mcp.json or git configuration ends this until you \
