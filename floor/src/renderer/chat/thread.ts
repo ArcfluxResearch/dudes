@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import type { AcknowledgedNote } from './chat.ts';
-import type { ChatCause, ChatNotice, ChatTurn, ChatView, PendingNote } from './model.ts';
+import type { ChatCause, ChatMoved, ChatNotice, ChatTurn, ChatView, PendingNote } from './model.ts';
 
 export type ChatEntry = { readonly kind: 'context'; readonly noteLsn: string }
   | { readonly kind: 'message'; readonly noteLsn: string; readonly text: string;
     readonly pending: PendingNote | null; readonly turn: ChatTurn | null }
   | { readonly kind: 'mail'; readonly noteLsn: string; readonly cause: ChatCause; readonly turn: ChatTurn }
-  | { readonly kind: 'notice'; readonly noteLsn: string; readonly notice: ChatNotice };
+  | { readonly kind: 'notice'; readonly noteLsn: string; readonly notice: ChatNotice }
+  | { readonly kind: 'moved'; readonly noteLsn: string; readonly moved: ChatMoved };
 
 export function conversationEntries(view: ChatView, agent: string, acknowledged: readonly AcknowledgedNote[]): readonly ChatEntry[] {
   const entries = new Map<string, ChatEntry>();
@@ -24,6 +25,7 @@ export function conversationEntries(view: ChatView, agent: string, acknowledged:
     if (turn.text === null) {
       if (turn.cause !== null) entries.set(turn.note_lsn, { kind: 'mail', noteLsn: turn.note_lsn, cause: turn.cause, turn });
       else if (turn.notice !== null) entries.set(turn.note_lsn, { kind: 'notice', noteLsn: turn.note_lsn, notice: turn.notice });
+      else if (turn.moved !== null) entries.set(turn.note_lsn, { kind: 'moved', noteLsn: turn.note_lsn, moved: turn.moved });
       continue;
     }
     const entry = entries.get(turn.note_lsn);

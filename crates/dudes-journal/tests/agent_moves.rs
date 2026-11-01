@@ -191,6 +191,31 @@ fn a_move_to_a_new_place_is_fresh_and_a_return_restores_the_stored_one() {
 }
 
 #[test]
+fn each_move_leaves_one_line_in_the_agents_chat_and_a_rebuild_keeps_them() {
+    for checkpoint_every in [0, 1] {
+        let dir = tempfile::tempdir().unwrap();
+        write_journal(dir.path(), &story(), checkpoint_every);
+        let live = applied_one_at_a_time(dir.path());
+        let rebuilt = replayed(dir.path());
+        let turns = rebuilt.chat().unwrap().turns;
+        let lines: Vec<_> = turns
+            .iter()
+            .map(|turn| {
+                assert_eq!(turn.agent_id, agent());
+                assert_eq!(
+                    (&turn.turn_id, &turn.text, &turn.cause, &turn.notice),
+                    (&None, &None, &None, &None)
+                );
+                turn.moved.as_ref().unwrap().project.as_str()
+            })
+            .collect();
+        assert_eq!(lines, ["billing", "service"]);
+        assert_ne!(turns[0].note_lsn, turns[1].note_lsn);
+        assert_eq!(live.chat().unwrap(), rebuilt.chat().unwrap());
+    }
+}
+
+#[test]
 fn replay_from_the_journal_reaches_what_applying_each_record_reached() {
     for checkpoint_every in [0, 1] {
         let dir = tempfile::tempdir().unwrap();

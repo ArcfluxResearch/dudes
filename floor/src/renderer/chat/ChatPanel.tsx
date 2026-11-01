@@ -18,6 +18,7 @@ import type { ChatCause, ChatNotice, ChatReason, ChatTurn, NoticeReason, Pending
 import { shownSubject } from './model.ts';
 import type { CardRow } from '../board.ts';
 import { requiresInstructionReview } from '../ticket/model.ts';
+import { projectLabel } from '../project/projects.ts';
 import { conversationEntries } from './thread.ts';
 import type { ChatEntry } from './thread.ts';
 import { ChatText } from './ChatText.tsx';
@@ -257,6 +258,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput, onO
         if (entry.kind === 'context') return [<li key={entry.noteLsn} className="chat-context rounded-md border border-dashed border-line-strong px-3 py-2 text-small text-muted" data-chat-context-lsn={entry.noteLsn}>
           <p className="m-0">Sent as context</p>
         </li>, ...requests];
+        if (entry.kind === 'moved') return [<MovedRow key={entry.noteLsn} lsn={entry.noteLsn} project={projectLabel(floor, entry.moved.project)} />, ...requests];
         if (entry.kind === 'notice') return [<NoticeRow key={entry.noteLsn} lsn={entry.noteLsn} notice={entry.notice}
           sender={names.get(entry.notice.sender) || 'a teammate'} recipient={name} />, ...requests];
         const turn = entry.turn;
@@ -419,6 +421,14 @@ function NoticeRow({ lsn, notice, sender, recipient }: {
 }) {
   const sentence = noticeText(notice, sender, recipient);
   return <li className="chat-notice m-0 min-w-0 list-none" data-chat-notice={notice.reason} data-chat-note-lsn={lsn}>
+    <p className="m-0 min-w-0 text-small text-muted [overflow-wrap:anywhere]" title={sentence}>{sentence}</p>
+  </li>;
+}
+
+/** One quiet line for the place an agent moved to. */
+function MovedRow({ lsn, project }: { readonly lsn: string; readonly project: string }) {
+  const sentence = `Moved to ${project}`;
+  return <li className="chat-moved m-0 min-w-0 list-none" data-chat-moved data-chat-note-lsn={lsn}>
     <p className="m-0 min-w-0 text-small text-muted [overflow-wrap:anywhere]" title={sentence}>{sentence}</p>
   </li>;
 }
