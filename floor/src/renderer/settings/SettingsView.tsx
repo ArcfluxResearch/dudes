@@ -13,7 +13,7 @@ import type { FloorState } from '../floor/store.ts';
 import type { SettingsReport } from './report.ts';
 import { engineName } from '../engines.ts';
 import { OFFICES } from '../office3d/offices.ts';
-import { formatUsdMicros } from '../onboarding/catalog.ts';
+import { formatUsdMicros, hireLimitText } from '../onboarding/catalog.ts';
 import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import { getOfficePin, setOfficePin, subscribeToOfficePin } from '../view.ts';
 import { desktopNotificationPreference } from '../desktopNotifications.ts';
@@ -53,6 +53,7 @@ export function hireUnavailable(floor: FloorState): string | null {
     return 'Hire is off. Turn on Hire agents under Floor switches in Settings.';
   }
   if (floor.onboarding !== null) return null;
+  if (floor.hireLimit !== null) return hireLimitText(floor.hireLimit);
   return 'Hire is unavailable. Check Engines and Projects in Settings.';
 }
 

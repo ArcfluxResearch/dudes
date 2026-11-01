@@ -35,7 +35,8 @@ import { decodeGoalLimits } from '../goal/limits.ts';
 import type { DoneNotice } from '../done.ts';
 import { newlyDone } from '../done.ts';
 import type { OnboardingCatalog } from '../onboarding/catalog.ts';
-import { decodeOnboardingCatalog } from '../onboarding/catalog.ts';
+import type { HireLimit } from '../onboarding/catalog.ts';
+import { decodeHireLimit, decodeOnboardingCatalog, sameHireLimit } from '../onboarding/catalog.ts';
 import type { CheckCatalog } from '../onboarding/checks.ts';
 import { decodeCheckCatalog } from '../onboarding/checks.ts';
 import type { AgentRow } from '../scene/cast.ts';
@@ -235,6 +236,8 @@ export interface FloorState {
    * never authority, and never kept past the subscription that carried it.
    */
   readonly onboarding: OnboardingCatalog | null;
+  /** Set only when today's hire limit is why `onboarding` is `null`. */
+  readonly hireLimit: HireLimit | null;
   /**
    * The completion checks each enrolled workspace offers, from the latest
    * snapshot, or `null` when that snapshot carried none or carried something
@@ -337,6 +340,7 @@ const EMPTY: FloorState = Object.freeze({
   stepLabels: EMPTY_LABELS,
   snapshotEpoch: 0,
   onboarding: null,
+  hireLimit: null,
   checks: null,
   answering: null,
   control: false,
@@ -397,6 +401,7 @@ export function noteTransport(event: 'open' | 'close'): void {
     messagesLsn: event === 'close' ? null : state.messagesLsn,
     output: event === 'close' ? emptyOutput(state.output, 'unavailable') : state.output,
     onboarding: event === 'close' ? null : state.onboarding,
+    hireLimit: event === 'close' ? null : state.hireLimit,
     checks: event === 'close' ? null : state.checks,
     answering: event === 'close' ? null : state.answering,
     control: event === 'close' ? false : state.control,
@@ -497,6 +502,7 @@ export function invalidateFloorEpoch(): void {
     output: emptyOutput(state.output, 'reconnecting'),
     stepLabels: EMPTY_LABELS,
     onboarding: null,
+    hireLimit: null,
     checks: null,
     answering: null,
     control: false,
@@ -554,7 +560,7 @@ export function applyServerFrame(
         chat: null, output: emptyOutput(state.output, 'unavailable'), stepLabels: EMPTY_LABELS,
         retiredAgents: Object.freeze([]), questionHistory: NO_QUESTIONS,
         messages: Object.freeze([]),
-        threads: Object.freeze([]), messagesLsn: null, onboarding: null, checks: null, answering: null, control: false, recovery: false,
+        threads: Object.freeze([]), messagesLsn: null, onboarding: null, hireLimit: null, checks: null, answering: null, control: false, recovery: false,
         goalChange: null, terminal: false, retire: false, git: false, diff: false, ticket: false, daemon: null, settings: null, journalStopped: null,
         finishedToday: FINISHED_TODAY_UNAVAILABLE, closingTime: null });
       return;
@@ -595,6 +601,7 @@ interface ServerMessage {
   readonly type: (typeof SERVER_MESSAGES)[number];
   readonly projection?: unknown;
   readonly onboarding?: unknown;
+  readonly hire_limit?: unknown;
   readonly checks?: unknown;
   readonly answer?: unknown;
   readonly control?: unknown;
@@ -912,6 +919,7 @@ function fromSnapshot(message: ServerMessage): FloorState {
     chat,
     // Absent or malformed reads as unavailable, and never closes the stream.
     onboarding: decodeOnboardingCatalog(message.onboarding),
+    hireLimit: decodeHireLimit(message.hire_limit),
     checks: decodeCheckCatalog(message.checks),
     answering: decodeAnswerLimits(message.answer),
     control: decodeSwitchSibling(message.control),
@@ -1066,6 +1074,7 @@ function unchanged(current: FloorState, next: FloorState): boolean {
     && current.stepLabels === next.stepLabels
     && current.snapshotEpoch === next.snapshotEpoch
     && current.onboarding === next.onboarding
+    && sameHireLimit(current.hireLimit, next.hireLimit)
     && current.checks === next.checks
     && current.answering === next.answering
     && current.control === next.control

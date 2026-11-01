@@ -22,7 +22,7 @@ async function render(symbol, props) {
 }
 
 const on = { phase: 'live', stale: false, agents: [], cards: [], activity: [], retiredAgents: [],
-  settings: { switches: { hire: true } }, onboarding: null };
+  settings: { switches: { hire: true } }, onboarding: null, hireLimit: null };
 const off = { ...on, settings: { switches: { hire: false } } };
 
 test('HIRE_SWITCH_GATE mutant follows the reported switch, with catalog as the older-daemon proof', async () => {

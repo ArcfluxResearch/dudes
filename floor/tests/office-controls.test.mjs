@@ -52,7 +52,7 @@ test('HALT_ANY, PAUSE_ANY, HALT_CLAUSE_DROPPED, MODE_UNCONFIRMED and BANNER_UNWI
 
   const { OfficeCanvas } = await server.ssrLoadModule('/src/renderer/OfficeCanvas.tsx');
   const office = (agents) => renderToStaticMarkup(createElement(OfficeCanvas, {
-    floor: { phase: 'live', stale: false, epoch: 1, snapshotEpoch: 1, agents, cards: [], settings: null, onboarding: null },
+    floor: { phase: 'live', stale: false, epoch: 1, snapshotEpoch: 1, agents, cards: [], settings: null, onboarding: null, hireLimit: null },
     selectedId: null, onSelectAgent() {}, onOpenQuestion() {}, onOpenTasks() {}, onAddAgent() {},
   }));
   const paused = office([agent(ADA, { paused: true }), agent(GRACE, { paused: true })]);

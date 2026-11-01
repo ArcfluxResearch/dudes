@@ -441,6 +441,7 @@ function SignedInShell() {
     hireOpener.current = opener;
     prepareHire(floor);
     setHiring(true);
+    if (floor.hireLimit !== null) refreshFloorSnapshot();
   }
 
   function openSettingsFromHire(): void {
