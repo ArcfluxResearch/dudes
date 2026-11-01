@@ -97,14 +97,12 @@ export function agentsFor(floor: FloorState, project: string): {
   const named = (row: FloorState['agents'][number]) => ({
     id: row.id, name: typeof row.name === 'string' && row.name !== '' ? row.name : 'Unnamed agent',
   });
-  const elsewhere = floor.agents.flatMap((row) => {
+  const away = floor.agents.flatMap((row) => {
     const space = decodeWorkspace(row.workspace);
-    return space === null || space.id === project || row.several_repositories === true ? [] : [{ ...named(row), now: space.label }];
+    return space === null || space.id === project ? [] : [{ ...named(row), now: space.label, stays: row.several_repositories === true }];
   });
-  const staying = floor.agents.flatMap((row) => {
-    const space = decodeWorkspace(row.workspace);
-    return space === null || space.id === project || row.several_repositories !== true ? [] : [{ ...named(row), now: space.label }];
-  });
+  const elsewhere = away.filter((row) => !row.stays);
+  const staying = away.filter((row) => row.stays);
   return {
     usable: floor.agents.filter((row) => decodeWorkspace(row.workspace)?.id === project).map(named),
     elsewhere,

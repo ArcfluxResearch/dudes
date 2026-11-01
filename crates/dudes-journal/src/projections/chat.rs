@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use dudes_proto::{
     BrowserNoteDestination, ChatContextState, ChatContextView, ChatPendingState, ChatPendingView,
     ChatReason, ChatTurnState, ChatTurnView, ChatView, Entry, LoopDecision, MAX_CHAT_BYTES,
-    MAX_CHAT_CONTEXT, MAX_CHAT_CONTEXT_BYTES, MAX_CHAT_CONTEXT_PER_AGENT, MAX_CHAT_PENDING,
-    MAX_CHAT_PENDING_BYTES, MAX_CHAT_PENDING_PER_AGENT, MAX_CHAT_TEXT_BYTES, MAX_CHAT_TURN_BYTES,
-    MAX_CHAT_MOVES_PER_AGENT, MAX_CHAT_TURN_BYTES_PER_AGENT, MAX_CHAT_TURNS, MAX_CHAT_TURNS_PER_AGENT, NoteAdmission,
-    NoteContract, Record, TaskContract, TurnOutcome,
+    MAX_CHAT_CONTEXT, MAX_CHAT_CONTEXT_BYTES, MAX_CHAT_CONTEXT_PER_AGENT, MAX_CHAT_MOVES_PER_AGENT,
+    MAX_CHAT_PENDING, MAX_CHAT_PENDING_BYTES, MAX_CHAT_PENDING_PER_AGENT, MAX_CHAT_TEXT_BYTES,
+    MAX_CHAT_TURN_BYTES, MAX_CHAT_TURN_BYTES_PER_AGENT, MAX_CHAT_TURNS, MAX_CHAT_TURNS_PER_AGENT,
+    NoteAdmission, NoteContract, Record, TaskContract, TurnOutcome,
 };
 use dudes_types::{AgentId, GoalId, Lsn, ModelName, TurnId};
 use redb::{ReadableTable, Table};
@@ -1770,11 +1770,19 @@ mod tests {
         drop_notices(&mut window, agent(1), agent(9));
         trim_windows(&mut window).unwrap();
         let kept: Vec<_> = window.turns.iter().map(|row| row.issue_lsn.0).collect();
-        assert_eq!(kept, [1, 2, 3, 4, 5, 6, 7, 8, 9], "all eight turns and the line");
+        assert_eq!(
+            kept,
+            [1, 2, 3, 4, 5, 6, 7, 8, 9],
+            "all eight turns and the line"
+        );
         window.turns.push(row(10, "operator", ChatTurnState::Ended));
         trim_windows(&mut window).unwrap();
         let kept: Vec<_> = window.turns.iter().map(|row| row.issue_lsn.0).collect();
-        assert_eq!(kept, [2, 3, 4, 5, 6, 7, 8, 9, 10], "a new turn drops the oldest turn, not the line");
+        assert_eq!(
+            kept,
+            [2, 3, 4, 5, 6, 7, 8, 9, 10],
+            "a new turn drops the oldest turn, not the line"
+        );
     }
 
     #[test]

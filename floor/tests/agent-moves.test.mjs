@@ -78,6 +78,25 @@ test('an agent hired before projects were recorded stays out of the list, and a 
   assert.match(html, /Grace was hired before projects were recorded/);
 });
 
+test('an agent in several repositories is shown as staying put, never as moving, in both forms', () => {
+  subscribe(store, { agents: [agent(ADA, 'Ada', { workspace: SERVICE }), agent(GRACE, 'Grace', { workspace: WEBSITE, several_repositories: true })],
+    cards: [ticketCard(1, 'todo', {}, { project: 'service' })], checks: TWO_PROJECTS, settings: SETTINGS });
+  const found = board.agentsFor(store.getFloorState(), 'service');
+  assert.deepEqual(found.elsewhere, []);
+  assert.deepEqual(found.staying.map((row) => [row.name, row.now]), [['Grace', 'Website']]);
+  const html = giveForm('service');
+  assert.match(html, /aria-disabled="true"[^>]*data-value="01ARZ3NDEKTSV4RRFFQ69G5FAV"|data-value="01ARZ3NDEKTSV4RRFFQ69G5FAV"[^>]*aria-disabled="true"/);
+  assert.match(html, /Works in several repositories, so it stays in Website/);
+  assert.doesNotMatch(html, /Moves here when free/);
+  const form = renderToStaticMarkup(createElement(board.NewTicketForm, { floor: store.getFloorState(), onCreated() {}, onHire() {} }));
+  assert.match(form, /Works in several repositories, so it stays in Website/);
+  assert.doesNotMatch(form, /Moves here when free/);
+  store.resetFloorStore();
+  subscribe(store, { agents: [agent(GRACE, 'Grace', { workspace: WEBSITE, several_repositories: true })],
+    cards: [ticketCard(1, 'todo', {}, { project: 'website' })], checks: TWO_PROJECTS, settings: SETTINGS });
+  assert.deepEqual(board.agentsFor(store.getFloorState(), 'website').usable.map((row) => row.name), ['Grace'], 'in its own project it is unaffected');
+});
+
 test('the New ticket list suggests the project\'s own agent even when one elsewhere is idle', () => {
   subscribe(store, { agents: [agent(ADA, 'Ada', { workspace: SERVICE, status: 'running' }), agent(GRACE, 'Grace', { workspace: WEBSITE })],
     checks: TWO_PROJECTS, settings: SETTINGS });
