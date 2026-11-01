@@ -268,3 +268,40 @@ export function formatUsdMicros(value: string): string {
   const fraction = padded.slice(-6).replace(/0+$/, '');
   return fraction === '' ? `$${whole}` : `$${whole}.${fraction}`;
 }
+
+/** Why Hire is closed to this browser for today: the daemon's per-day limit, and when it lifts. */
+export interface HireLimit {
+  readonly perDay: number;
+  /** The next 00:00 UTC, as an instant. */
+  readonly reopensAt: Date;
+}
+
+const REOPENS_AT = /^\d{4}-\d{2}-\d{2}T00:00:00Z$/;
+
+export function decodeHireLimit(value: unknown): HireLimit | null {
+  if (!exactly(value, ['per_day', 'reopens_at'])) return null;
+  const { per_day: perDay, reopens_at: reopensAt } = value;
+  if (typeof perDay !== 'number' || !Number.isInteger(perDay) || perDay < 1 || perDay > 1000) return null;
+  if (typeof reopensAt !== 'string' || !REOPENS_AT.test(reopensAt)) return null;
+  const at = new Date(reopensAt);
+  return Number.isNaN(at.getTime()) ? null : Object.freeze({ perDay, reopensAt: at });
+}
+
+export function sameHireLimit(a: HireLimit | null, b: HireLimit | null): boolean {
+  return a === b || (a !== null && b !== null && a.perDay === b.perDay && a.reopensAt.getTime() === b.reopensAt.getTime());
+}
+
+/** Whether the page holds the snapshot of its current stream; a stale one carries no catalog and no limit. */
+export function snapshotCurrent(floor: { readonly phase: string; readonly snapshotEpoch: number; readonly epoch: number }): boolean {
+  return floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;
+}
+
+/** Whether the moment the limit lifts has passed, the only time a fresh snapshot can change the answer. */
+export function hireLimitElapsed(limit: HireLimit, now: number): boolean {
+  return now >= limit.reopensAt.getTime();
+}
+
+export function hireLimitText(limit: HireLimit): string {
+  const when = limit.reopensAt.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  return `This browser has hired ${limit.perDay} agents today. You can hire more after ${when}.`;
+}

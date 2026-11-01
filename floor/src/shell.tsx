@@ -24,6 +24,7 @@ import { refreshFloorSnapshot } from './renderer/floor/stream';
 import { Dialog, Notice } from './ui/index.ts';
 import { HireWizard } from './renderer/onboarding/HireWizard';
 import { HireEntry, hireSwitchOn } from './renderer/onboarding/HireEntry';
+import { hireLimitElapsed, snapshotCurrent } from './renderer/onboarding/catalog';
 import { FirstRunGuide } from './renderer/setup/FirstRunGuide';
 import { NotificationOffer } from './renderer/NotificationOffer.tsx';
 import { FirstTask } from './renderer/setup/FirstTask.tsx';
@@ -157,7 +158,7 @@ function SignedInShell() {
   const { signOutFailed } = useSyncExternalStore(subscribeToDevices, getDevicesState, getDevicesState);
   const signOut = () => { void signOutHere(); };
   const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
-  const listIsCurrent = floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;
+  const listIsCurrent = snapshotCurrent(floor);
   useEffect(() => {
     if (listIsCurrent) void loadDevices();
   }, [listIsCurrent, floor.epoch]);
@@ -441,6 +442,7 @@ function SignedInShell() {
     hireOpener.current = opener;
     prepareHire(floor);
     setHiring(true);
+    if (floor.hireLimit !== null && hireLimitElapsed(floor.hireLimit, Date.now())) refreshFloorSnapshot();
   }
 
   function openSettingsFromHire(): void {

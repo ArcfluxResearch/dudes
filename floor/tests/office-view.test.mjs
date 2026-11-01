@@ -136,7 +136,7 @@ test('WEBGL_FALLBACK mutant: a browser that refuses WebGL gets no renderer and t
 test('FULL_HEARD_DROPPED and FULL_FLAG_UNCONFIRMED mutants: the office renders its loading line, its canvas and a quiet live region before the renderer starts', async () => {
   await withOffice(({ OfficeCanvas }) => {
     const render = (epochs) => renderToStaticMarkup(createElement(OfficeCanvas, {
-      floor: { phase: 'live', stale: false, ...epochs, agents: [], cards: [], settings: null, onboarding: null },
+      floor: { phase: 'live', stale: false, ...epochs, agents: [], cards: [], settings: null, onboarding: null, hireLimit: null },
       selectedId: null, onSelectAgent() {}, onOpenTasks() {}, onAddAgent() {},
     }));
     const html = render({ epoch: 1, snapshotEpoch: 1 });
@@ -154,7 +154,7 @@ test('OFFICE_FIXED, FULL_LINE_DROPPED, FULL_LINE_DRAWN_ONLY and FULL_LINE_ROLE m
   await withOffice(async ({ OfficeCanvas }, server) => {
     const { setOfficePin } = await server.ssrLoadModule('/src/renderer/view.ts');
     const render = (count) => renderToStaticMarkup(createElement(OfficeCanvas, {
-      floor: { phase: 'live', stale: false, epoch: 1, snapshotEpoch: 1, agents: crew(count), cards: [], settings: null, onboarding: null },
+      floor: { phase: 'live', stale: false, epoch: 1, snapshotEpoch: 1, agents: crew(count), cards: [], settings: null, onboarding: null, hireLimit: null },
       selectedId: null, onSelectAgent() {}, onOpenTasks() {}, onAddAgent() {},
     }));
     const office = (html) => html.match(/<div class="office [^"]*" data-office="loading" data-layout="(\w+)" data-full="(\w+)">/)?.slice(1);

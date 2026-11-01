@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v11"
+    "/tests/fixtures/floor-release-v12"
 );
 const CREATE: &str = "/floor/project/create";
 const ATTEMPT: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

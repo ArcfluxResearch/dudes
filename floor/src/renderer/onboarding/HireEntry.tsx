@@ -2,6 +2,7 @@
 
 import { Button, Disclosure } from '../../ui/index.ts';
 import type { FloorState } from '../floor/store.ts';
+import { hireLimitText } from './catalog.ts';
 import { hireUnavailable } from '../settings/SettingsView.tsx';
 
 export function hireSwitchOn(floor: FloorState): boolean {
@@ -23,6 +24,8 @@ export function HireEntry({ floor, id, onAddAgent, folded = false }: {
       {reason}
     </Disclosure>;
   }
-  return <Button id={id} data-hire-entry="add"
+  const add = <Button id={id} data-hire-entry="add"
     onClick={(event) => onAddAgent(event.currentTarget)}>Add agent</Button>;
+  if (floor.hireLimit === null) return add;
+  return <>{add}<p data-hire-entry="limit" className="m-0 text-small leading-normal text-muted">{hireLimitText(floor.hireLimit)}</p></>;
 }
