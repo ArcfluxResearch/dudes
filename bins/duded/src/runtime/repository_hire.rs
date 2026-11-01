@@ -354,7 +354,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         };
         if !session.is_valid()
             || !self.ctx.switches.load().hire
-            || self.ctx.onboarding_index.count(session.digest()) >= 4
+            || self
+                .ctx
+                .onboarding_index
+                .day_limit_reached(session.digest(), self.ctx.clock.now())
         {
             return Err(OnboardRefusal::Forbidden);
         }

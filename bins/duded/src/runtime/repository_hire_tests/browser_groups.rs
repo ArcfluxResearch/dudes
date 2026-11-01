@@ -7,7 +7,7 @@ fn floor_setup() -> Setup {
     setup.settings.floor = Some(crate::settings::FloorSettings {
         assets_dir: std::path::PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/floor-release-v11"
+            "/tests/fixtures/floor-release-v12"
         )),
         port: Some(0),
     });
@@ -86,14 +86,14 @@ fn a_browser_group_pending_conflict_and_lost_response_retry_keep_one_atomic_hire
 }
 
 #[test]
-fn four_browser_groups_use_four_slots_and_a_recorded_retry_still_completes() {
+fn eight_browser_groups_use_the_days_eight_slots_and_a_recorded_retry_still_completes() {
     let setup = floor_setup();
     let daemon = setup.boot(true);
     let address = daemon.floor_addr().unwrap();
     let (mut running, _, params) = setup.start_from(daemon);
     let page = page(&setup, address);
     let mut first = Value::Null;
-    for attempt in ['A', 'B', 'C', 'D'] {
+    for attempt in 'A'..='H' {
         let response = page.post("/floor/onboard", &request(&params, attempt));
         assert_eq!(
             response.status(),
@@ -107,7 +107,7 @@ fn four_browser_groups_use_four_slots_and_a_recorded_retry_still_completes() {
     }
     let before = setup.fixture.records().len();
     assert_eq!(
-        page.post("/floor/onboard", &request(&params, 'E')).status(),
+        page.post("/floor/onboard", &request(&params, 'I')).status(),
         403
     );
     assert_eq!(setup.fixture.records().len(), before);
@@ -137,8 +137,8 @@ fn four_browser_groups_use_four_slots_and_a_recorded_retry_still_completes() {
         replayed
             .ctx
             .onboarding_index
-            .count(indexed.metadata.session_digest),
-        4
+            .hires_today(indexed.metadata.session_digest, replayed.ctx.clock.now()),
+        8
     );
     assert!(
         matches!(replayed.onboard(&identity, &request), crate::floor_actions::OnboardStep::Answer(Ok(crate::floor_actions::OnboardOutcome::ProjectComplete { agent, .. })) if agent.to_string() == first["agent"].as_str().unwrap())

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use dudes_journal::Reader;
-use dudes_proto::record::{BrowserOnboardingHire, Hex32, RecordedWorkspace};
+use dudes_proto::record::{BrowserOnboardingHire, Entry, Hex32, RecordedWorkspace};
 use dudes_proto::repository::{RepoId, RepositoryEntry, RepositorySet, ScopedRepositories};
 use dudes_proto::rpc::agent::ProjectHireTarget;
 use dudes_proto::rpc::floor::{CheckView, ChecksView, WorkspaceChecks};
@@ -555,11 +555,45 @@ impl Attempt {
     }
 }
 
+/// How many agents one Floor session may hire in a UTC day.
+pub(crate) const BROWSER_HIRES_PER_DAY: u32 = 8;
+
+const MILLIS_PER_DAY: i64 = 86_400_000;
+
+fn utc_day(at: Timestamp) -> i64 {
+    at.unix_millis().div_euclid(MILLIS_PER_DAY)
+}
+
+/// Why a session cannot hire more today: sent beside the catalog so the page can say so.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct HireLimitView {
+    per_day: u32,
+    reopens_at: String,
+}
+
+impl HireLimitView {
+    pub(crate) fn reopening_after(now: Timestamp) -> Self {
+        Self {
+            per_day: BROWSER_HIRES_PER_DAY,
+            reopens_at: rfc3339_seconds(Timestamp::from_unix_millis(
+                (utc_day(now) + 1) * MILLIS_PER_DAY,
+            )),
+        }
+    }
+}
+
+/// The hires a session made on the latest UTC day it hired on.
+#[derive(Clone, Copy, Debug)]
+struct DayCount {
+    day: i64,
+    hires: u32,
+}
+
 /// A replayable in-memory index; only journal records may change it.
 #[derive(Debug, Default)]
 pub(crate) struct OnboardingIndex {
     attempts: BTreeMap<Hex32, Attempt>,
-    hires_per_session: BTreeMap<Hex32, u32>,
+    hires_per_session: BTreeMap<Hex32, DayCount>,
 }
 
 impl OnboardingIndex {
@@ -570,13 +604,13 @@ impl OnboardingIndex {
             .context("reading onboarding journal index")?
         {
             let (_, entry) = item.context("reading onboarding journal entry")?;
-            index.apply(&entry.record)?;
+            index.apply(&entry)?;
         }
         Ok(index)
     }
 
-    pub(crate) fn apply(&mut self, record: &Record) -> Result<()> {
-        let (id, metadata, project) = match record {
+    pub(crate) fn apply(&mut self, entry: &Entry) -> Result<()> {
+        let (id, metadata, project) = match &entry.record {
             Record::AgentHired {
                 id,
                 browser_onboarding: Some(metadata),
@@ -599,11 +633,16 @@ impl OnboardingIndex {
             if self.attempts.contains_key(&metadata.attempt_id) {
                 bail!("duplicate browser onboarding attempt in journal");
             }
+            let day = utc_day(entry.at);
             let count = self
                 .hires_per_session
                 .entry(metadata.session_digest)
-                .or_default();
-            *count = count
+                .or_insert(DayCount { day, hires: 0 });
+            if count.day != day {
+                *count = DayCount { day, hires: 0 };
+            }
+            count.hires = count
+                .hires
                 .checked_add(1)
                 .context("browser hire count overflow")?;
             self.attempts.insert(
@@ -618,8 +657,16 @@ impl OnboardingIndex {
         Ok(())
     }
 
-    pub(crate) fn count(&self, session: Hex32) -> u32 {
-        self.hires_per_session.get(&session).copied().unwrap_or(0)
+    /// Hires the session made on the UTC day of `now`.
+    pub(crate) fn hires_today(&self, session: Hex32, now: Timestamp) -> u32 {
+        self.hires_per_session
+            .get(&session)
+            .filter(|count| count.day == utc_day(now))
+            .map_or(0, |count| count.hires)
+    }
+
+    pub(crate) fn day_limit_reached(&self, session: Hex32, now: Timestamp) -> bool {
+        self.hires_today(session, now) >= BROWSER_HIRES_PER_DAY
     }
 
     pub(crate) fn attempt(&self, id: Hex32) -> Option<&Attempt> {
