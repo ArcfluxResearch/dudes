@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, chmod } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -74,5 +74,32 @@ export async function askATeammate(run) {
     && el.querySelector('.chat-final-reply')?.textContent === 'I answered the request.')`,
   'Bruno\'s chat does not show the mail-started answer', wait);
   await picture('Bruno');
+
+  // A ticket in a second project, given to Ada from the Floor: the list says where she is, she moves
+  // when the ticket starts, and her chat says so.
+  const docs = await realpath(await mkdtemp(join(run.root, 'docs-')));
+  await run.command('git', ['init', '--quiet'], docs);
+  await run.command('sh', ['-c', 'printf "docs\\n" > README.md && git add README.md && git -c user.name=smoke -c user.email=smoke@example.invalid commit -qm start'], docs);
+  await run.cli(['project', 'add', docs, '--id', 'docs', '--label', 'Docs']);
+  const made = await run.cli(['ticket', 'add', '--title', 'Write the docs', '--project', 'docs']);
+  const card = check(made.stdout.match(/^ticket (\S+)/m)?.[1], `ticket add printed no card: ${made.stdout}`);
+  await page.click('#view-board');
+  await page.click(`[data-ticket-column="todo"] .ticket-card[data-card-id="${card}"]`, 'the new ticket is not in To do');
+  await page.clickButton('Give to agent', '.ticket-action');
+  await page.until(`Boolean(document.querySelector('form[aria-label="Give to agent"] [role="combobox"]'))`, 'the give form did not open');
+  await page.click('form[aria-label="Give to agent"] [role="combobox"]');
+  const option = `form[aria-label="Give to agent"] [role="option"][data-value="${ids.Ada}"]`;
+  await page.until(`/^Ada.*Now in .+ · Moves here when free$/.test(document.querySelector(${JSON.stringify(option)})?.textContent ?? '')`,
+    'the give list does not say that Ada is in another project and moves when free');
+  const list = await run.cdp.send('Page.captureScreenshot', { format: 'png' }, run.cdp.session);
+  await writeFile(join(pictures, 'give-list.png'), Buffer.from(list.data, 'base64'));
+  await page.click(option);
+  await page.click('form[aria-label="Give to agent"] button[type="submit"]');
+  await page.until(`!document.querySelector('[data-ticket-column="todo"] .ticket-card[data-card-id="${card}"]')`,
+    'the ticket did not start for Ada', wait);
+  await chatOf('Ada');
+  await page.until(`[...document.querySelectorAll('[data-chat-moved]')].some((el) => el.textContent === 'Moved to Docs')`,
+    'Ada\'s chat does not say she moved to Docs', wait);
+  await picture('Ada-after-move');
   console.log(`ask a teammate: ${Date.now() - started} ms, pictures in ${pictures}`);
 }

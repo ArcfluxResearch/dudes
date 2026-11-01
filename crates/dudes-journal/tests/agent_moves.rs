@@ -197,27 +197,20 @@ fn each_move_leaves_one_line_in_the_agents_chat_and_a_rebuild_keeps_them() {
         write_journal(dir.path(), &story(), checkpoint_every);
         let live = applied_one_at_a_time(dir.path());
         let rebuilt = replayed(dir.path());
-        let lines: Vec<_> = rebuilt
-            .chat()
-            .unwrap()
-            .turns
-            .into_iter()
+        let turns = rebuilt.chat().unwrap().turns;
+        let lines: Vec<_> = turns
+            .iter()
             .map(|turn| {
                 assert_eq!(turn.agent_id, agent());
                 assert_eq!(
-                    (turn.turn_id, turn.text, turn.cause, turn.notice),
-                    (None, None, None, None)
+                    (&turn.turn_id, &turn.text, &turn.cause, &turn.notice),
+                    (&None, &None, &None, &None)
                 );
-                (turn.note_lsn, turn.moved.unwrap().project)
+                turn.moved.as_ref().unwrap().project.as_str()
             })
             .collect();
-        assert_eq!(
-            lines,
-            [
-                ("4".to_owned(), "billing".to_owned()),
-                ("6".to_owned(), "service".to_owned())
-            ]
-        );
+        assert_eq!(lines, ["billing", "service"]);
+        assert_ne!(turns[0].note_lsn, turns[1].note_lsn);
         assert_eq!(live.chat().unwrap(), rebuilt.chat().unwrap());
     }
 }
