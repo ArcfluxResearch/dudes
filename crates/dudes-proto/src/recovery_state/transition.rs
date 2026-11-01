@@ -753,6 +753,7 @@ fn validate_recap(
         let eligible = match (source.reference().kind, source.reference().owner) {
             (
                 RecordKind::AgentHired
+                | RecordKind::AgentMoved
                 | RecordKind::AgentHiredWithRepositories
                 | RecordKind::AgentHiredWithUnconfinedRepositories,
                 RecoveryWitnessOwner::Agent(agent),

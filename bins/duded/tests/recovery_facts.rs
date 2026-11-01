@@ -1641,7 +1641,14 @@ fn a_reserved_new_turn_refuses_attached_issue_before_persistent_and_world_mutati
     );
 }
 
-fn project_prefix(moves: bool) -> (Prefix, RecoveryBinding) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Move {
+    Never,
+    BeforeTheTurn,
+    AfterTheTurn,
+}
+
+fn project_prefix(moves: Move) -> (Prefix, RecoveryBinding) {
     let mut prefix = Prefix::new();
     let mut record = samples::record(RecordKind::AgentHired);
     let Record::AgentHired {
@@ -1663,8 +1670,8 @@ fn project_prefix(moves: bool) -> (Prefix, RecoveryBinding) {
     });
     let hired = prefix.append(record);
     let mut current = hired;
-    if moves {
-        current = prefix.append(Record::AgentMoved {
+    let move_to_billing = |prefix: &mut Prefix| {
+        prefix.append(Record::AgentMoved {
             agent: agent(),
             to: dudes_proto::placement::AgentMove {
                 cwd: "/repo/billing".into(),
@@ -1678,7 +1685,10 @@ fn project_prefix(moves: bool) -> (Prefix, RecoveryBinding) {
                     tokens_per_day: None,
                 },
             },
-        });
+        })
+    };
+    if moves == Move::BeforeTheTurn {
+        current = move_to_billing(&mut prefix);
     }
     prefix.append(Record::GoalSet {
         agent: agent(),
@@ -1688,6 +1698,9 @@ fn project_prefix(moves: bool) -> (Prefix, RecoveryBinding) {
         goal_replacement: None,
     });
     let issue = prefix.issue(Vec::new());
+    if moves == Move::AfterTheTurn {
+        current = move_to_billing(&mut prefix);
+    }
     (
         prefix,
         RecoveryBinding {
@@ -1706,33 +1719,40 @@ fn project_prefix(moves: bool) -> (Prefix, RecoveryBinding) {
     )
 }
 
-/// A move makes its position the agent's hire position in the World and in the saved projection,
-/// and recovery resolves a hire position to a hire record. Until recovery can name a move as that
-/// source, a crashed turn of a moved agent is refused by both folds, never bound to the wrong hire.
+/// A move is the hire position of the place it moves to. Recovery binds a crashed turn there in
+/// the World and in the saved projection, and a turn issued before the move stays refused by
+/// both, whichever of the two positions the request names.
 #[test]
-fn a_moved_agents_recovery_binding_is_refused_by_both_folds_and_an_unmoved_one_is_not() {
-    let (mut unmoved, binding) = project_prefix(false);
+fn a_moved_agents_recovery_binds_to_its_move_in_both_folds_and_an_earlier_turn_stays_refused() {
+    let (mut unmoved, binding) = project_prefix(Move::Never);
     unmoved.facts(&binding).unwrap();
 
-    let (mut moved, binding) = project_prefix(true);
+    let (mut moved, binding) = project_prefix(Move::BeforeTheTurn);
     let original = unmoved.world.agents[&agent()].mcp.hire_lsn;
     assert_eq!(moved.world.agents[&agent()].mcp.hire_lsn, binding.hired_lsn);
+    assert_ne!(binding.hired_lsn, original);
     assert_eq!(
         moved.persistent.agent(agent()).unwrap().unwrap().hired_lsn,
         binding.hired_lsn
     );
+    let facts = moved.facts(&binding).unwrap();
+    assert_eq!(facts.binding, binding);
+    assert!(matches!(
+        facts.authority,
+        dudes_proto::recovery_state::admission::RecoveryAuthority::Legacy { worktree: None }
+    ));
+    let named_after_the_hire = RecoveryBinding {
+        hired_lsn: original,
+        ..binding.clone()
+    };
+    moved.facts(&named_after_the_hire).unwrap_err();
+
+    let (mut stale, binding) = project_prefix(Move::AfterTheTurn);
     for hired_lsn in [binding.hired_lsn, original] {
         let target = RecoveryBinding {
             hired_lsn,
             ..binding.clone()
         };
-        assert!(moved.world.recovery_facts(&target).is_err());
-        assert!(
-            moved
-                .writer
-                .checked_recovery(&mut moved.persistent)
-                .and_then(|store| store.facts(&target))
-                .is_err()
-        );
+        stale.facts(&target).unwrap_err();
     }
 }
