@@ -1320,6 +1320,13 @@ impl Discovery {
         self.dirty || self.inflight.is_some()
     }
 
+    /// A claim of `agent`'s is not yet retired.
+    pub(super) fn owes(&self, agent: AgentId) -> bool {
+        self.claim_subjects
+            .values()
+            .any(|keys| keys.contains(&InvalidationSubject::Control(agent)))
+    }
+
     fn retire(&mut self, lsn: Lsn) {
         if self.claims.remove(&lsn).is_none() {
             return;

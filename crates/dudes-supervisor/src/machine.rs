@@ -853,6 +853,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         self.repository_admission = admission;
     }
 
+    /// Whether a recovery claim of `agent`'s is still waiting for the record that retires it. A
+    /// move waits for that record, because the claim's subjects are read at one place and the
+    /// move would change it under them.
+    #[must_use]
+    pub fn recovery_invalidations_owed(&self, agent: AgentId) -> bool {
+        self.recovery_discovery.owes(agent)
+    }
+
     /// Whether this exact hire has a current execution observation.
     #[must_use]
     pub fn repository_admitted(&self, agent: AgentId) -> bool {
@@ -5086,6 +5094,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     return;
                 }
                 self.persist_at(at, record, Then::ClearedCause { agent });
+            }
+            Command::MoveAgent { agent, to } => {
+                let entry = Entry {
+                    at: self.clock.now(),
+                    record: Record::AgentMoved { agent, to: *to },
+                };
+                if self.recovery_invalidations_owed(agent)
+                    || self.world.validate_move_record(&entry).is_err()
+                {
+                    return;
+                }
+                self.persist_at(entry.at, entry.record, Then::Fold);
             }
             Command::GoalClear { agent, goal } => {
                 self.persist(Record::GoalCleared { agent, goal }, Then::Fold);
