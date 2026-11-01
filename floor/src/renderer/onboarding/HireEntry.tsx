@@ -10,16 +10,18 @@ export function hireSwitchOn(floor: FloorState): boolean {
 }
 
 /** Add agent, or why Hire is not offered. `folded` puts the reason behind a one-line disclosure. */
-export function HireEntry({ floor, id, onAddAgent, folded = false }: {
+export function HireEntry({ floor, id, onAddAgent, folded = false, waiting = false }: {
   readonly floor: FloorState;
   readonly id: string;
   readonly onAddAgent: (opener: HTMLButtonElement) => void;
   readonly folded?: boolean;
+  /** The page is reconnecting to learn whether a daily limit has lifted. */
+  readonly waiting?: boolean;
 }) {
   if (!hireSwitchOn(floor)) {
-    const reason = <p data-hire-entry="off" className="m-0 text-small leading-normal text-muted">{hireUnavailable(floor)}</p>;
+    const reason = <p data-hire-entry="off" className="m-0 text-small leading-normal text-muted">{waiting ? 'Waiting for a snapshot from the daemon.' : hireUnavailable(floor)}</p>;
     if (!folded) return reason;
-    return <Disclosure data-hire-entry="folded" summary={floor.settings?.switches.hire === false ? 'Hire is off' : 'Hire is unavailable'}
+    return <Disclosure data-hire-entry="folded" summary={floor.settings?.switches.hire === false ? 'Hire is off' : waiting ? 'Reconnecting' : 'Hire is unavailable'}
       className="mt-auto px-1 pt-2 text-small" summaryClassName="text-small text-muted">
       {reason}
     </Disclosure>;

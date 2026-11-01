@@ -12,7 +12,7 @@ import { handFocusOnLeave } from '../focus.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
-import { UnavailableControls } from '../settings/SettingsView.tsx';
+import { hireUnavailable, UnavailableControls } from '../settings/SettingsView.tsx';
 import { INSTALL_COMMANDS, rowFor } from '../setup/daemon.ts';
 import { changeSetting } from '../settings/edit.ts';
 import { copyToClipboard } from '../setup/SetupView.tsx';
@@ -251,6 +251,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
   const withdrawn = workspace !== null && (floor.settings?.providers
     .some((name) => isHireEngine(name) && !workspace.engines.includes(name)) ?? false);
   const blocked = unavailable(floor) ?? missing;
+  const saidAbove = blocked !== null && hireUnavailable(floor) === blocked;
   // A missing or signed-out engine holds the wizard on Engine, where its reason, Sign in and Check again are.
   const stuck = hire.section === 'engine' && missing !== null;
   const frozen = hire.attempt !== null;
@@ -325,7 +326,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
           )}
           {hire.section !== 'workspace' ? null : (
             <>
-              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? <p className={NOTE}>{floor.hireLimit === null ? NO_PROJECT_LIST : hireLimitText(floor.hireLimit)}</p> : (
+              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? (floor.hireLimit === null ? <p className={NOTE}>{NO_PROJECT_LIST}</p> : null) : (
                 <fieldset className={FIELDSET} aria-invalid={flagged('workspace_id')}
                   aria-describedby={described('workspace_id')}>
                   <legend className={LEGEND}>Which project?</legend>
@@ -425,7 +426,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
             onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</button>}
       </Actions>
       {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <div className="px-6 pb-4 max-[641px]:px-4"><NoHireProjectHint floor={floor} /></div>)
-        : blocked === null || stuck ? null : <p className={cn(NOTE, 'px-6 pb-4 max-[641px]:px-4')} role="status">{blocked}</p>}
+        : blocked === null || stuck || saidAbove ? null : <p className={cn(NOTE, 'px-6 pb-4 max-[641px]:px-4')} role="status">{blocked}</p>}
     </>
   );
 }

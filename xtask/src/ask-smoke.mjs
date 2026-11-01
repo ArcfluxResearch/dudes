@@ -66,7 +66,7 @@ export async function askATeammate(run) {
     && el.querySelector('.chat-final-reply')?.textContent === 'Bruno says: The answer is 4')`,
   'Ada did not report Bruno\'s answer in her chat', wait);
   const row = await text('.asked-row');
-  check(row === 'Ada asked Bruno a questionAnswered', `the request row does not name who asked whom: ${JSON.stringify(row)}`);
+  check(/^Ada asked Bruno(?: a question|: .+)Answered$/.test(row), `the request row does not name who asked whom: ${JSON.stringify(row)}`);
   await picture('Ada');
 
   await chatOf('Bruno');

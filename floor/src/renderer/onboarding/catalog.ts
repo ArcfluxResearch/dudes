@@ -291,6 +291,11 @@ export function sameHireLimit(a: HireLimit | null, b: HireLimit | null): boolean
   return a === b || (a !== null && b !== null && a.perDay === b.perDay && a.reopensAt.getTime() === b.reopensAt.getTime());
 }
 
+/** Whether the moment the limit lifts has passed, the only time a fresh snapshot can change the answer. */
+export function hireLimitElapsed(limit: HireLimit, now: number): boolean {
+  return now >= limit.reopensAt.getTime();
+}
+
 export function hireLimitText(limit: HireLimit): string {
   const when = limit.reopensAt.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
   return `This browser has hired ${limit.perDay} agents today. You can hire more after ${when}.`;

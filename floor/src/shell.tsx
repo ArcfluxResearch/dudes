@@ -24,6 +24,7 @@ import { refreshFloorSnapshot } from './renderer/floor/stream';
 import { Dialog, Notice } from './ui/index.ts';
 import { HireWizard } from './renderer/onboarding/HireWizard';
 import { HireEntry, hireSwitchOn } from './renderer/onboarding/HireEntry';
+import { hireLimitElapsed } from './renderer/onboarding/catalog';
 import { FirstRunGuide } from './renderer/setup/FirstRunGuide';
 import { NotificationOffer } from './renderer/NotificationOffer.tsx';
 import { FirstTask } from './renderer/setup/FirstTask.tsx';
@@ -159,10 +160,14 @@ function SignedInShell() {
   const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
   const listIsCurrent = floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;
   useEffect(() => {
+    if (listIsCurrent) setReopening(false);
+  }, [listIsCurrent]);
+  useEffect(() => {
     if (listIsCurrent) void loadDevices();
   }, [listIsCurrent, floor.epoch]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hiring, setHiring] = useState(false);
+  const [reopening, setReopening] = useState(false);
   const [guide, setGuide] = useState<'open' | 'closed'>('closed');
   const [archiveHireKept, setArchiveHireKept] = useState(false);
   const [officeBar, setOfficeBar] = useState<HTMLDivElement | null>(null);
@@ -441,7 +446,7 @@ function SignedInShell() {
     hireOpener.current = opener;
     prepareHire(floor);
     setHiring(true);
-    if (floor.hireLimit !== null) refreshFloorSnapshot();
+    if (floor.hireLimit !== null && hireLimitElapsed(floor.hireLimit, Date.now())) setReopening(refreshFloorSnapshot());
   }
 
   function openSettingsFromHire(): void {
@@ -609,7 +614,7 @@ function SignedInShell() {
           selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent}
           onOpenQuestion={openQuestion} onOpenTicket={openCard} sheet hidden={fullPanel}
           addAgent={floor.agents.length === 0 && hireSwitchOn(floor) ? null
-            : <HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
+            : <HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded waiting={reopening} />} /> : null}
         {view === null || view === 'overview' || focused ? null : <Control key={view} floor={floor} view={view}
           onClose={closeView} onView={openView}
           onReviewRecovery={reviewRecovery} onOpenGit={openAgentChanges} onHire={openHire}
