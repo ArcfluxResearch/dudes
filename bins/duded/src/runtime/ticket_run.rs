@@ -29,6 +29,7 @@ pub(super) struct Snapshot {
     pub(super) tickets: Vec<(CardView, TicketRow)>,
     hires: BTreeMap<AgentId, String>,
     working: BTreeSet<AgentId>,
+    invalidations_owed: BTreeSet<AgentId>,
 }
 
 /// The goal text of a ticket: its title, then its note, then the operator's message when the
@@ -70,10 +71,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .copied()
             .filter(|agent| self.work_beside(*agent))
             .collect();
+        let invalidations_owed = hires
+            .keys()
+            .copied()
+            .filter(|agent| self.sup.recovery_invalidations_owed(*agent))
+            .collect();
         Ok(Snapshot {
             tickets,
             hires,
             working,
+            invalidations_owed,
         })
     }
 
@@ -88,6 +95,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             tickets: &snapshot.tickets,
             hires: &snapshot.hires,
             working: &snapshot.working,
+            invalidations_owed: &snapshot.invalidations_owed,
             closing: self.sup.is_closing(),
         };
         Ok(read(&facts))
@@ -131,13 +139,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             let (owed, heads) = self.with_ticket_facts(|facts| {
                 (
                     facts.owed_ticket_moves().into_iter().next(),
-                    facts.next_starts(),
+                    facts.next_starts(&failed),
                 )
             })?;
             let before = self.sup.world().last_applied_lsn;
             if let Some(owed) = owed {
                 self.move_owed(&owed)?;
-            } else if let Some(card) = heads.into_iter().find(|card| !failed.contains(card)) {
+            } else if let Some(card) = heads.into_iter().next() {
                 // A start that fails must not keep the other projects from starting theirs.
                 match self.advance_ticket(card) {
                     Ok(true) => {}

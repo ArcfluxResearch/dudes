@@ -266,6 +266,7 @@ impl ReviewFixture {
             tickets: &tickets,
             hires: &self.hires,
             working: &BTreeSet::new(),
+            invalidations_owed: &BTreeSet::new(),
             closing: false,
         })
     }
