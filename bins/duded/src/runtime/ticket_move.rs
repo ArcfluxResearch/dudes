@@ -234,14 +234,19 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .map_err(|refusal| format!("its MCP servers are not admitted there: {refusal}"))
     }
 
-    /// The agent has worked in another project and has no conversation here yet, so the task it
-    /// is about to get is its first in this place.
+    /// The agent moved here and has had no turn since, in a place with no conversation restored,
+    /// so the task it is about to get is its first in this place. A later start after a context
+    /// reset is not.
     pub(super) fn arrived_without_a_conversation(&self, agent: AgentId) -> bool {
-        self.sup
-            .world()
-            .agents
-            .get(&agent)
-            .is_some_and(|row| row.session.is_none() && !row.other_projects.is_empty())
+        let world = self.sup.world();
+        world.agents.get(&agent).is_some_and(|row| {
+            row.session.is_none()
+                && !row.other_projects.is_empty()
+                && !world
+                    .turns
+                    .values()
+                    .any(|turn| turn.agent == agent && turn.issue_lsn > row.mcp.hire_lsn)
+        })
     }
 
     /// The refusal a give gets when the agent could not move to the ticket's project.
