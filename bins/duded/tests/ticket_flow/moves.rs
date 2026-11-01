@@ -4,6 +4,9 @@
 
 use super::*;
 
+#[path = "moves_more.rs"]
+mod more;
+
 const NOTE: &str = "Your earlier projects are not in this conversation";
 
 fn docs_repo(fixture: &Fixture) -> PathBuf {
@@ -603,10 +606,35 @@ fn an_agent_in_its_own_copy_returns_to_that_copy_and_its_conversation() {
     restart_accepts(&fixture, &settings, &repo);
 }
 
-#[test]
-fn a_crash_in_the_first_turn_after_a_move_needs_the_operators_consent() {
+/// A daemon that moved an agent and was cut off in the launch of its first turn there, and a
+/// second daemon revived over a copy of that journal.
+struct CrashAfterMove {
+    /// Kept alive because the journal's places point into its folders.
+    first: Fixture,
+    repo: PathBuf,
+    revived: Flow,
+    second: Fixture,
+    docs_card: CardId,
+    docs: PathBuf,
+    settings: duded::Settings,
+    gate: Arc<Gate>,
+    flow: Flow,
+    giver: std::thread::JoinHandle<dudes_proto::rpc::Response>,
+}
+
+impl CrashAfterMove {
+    fn stop(self) -> (Fixture, Fixture) {
+        self.revived.stop();
+        self.gate.release();
+        let _ = self.giver.join();
+        self.flow.stop();
+        (self.first, self.second)
+    }
+}
+
+fn crash_after_a_move() -> CrashAfterMove {
     let fixture = Fixture::new();
-    let (settings, repo, _) = two_projects(&fixture);
+    let (settings, repo, docs) = two_projects(&fixture);
     let mut records = vec![hired(cody(), "Cody", "service", &repo, None)];
     records.extend(ticket_for(1, "service", cody()));
     seed(&fixture, records);
@@ -621,7 +649,7 @@ fn a_crash_in_the_first_turn_after_a_move_needs_the_operators_consent() {
     let gate = Arc::new(Gate::default());
     let mut flow = Flow::boot_with(
         &fixture,
-        settings.clone(),
+        settings,
         repo.clone(),
         [common::fails()],
         Options {
@@ -648,7 +676,32 @@ fn a_crash_in_the_first_turn_after_a_move_needs_the_operators_consent() {
     copy_dir(&fixture.journal_dir(), &second.journal_dir());
     let mut settings = second.settings();
     settings.enrollment = flow.settings.enrollment.clone();
-    let mut revived = Flow::boot(&second, settings, repo, [common::fails()]);
+    let revived = Flow::boot(&second, settings.clone(), repo.clone(), [common::fails()]);
+    CrashAfterMove {
+        first: fixture,
+        repo,
+        revived,
+        second,
+        docs_card,
+        docs,
+        settings,
+        gate,
+        flow,
+        giver,
+    }
+}
+
+#[test]
+fn a_crash_in_the_first_turn_after_a_move_needs_the_operators_consent() {
+    let CrashAfterMove {
+        mut revived,
+        second,
+        docs_card,
+        gate,
+        flow,
+        giver,
+        ..
+    } = crash_after_a_move();
     assert_eq!(
         revived.await_status(docs_card, CardStatus::Blocked).status,
         CardStatus::Blocked
