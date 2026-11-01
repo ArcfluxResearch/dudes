@@ -30,6 +30,7 @@ struct Real {
     cut_listing: AtomicBool,
     new_files_time_out: AtomicBool,
     exhaust: AtomicBool,
+    disturb: Mutex<Vec<PathBuf>>,
 }
 impl PredicateRunner for Real {
     fn run(&self, spec: &LaunchSpec, timeout: Duration) -> io::Result<PredicateOutcome> {
@@ -54,6 +55,11 @@ impl PredicateRunner for Real {
     ) -> io::Result<PredicateCaptured> {
         self.commands.fetch_add(1, Ordering::Relaxed);
         self.argv.lock().unwrap().push(spec.argv.clone());
+        let disturbed = self.disturb.lock().unwrap().pop();
+        if let Some(path) = disturbed {
+            std::fs::write(&path, "").unwrap();
+            std::fs::remove_file(&path).unwrap();
+        }
         if self.exhaust.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(400));
             return Err(io::Error::other("the program was lost"));
@@ -128,6 +134,7 @@ impl Lab {
             cut_listing: AtomicBool::new(false),
             new_files_time_out: AtomicBool::new(false),
             exhaust: AtomicBool::new(false),
+            disturb: Mutex::new(Vec::new()),
         });
         let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
             .map(|dir| dir.join("git"))
@@ -1277,6 +1284,33 @@ fn a_maintenance_lock_in_the_object_directory_is_a_busy_refusal_until_it_clears(
     );
     std::fs::remove_file(&lock).unwrap();
     assert!(lab.reader.capture_baseline(&lab.tree(), cancel()).is_ok());
+}
+
+#[test]
+fn a_writer_in_the_git_directory_during_the_capture_does_not_make_the_baseline_unavailable() {
+    let lab = Lab::new();
+    // Another process creating and removing one file in the git directory moves the directory's
+    // timestamps once, which is not a change to anything the capture read.
+    lab.real
+        .disturb
+        .lock()
+        .unwrap()
+        .push(lab.repo().join(".git/writer-probe"));
+    let captured = lab.reader.capture_baseline(&lab.tree(), cancel());
+    assert!(captured.is_ok(), "the baseline: {captured:?}");
+}
+
+#[test]
+fn a_writer_that_never_stops_still_ends_in_an_unavailable_baseline() {
+    let lab = Lab::new();
+    let probe = lab.repo().join(".git/writer-probe");
+    lab.real.disturb.lock().unwrap().extend(vec![probe; 50]);
+    assert_eq!(
+        lab.reader
+            .capture_baseline(&lab.tree(), cancel())
+            .unwrap_err(),
+        DiffRefusal::Unreadable
+    );
 }
 
 #[test]
