@@ -421,18 +421,12 @@ export class Journey {
       await this.until(`Boolean(document.querySelector('input[name="engine"][value="codex"]'))`, `hire ${count}: no engine was offered`);
       await this.click('input[name="engine"][value="codex"]');
       await this.click('[data-hire-action="submit"]');
-      await this.until(`Boolean(document.querySelector('[data-hire-outcome="complete"]'))`, `hire ${count} did not complete`);
-      if (count === 8) {
-        await this.until(`document.querySelector('#hire-wizard')?.innerText.includes(${JSON.stringify(says)})`,
-          'the page after the eighth hire does not say the day\'s limit was reached');
-        await this.screen('hire: eighth done');
-      }
-      await this.clickButton('Close', '#hire-wizard header button');
-      await this.until(`!document.querySelector('#hire-wizard')`, `hire ${count}: the dialog did not close`);
+      await this.until(`!document.querySelector('#hire-wizard')`, `hire ${count}: the dialog did not close after the hire`);
     }
     await this.click('#office-open');
     await this.until(`document.querySelector('[data-hire-entry="limit"]')?.textContent.startsWith(${JSON.stringify(says)})`,
       'Add agent does not say the day\'s limit was reached');
+    await this.screen('hire: add agent at the limit');
     await this.click('#hire-open');
     await this.until(`document.querySelector('#hire-wizard')?.innerText.includes(${JSON.stringify(says)})`,
       'the Hire dialog does not say the day\'s limit was reached');
