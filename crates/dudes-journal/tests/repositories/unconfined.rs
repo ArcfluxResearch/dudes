@@ -52,6 +52,11 @@ fn an_unconfined_hire_survives_the_journal_and_folds_like_a_confined_one() {
     };
     assert_eq!(scope.policy, RepositoryPolicy::OperatorTrustV1);
     scope.policy = RepositoryPolicy::WorkingTreeV1;
+    assert!(
+        row.trusted && !expected.trusted,
+        "only an unconfined hire is vouched for"
+    );
+    row.trusted = expected.trusted;
     assert_eq!(row, expected);
     assert_eq!(store.worktrees().unwrap(), confined.worktrees().unwrap());
 }

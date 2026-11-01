@@ -1922,6 +1922,14 @@ pub enum Record {
     MailTurnDecided(crate::mail_turn::MailTurnDecision),
     /// Required managed issue of a mail turn, under its exact decision.
     MailTurnIssued(crate::mail_turn::MailTurnIssue),
+    /// An idle agent moves to another project's place. Required, because a reader that skipped it
+    /// would run the agent's turns in the wrong folder.
+    AgentMoved {
+        /// The agent that moves.
+        agent: AgentId,
+        /// Where it lands.
+        to: crate::placement::AgentMove,
+    },
     /// A git worktree leased for one agent, appended and fsynced before
     /// `git worktree add` runs, so a crash after the add leaves a recorded tree rather than an
     /// unrecorded one. The lease is pending until an `AgentHired` names it.
@@ -2714,6 +2722,7 @@ impl Record {
             }
             Self::MailTurnDecided(_) => RecordKind::MailTurnDecided,
             Self::MailTurnIssued(_) => RecordKind::MailTurnIssued,
+            Self::AgentMoved { .. } => RecordKind::AgentMoved,
             Self::WorktreeLeased { .. } => RecordKind::WorktreeLeased,
             Self::WorktreeLeasedWithIdentity { .. } => RecordKind::WorktreeLeasedWithIdentity,
             Self::WorktreeRemoved { .. } => RecordKind::WorktreeRemoved,
@@ -3022,6 +3031,8 @@ pub enum RecordKind {
     MailTurnDecided = 114,
     /// [`Record::MailTurnIssued`].
     MailTurnIssued = 115,
+    /// [`Record::AgentMoved`].
+    AgentMoved = 116,
 }
 
 impl RecordKind {
@@ -3078,8 +3089,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 115] {
-        let mut kinds = [Self::AgentHired; 115];
+    const fn known_kinds() -> [Self; 116] {
+        let mut kinds = [Self::AgentHired; 116];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -3154,6 +3165,7 @@ impl RecordKind {
         kinds[112] = Self::AgentHiredWithUnconfinedRepositories;
         kinds[113] = Self::MailTurnDecided;
         kinds[114] = Self::MailTurnIssued;
+        kinds[115] = Self::AgentMoved;
         kinds
     }
 
@@ -3222,6 +3234,7 @@ impl RecordKind {
                 | Self::AgentHiredWithUnconfinedRepositories
                 | Self::MailTurnDecided
                 | Self::MailTurnIssued
+                | Self::AgentMoved
         )
     }
 
@@ -3915,6 +3928,21 @@ pub mod samples {
                 model_selection: ModelSelection::default(),
                 lsn_of_decision: Lsn::from_parts(1, 300).unwrap(),
             }),
+            RecordKind::AgentMoved => Record::AgentMoved {
+                agent: agent(),
+                to: crate::placement::AgentMove {
+                    cwd: PathBuf::from("/work/billing"),
+                    workspace: RecordedWorkspace {
+                        id: "billing".into(),
+                        label: "Billing".into(),
+                    },
+                    worktree: None,
+                    budget: AgentBudget {
+                        usd_per_day: None,
+                        tokens_per_day: None,
+                    },
+                },
+            },
             RecordKind::TaughtNoteTurnDecided => Record::TaughtNoteTurnDecided {
                 agent: agent(),
                 goal: goal(),
@@ -4882,7 +4910,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 115);
+        assert_eq!(RecordKind::KNOWN.len(), 116);
         for &kind in RecordKind::KNOWN[46..66]
             .iter()
             .chain(&RecordKind::KNOWN[94..100])
@@ -5442,7 +5470,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            115,
+            116,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -6523,7 +6551,7 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 115);
+        assert_eq!(RecordKind::KNOWN.len(), 116);
         assert_eq!(RecordKind::from_tag(1000), None);
     }
 

@@ -1336,9 +1336,7 @@ where
             .validate(sup.world(), &entry.record)
             .with_context(|| format!("invalid goal replacement at {lsn:?}"))?;
         goal_index.apply(&entry.record);
-        sup.world()
-            .validate_mcp_record(lsn, &entry.record)
-            .with_context(|| format!("invalid MCP launch history at {lsn:?}"))?;
+        validate_history(sup.world(), lsn, &entry)?;
         match memory.apply_entry(lsn, &entry) {
             Ok(MemoryApply::Corrupt(reason)) => {
                 tracing::error!(?lsn, ?reason, "memory record was excluded during replay");
@@ -1395,6 +1393,20 @@ where
         goal_index,
         journal_dir,
     })
+}
+
+/// Refuse a record that contradicts the history before it, before replay folds it.
+fn validate_history(
+    world: &dudes_supervisor::World,
+    lsn: Lsn,
+    entry: &dudes_proto::Entry,
+) -> Result<()> {
+    world
+        .validate_mcp_record(lsn, &entry.record)
+        .with_context(|| format!("invalid MCP launch history at {lsn:?}"))?;
+    world
+        .validate_move_record(entry)
+        .with_context(|| format!("invalid agent move at {lsn:?}"))
 }
 
 /// Startup steps 4 and 5, which one call produces and a second checks.

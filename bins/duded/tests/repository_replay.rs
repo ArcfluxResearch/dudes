@@ -1759,3 +1759,33 @@ mod scoped_transport;
 
 #[path = "repository_replay/review_batches.rs"]
 mod review_batches;
+
+#[test]
+fn a_plural_hire_has_no_single_place_to_leave() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let (_writer, world, _projection) = replay_pair(&fixture);
+    let record = Record::AgentMoved {
+        agent: story.hire.id,
+        to: dudes_proto::placement::AgentMove {
+            cwd: fixture.state.path().to_path_buf(),
+            workspace: RecordedWorkspace {
+                id: "billing".into(),
+                label: "Billing".into(),
+            },
+            worktree: None,
+            budget: dudes_proto::AgentBudget {
+                usd_per_day: None,
+                tokens_per_day: None,
+            },
+        },
+    };
+    let entry = Entry {
+        at: Timestamp::from_unix_millis(1_000),
+        record,
+    };
+    assert_eq!(
+        world.validate_move_record(&entry),
+        Err(dudes_supervisor::world::MoveHistoryError::MultiRepository)
+    );
+}
