@@ -576,9 +576,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(Answered::TicketAccepted(TicketAcceptResult::default()))
     }
 
-    /// The agent must be live and hired into the ticket's project.
+    /// The agent must be live and either in the ticket's project or able to move there.
     fn require_ticket_agent(&self, agent: AgentId, ticket: &TicketRow) -> Result<(), RpcError> {
         if let Some(scope) = ticket.repositories.declared() {
+            if self
+                .agent_project(agent)
+                .is_some_and(|here| here != scope.declaration.project)
+            {
+                return Err(RpcError {
+                    message: "That project holds several repositories, and an agent hired into another project does not move there. Give the ticket to an agent hired into this project.".to_owned(),
+                    ..refusal(TicketRefusal::AgentUnavailable, CardStatus::Todo)
+                });
+            }
             return CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories)
                 .current_ticket_hire(self.sup.world(), agent, &scope.declaration)
                 .map_err(|error| error_refusal(&error));
@@ -612,7 +621,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             None => Err(refusal(TicketRefusal::AgentNoProject, CardStatus::Todo)),
             Some(workspace) if workspace.id == ticket.repositories.project() => Ok(()),
-            Some(_) => Err(unavailable()),
+            Some(_) => self
+                .plan_move(agent, ticket.repositories.project(), None)
+                .map(|_| ())
+                .map_err(|stop| Self::give_refusal(&stop)),
         }
     }
 
@@ -737,6 +749,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "That ticket's recorded repository is unavailable.",
             )
         })?;
+        if repository
+            .workspace()
+            .is_some_and(|here| here.id != ticket.repositories.project())
+        {
+            return Err(unavailable(
+                "worktree_unavailable",
+                "That ticket's agent has moved to another project, so its folder is no longer this ticket's.",
+            ));
+        }
         let (directory, worktree) = match repository.worktree() {
             None => (repository.cwd().to_path_buf(), None),
             Some(id) => {

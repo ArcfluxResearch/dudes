@@ -1121,9 +1121,11 @@ USAGE
         check. Add makes one and prints its card id. Project defaults to the only
         enrolled project, and Done when to that project's own check. Give starts the
         ticket at once when the agent and the project are free, and otherwise queues
-        it; it answers at once and polls nothing, and the agent must be hired into
-        the ticket's project. An agent is named by its name, which must match exactly
-        one live agent, or by its id. When the daemon's own run of the check passes,
+        it; it answers at once and polls nothing. An idle agent of another project
+        moves to the ticket's project as the ticket starts, and keeps its place and
+        its conversation in each project; a ticket whose agent has moved away no
+        longer opens a folder. An agent is named by its name, which must match
+        exactly one live agent, or by its id. When the daemon's own run of the check passes,
         the ticket is Ready for you. Show prints the agent's summary and the check
         result. Accept marks it Done. Changes sends it back with what to change, to
         the agent that did the work unless --agent names another. Stop takes a Working

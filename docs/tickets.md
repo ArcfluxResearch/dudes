@@ -45,11 +45,22 @@ takes. Add `--json` for the same answer as data.
   `dudes ticket edit <card> --priority high` changes it alone. `dudes ticket show` prints it.
 - **Note.** Optional. A one-line ticket is a normal ticket.
 
-Give the ticket to an agent hired into the same project:
+Give the ticket to an agent. An agent of the same project takes it where it works. An idle agent of
+another project moves to the ticket's project when the ticket starts, so you do not need to hire a
+second agent for each project:
 
 ```sh
 dudes ticket give <card id> --agent Cody
 ```
+
+A moving agent keeps its role and its memory. It works in the project's shared folder, or in its own
+copy there if it already holds one, and it keeps a separate conversation in each project, so
+returning to a project resumes the conversation it had there. It moves only when it has no turn,
+question, goal or unreviewed ticket in its current project, and a move never creates a copy. An
+agent that works in several repositories, an agent hired before projects were recorded, and a project
+with several repositories do not take part in moves, and the give is refused with the reason. A
+project's per-agent spending ceiling binds a moved agent while it is there. Trust you grant in one
+project does not reach another.
 
 `--agent` takes the agent's name or its id. A name must match exactly one live agent. When no live
 agent has that name, or several do, the command prints a plain sentence (the second lists the

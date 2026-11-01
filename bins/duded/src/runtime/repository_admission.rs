@@ -645,6 +645,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     "a live hire still references the project"
                 );
             }
+            for (project, place) in &row.other_projects {
+                let Some(copy) = place.repository.worktree() else {
+                    continue;
+                };
+                let origin = self
+                    .sup
+                    .world()
+                    .worktrees
+                    .get(&copy)
+                    .map_or(place.repository.cwd(), |lease| lease.origin.as_path());
+                ensure!(
+                    candidate
+                        .profile(project)
+                        .is_some_and(|profile| profile.cwd == origin),
+                    "a live agent still holds its own copy in the project"
+                );
+            }
             let HireRepositories::Legacy(repository) = &row.repositories else {
                 continue;
             };

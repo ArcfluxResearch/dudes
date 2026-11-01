@@ -4252,3 +4252,6 @@ fn a_file_changed_again_in_the_round_still_passes_the_check() {
     assert!(predicate_verdict(&fixture, turn));
     flow.stop();
 }
+
+#[path = "ticket_flow/moves.rs"]
+mod moves;

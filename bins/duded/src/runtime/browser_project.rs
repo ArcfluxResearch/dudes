@@ -246,6 +246,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         }
                     });
                     recorded
+                        || agent
+                            .other_projects
+                            .get(id)
+                            .is_some_and(|place| place.repository.worktree().is_some())
                         || directory
                             .and_then(|directory| directory.canonicalize().ok())
                             .is_none_or(|directory| directory.starts_with(project))

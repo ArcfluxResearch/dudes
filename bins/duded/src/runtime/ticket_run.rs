@@ -129,22 +129,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             // One tree per start holds only because this loop is single-threaded and re-reads the
             // facts after each append: a start's check covers the card's sequence, not its tree.
             let (owed, heads) = self.with_ticket_facts(|facts| {
-                let heads: Vec<CardId> = facts
-                    .queued_projects()
-                    .into_iter()
-                    .flat_map(|project| facts.next_tickets(project))
-                    .collect();
-                (facts.owed_ticket_moves().into_iter().next(), heads)
+                (
+                    facts.owed_ticket_moves().into_iter().next(),
+                    facts.next_starts(),
+                )
             })?;
             let before = self.sup.world().last_applied_lsn;
             if let Some(owed) = owed {
                 self.move_owed(&owed)?;
             } else if let Some(card) = heads.into_iter().find(|card| !failed.contains(card)) {
                 // A start that fails must not keep the other projects from starting theirs.
-                if let Err(refused) = self.start_ticket(card) {
-                    failed.insert(card);
-                    failure = Some(refused);
-                    continue;
+                match self.advance_ticket(card) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        failed.insert(card);
+                        continue;
+                    }
+                    Err(refused) => {
+                        failed.insert(card);
+                        failure = Some(refused);
+                        continue;
+                    }
                 }
             } else {
                 break;
@@ -199,7 +204,24 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         })
     }
 
-    /// Start a ticket that `next_tickets` named: build its goal, admit it as any goal is admitted,
+    /// The next step for a ticket that `next_starts` named: a move of its agent into the ticket's
+    /// project when the agent is elsewhere, otherwise the start. Answers whether it did anything,
+    /// so a step that waits does not hold the tickets behind it.
+    fn advance_ticket(&mut self, card: CardId) -> Result<bool, RpcError> {
+        let (view, ticket) = self.ticket_row(card)?;
+        let Some(agent) = view.claimed_by else {
+            return Ok(true);
+        };
+        if self
+            .agent_project(agent)
+            .is_some_and(|here| here != ticket.repositories.project())
+        {
+            return self.move_for_ticket(&view, &ticket, agent);
+        }
+        self.start_ticket(card).map(|()| true)
+    }
+
+    /// Start a ticket that `next_starts` named: build its goal, admit it as any goal is admitted,
     /// and append one record. A reason only the operator can fix moves the ticket to Needs you
     /// instead, so it leaves the queue and does not hold the project.
     fn start_ticket(&mut self, card: CardId) -> Result<(), RpcError> {
@@ -225,7 +247,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     )
                 })
             });
-        let text = goal_text(&view.title, &ticket.description, ticket.message.as_deref());
+        let mut text = goal_text(&view.title, &ticket.description, ticket.message.as_deref());
+        if self.arrived_without_a_conversation(agent) {
+            text.push_str("\n\n");
+            text.push_str(super::ticket_move::FIRST_TASK_NOTE);
+        }
         self.pump_or_refuse(Input::Command(Command::TicketStart {
             card,
             agent,
@@ -333,7 +359,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     /// Move a ticket that could not start into Needs you with the reason.
-    fn refuse_start(&mut self, view: &CardView, reason: TicketReason) -> Result<(), RpcError> {
+    pub(super) fn refuse_start(
+        &mut self,
+        view: &CardView,
+        reason: TicketReason,
+    ) -> Result<(), RpcError> {
         self.board_append(Record::CardTransition {
             card: view.id,
             from: view.status,

@@ -41,7 +41,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -102,6 +102,7 @@ mod agent_mcp;
 mod agent_model;
 mod browser_project;
 mod browser_ticket;
+mod ticket_move;
 mod ticket_run;
 #[cfg(test)]
 mod ticket_start_tests;
@@ -6790,7 +6791,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// As [`Self::refuse_a_check_that_cannot_run`], for a check and the agent that would run it.
     fn check_can_run(&self, agent: AgentId, predicate: &Predicate) -> Result<(), RpcError> {
-        let Predicate::Command { argv, .. } = predicate else {
+        let Predicate::Command { .. } = predicate else {
             return Ok(());
         };
         let Some(row) = self.sup.world().agents.get(&agent) else {
@@ -6803,9 +6804,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .repositories
             .singleton()
             .ok_or_else(|| error(ErrorCode::Refused, "the recorded repository is unavailable"))?;
+        self.check_can_run_in(repository.cwd(), predicate)
+    }
+
+    /// Whether a command check would run from `cwd`, the folder its agent works in.
+    fn check_can_run_in(&self, cwd: &Path, predicate: &Predicate) -> Result<(), RpcError> {
+        let Predicate::Command { argv, .. } = predicate else {
+            return Ok(());
+        };
         let Err(cause) = predicate::spec_for(
             argv,
-            repository.cwd(),
+            cwd,
             &self.ctx.predicate_env,
             self.ctx.predicate_path.as_deref(),
         ) else {
