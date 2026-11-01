@@ -139,8 +139,8 @@ test('the Give form reads before it offers a hire, and takes the project from th
   assert.ok(!/No agent yet/.test(giveForm(null)));
   assert.match(giveForm(null, 'The daemon did not answer.'), /The daemon did not answer\./);
   assert.match(giveForm('service'), /role="combobox"/);
-  assert.match(giveForm('elsewhere'), /No agent works in this project yet\. Hire one into it, then give this ticket to it\./);
-  // Opened with no detail loaded, a queued ticket's project comes from the agent that holds it.
+  assert.match(giveForm('elsewhere'), /Now in Service · Moves here when free/);
+  // Opened with no detail loaded, a ticket the daemon gave no project takes it from the agent that holds it.
   store.resetFloorStore();
   subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'claimed', { claimed_by: ADA }, { position: 1 })] });
   const floor = store.getFloorState();

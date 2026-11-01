@@ -84,6 +84,8 @@ export interface AgentChoice {
   /** The ticket this agent is on, or the one holding its folder. */
   readonly after: string | null;
   readonly hold: string | null;
+  /** The project the agent works in now, when it is not the ticket's project. */
+  readonly now: string | null;
 }
 
 function holdWords(hold: AutomaticHold): string {
@@ -95,7 +97,7 @@ function holdWords(hold: AutomaticHold): string {
   }
 }
 
-export function agentChoice(floor: FloorState, id: string): AgentChoice {
+export function agentChoice(floor: FloorState, id: string, now: string | null = null): AgentChoice {
   const row = agentRow(floor, id);
   const mine = tickets(floor.cards).filter((card) => card.claimed_by === id);
   const waiting = mine.filter((card) => card.status === 'claimed').length;
@@ -109,7 +111,7 @@ export function agentChoice(floor: FloorState, id: string): AgentChoice {
   const holder = state === 'idle' && !own ? holdingTicket(floor, id) : null;
   return Object.freeze({
     id, name: agentName(floor, id), state, waiting, full: waiting >= QUEUE_CAP, own,
-    after: doing?.title ?? holder?.title ?? null, hold: hold === null ? null : holdWords(hold),
+    after: doing?.title ?? holder?.title ?? null, hold: hold === null ? null : holdWords(hold), now,
   });
 }
 
@@ -173,7 +175,8 @@ export function outcomeSentence(floor: FloorState, input: OutcomeInput): string 
         : choice.state === 'stopped' ? `Waits: ${choice.name} is stopped.`
           : choice.state === 'held' ? `Waits: ${choice.name} is held (${choice.hold ?? 'needs a look'}).`
             : choice.state === 'attached' ? `Waits: ${choice.name} is in a keyboard session.`
-              : startsNow(choice) ? `${choice.name} starts it now, in ${choice.own ? 'its own copy' : 'the shared folder'}.`
+              : choice.now !== null && startsNow(choice) ? `${choice.name} moves here from ${choice.now} and starts it.`
+                : startsNow(choice) ? `${choice.name} starts it now, in ${choice.own ? 'its own copy' : 'the shared folder'}.`
                 : `Queued for ${choice.name}, ${placeInLine(choice.waiting + 1)}${choice.after === null ? '' : `, after '${choice.after}'`}.`;
   return input.mayAlreadyPass ? `${first} The Done when check may already be true.` : first;
 }

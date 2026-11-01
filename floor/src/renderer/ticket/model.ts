@@ -152,33 +152,40 @@ function treeOf(floor: FloorState, agent: string | null): string {
   return decodeWorktree(agentRow(floor, agent)?.worktree)?.branch ?? '';
 }
 
-/** Whether `other` is held by an agent of the same project and the same tree as `agent`. */
+/** Whether `other` is held by an agent working in the same project and the same tree as `agent`. */
 function sharesTree(floor: FloorState, agent: string | null, other: CardRow): boolean {
   const project = decodeWorkspace(agentRow(floor, agent)?.workspace)?.id;
   return project !== undefined && decodeWorkspace(agentRow(floor, other.claimed_by)?.workspace)?.id === project
     && treeOf(floor, other.claimed_by) === treeOf(floor, agent);
 }
 
-function holderOf(floor: FloorState, agent: string | null, except: string | null): CardRow | null {
-  const project = decodeWorkspace(agentRow(floor, agent)?.workspace)?.id;
-  if (project === undefined) return null;
-  const holders = tickets(floor.cards).filter((card) => card.id !== except && (card.status === 'doing' || card.status === 'review')
-    && decodeWorkspace(agentRow(floor, card.claimed_by)?.workspace)?.id === project);
+/** The tickets in work or review in `project`, the ones that hold a working tree there. */
+function holdersIn(floor: FloorState, project: string, except: string | null): readonly CardRow[] {
+  return tickets(floor.cards).filter((card) => card.id !== except && (card.status === 'doing' || card.status === 'review')
+    && projectOf(floor, card) === project);
+}
+
+function holderOf(floor: FloorState, agent: string | null, project: string | null, except: string | null): CardRow | null {
+  if (project === null) return null;
+  const holders = holdersIn(floor, project, except);
   return holders.find((card) => sharesTree(floor, agent, card)) ?? holders[0] ?? null;
 }
 
 /** The ticket that holds an agent's working tree, if one does: its title names the wait. */
 export function holdingTicket(floor: FloorState, agent: string): CardRow | null {
-  return holderOf(floor, agent, null);
+  return holderOf(floor, agent, decodeWorkspace(agentRow(floor, agent)?.workspace)?.id ?? null, null);
 }
 
 export function agentRow(floor: FloorState, id: string | null): AgentRow | null {
   return id === null ? null : floor.agents.find((row) => row.id === id) ?? null;
 }
 
-/** The project a ticket runs in, as its agent's recorded workspace names it. */
+/**
+ * The project a ticket runs in: the one the ticket names, since its agent may work in another project now. A card the
+ * daemon gave no project falls back to its agent's recorded workspace.
+ */
 export function projectOf(floor: FloorState, card: CardRow): string | null {
-  return decodeWorkspace(agentRow(floor, card.claimed_by)?.workspace)?.id ?? null;
+  return card.ticket?.project ?? decodeWorkspace(agentRow(floor, card.claimed_by)?.workspace)?.id ?? null;
 }
 
 export function agentName(floor: FloorState, id: string | null): string {
@@ -203,7 +210,13 @@ export function waitOf(floor: FloorState, card: CardRow): { readonly wait: Wait;
     if (agent.mode === 'attached') return say('agent_attached');
     if (agent.status === 'running' || agent.status === 'waiting') return say('agent_busy');
   }
-  const holder = holderOf(floor, card.claimed_by, card.id);
+  const project = projectOf(floor, card);
+  const here = decodeWorkspace(agent?.workspace)?.id ?? null;
+  // An agent in another project leaves only when it holds nothing there, and it joins no tree here until it arrives.
+  const holder = here !== null && project !== null && here !== project
+    ? tickets(floor.cards).find((row) => row.claimed_by === card.claimed_by && projectOf(floor, row) === here
+      && (row.status === 'doing' || row.status === 'review' || row.status === 'blocked')) ?? null
+    : holderOf(floor, card.claimed_by, project ?? here, card.id);
   return holder === null ? null : say('ticket', holder.title);
 }
 

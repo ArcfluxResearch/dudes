@@ -2981,6 +2981,7 @@ mod tests {
             text: Some("note".into()),
             cause: None,
             notice: None,
+            moved: None,
             state: dudes_proto::ChatTurnState::Reserved,
             reply: None,
             truncated: None,

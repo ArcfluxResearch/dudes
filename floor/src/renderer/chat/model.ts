@@ -45,9 +45,14 @@ export interface ChatNotice {
   readonly limit: number | null;
 }
 
+/** The project an agent moved to, by id. The page resolves the label. */
+export interface ChatMoved {
+  readonly project: string;
+}
+
 /**
  * One row of an agent's history. An operator note carries `text`. A turn that mail started carries `cause`
- * and no `text`. A notice carries `notice` and no turn.
+ * and no `text`. A notice carries `notice` and no turn. A move carries `moved` and no turn.
  */
 export interface ChatTurn {
   readonly agent_id: string;
@@ -56,6 +61,7 @@ export interface ChatTurn {
   readonly text: string | null;
   readonly cause: ChatCause | null;
   readonly notice: ChatNotice | null;
+  readonly moved: ChatMoved | null;
   readonly state: TurnState;
   readonly reply: string | null;
   readonly truncated: boolean | null;
@@ -112,6 +118,10 @@ function noticeOk(value: unknown): value is ChatNotice {
     && (CAP_REASONS.includes(value.reason) ? Number.isInteger(value.limit) && (value.limit as number) > 0 : value.limit === null);
 }
 
+function movedOk(value: unknown): value is ChatMoved {
+  return exactObject(value, ['project']) && typeof value.project === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value.project);
+}
+
 function failureText(value: unknown): boolean {
   return value === null || (typeof value === 'string' && value.length > 0 && !/\p{Cs}/u.test(value) && utf8Bytes(value) <= 2048);
 }
@@ -158,7 +168,7 @@ export function decodeChat(value: unknown, agents: readonly { readonly id: strin
     pending.push(Object.freeze({ ...row }) as unknown as PendingNote);
   }
   for (const row of value.turns) {
-    if (!exactObject(row, ['agent_id', 'turn_id', 'note_lsn', 'text', 'cause', 'notice', 'state', 'reply', 'truncated', 'failure', 'ran_models', 'reissued'])
+    if (!exactObject(row, ['agent_id', 'turn_id', 'note_lsn', 'text', 'cause', 'notice', 'moved', 'state', 'reply', 'truncated', 'failure', 'ran_models', 'reissued'])
       || !identity(row.agent_id) || !current.has(row.agent_id) || !canonicalLsn(row.note_lsn)
       || typeof row.state !== 'string'
       || !['reserved', 'waiting', 'running', 'ended', 'failed', 'cancelled', 'delivery_uncertain', 'reissue_cancelled'].includes(row.state)
@@ -167,12 +177,14 @@ export function decodeChat(value: unknown, agents: readonly { readonly id: strin
       || (row.failure !== null && row.state !== 'failed')
       || (row.reply === null && row.truncated !== null)
       || (row.state !== 'ended' && row.state !== 'failed' && (row.reply !== null || row.truncated !== null))) return null;
-    const noteTurn = row.text !== null && row.state !== 'waiting' && text(row.text, true) && identity(row.turn_id) && row.cause === null && row.notice === null;
-    const mailTurn = row.text === null && identity(row.turn_id) && causeOk(row.cause) && row.notice === null
+    const noteTurn = row.text !== null && row.state !== 'waiting' && text(row.text, true) && identity(row.turn_id) && row.cause === null && row.notice === null && row.moved === null;
+    const mailTurn = row.text === null && identity(row.turn_id) && causeOk(row.cause) && row.notice === null && row.moved === null
       && ['waiting', 'running', 'ended', 'failed'].includes(row.state);
-    const notice = row.text === null && row.turn_id === null && row.cause === null && noticeOk(row.notice) && row.state === 'ended'
+    const quiet = row.text === null && row.turn_id === null && row.cause === null && row.state === 'ended'
       && row.reply === null && row.failure === null && !row.reissued && (row.ran_models as unknown[]).length === 0;
-    if (!noteTurn && !mailTurn && !notice) return null;
+    const notice = quiet && noticeOk(row.notice) && row.moved === null;
+    const moved = quiet && row.notice === null && movedOk(row.moved);
+    if (!noteTurn && !mailTurn && !notice && !moved) return null;
     turns.push(Object.freeze({ ...row, ran_models: Object.freeze(ranModels(row.ran_models)) }) as unknown as ChatTurn);
   }
   for (const row of value.context_sent) {

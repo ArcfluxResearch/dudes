@@ -15,13 +15,13 @@ const TURN = '01ARZ3NDEKTSV4RRFFQ69G5FD1';
 const row = { id: A, name: 'Ada', mode: 'managed', status: 'idle' };
 const base = { reissued: false, truncated: null, failure: null, ran_models: [] };
 const operatorTurn = { ...base, agent_id: A, turn_id: '01ARZ3NDEKTSV4RRFFQ69G5FD0', note_lsn: '10', text: 'Ask Grace the date',
-  cause: null, notice: null, state: 'ended', reply: 'Asked her.' };
+  cause: null, notice: null, moved: null, state: 'ended', reply: 'Asked her.' };
 const mailTurn = (patch = {}, cause = {}) => ({ ...base, agent_id: A, turn_id: TURN, note_lsn: '30', text: null,
-  cause: { sender: B, thread: T1, subject: 'Release date', ...cause }, notice: null, state: 'ended',
+  cause: { sender: B, thread: T1, subject: 'Release date', ...cause }, notice: null, moved: null, state: 'ended',
   reply: 'Grace says it ships on Friday.', ...patch });
 const LIMITS = { thread_limit: 2, sender_day_limit: 4, day_limit: 20 };
 const noticeRow = (reason, patch = {}, limit = LIMITS[reason] ?? null) => ({ ...base, agent_id: A, turn_id: null, note_lsn: '40', text: null,
-  cause: null, notice: { sender: B, reason, limit }, state: 'ended', reply: null, ...patch });
+  cause: null, moved: null, notice: { sender: B, reason, limit }, state: 'ended', reply: null, ...patch });
 const view = turns => ({ enabled: true, max_text_bytes: 4096, pending: [], turns, context_sent: [] });
 const agents = [row, { id: B, name: 'Grace', mode: 'managed' }];
 let server, store, ChatPanelView, action, decodeChat;

@@ -532,14 +532,14 @@ pub(crate) fn retain_current_agents(
 
 fn valid_turn_shape(row: &dudes_proto::ChatTurnView) -> Result<()> {
     use dudes_proto::ChatTurnState;
-    match (&row.text, &row.cause, &row.notice, row.turn_id) {
-        (Some(text), None, None, Some(_)) => {
+    match (&row.text, &row.cause, &row.notice, &row.moved, row.turn_id) {
+        (Some(text), None, None, None, Some(_)) => {
             valid_text(text)?;
             if row.state == ChatTurnState::Waiting {
                 bail!("Chat note turn cannot be waiting");
             }
         }
-        (None, Some(cause), None, Some(_)) => {
+        (None, Some(cause), None, None, Some(_)) => {
             if !matches!(
                 row.state,
                 ChatTurnState::Waiting
@@ -557,7 +557,15 @@ fn valid_turn_shape(row: &dudes_proto::ChatTurnView) -> Result<()> {
                 bail!("invalid Chat mail cause subject");
             }
         }
-        (None, None, Some(notice), None)
+        (None, None, None, Some(moved), None)
+            if row.state == ChatTurnState::Ended
+                && !row.reissued
+                && row.reply.is_none()
+                && row.truncated.is_none()
+                && row.failure.is_none()
+                && row.ran_models.is_empty()
+                && !moved.project.is_empty() => {}
+        (None, None, Some(notice), None, None)
             if row.state == ChatTurnState::Ended
                 && !row.reissued
                 && row.reply.is_none()
@@ -565,7 +573,7 @@ fn valid_turn_shape(row: &dudes_proto::ChatTurnView) -> Result<()> {
                 && row.failure.is_none()
                 && row.ran_models.is_empty()
                 && notice.limit.is_some() == notice.reason.is_cap() => {}
-        _ => bail!("Chat turn row is neither a note turn, a mail turn nor a notice"),
+        _ => bail!("Chat turn row is neither a note turn, a mail turn, a notice nor a move"),
     }
     Ok(())
 }
@@ -744,6 +752,7 @@ mod tests {
             text: Some("\\".repeat(4_096)),
             cause: None,
             notice: None,
+            moved: None,
             state: dudes_proto::ChatTurnState::Ended,
             reply: Some("\\".repeat(4_096)),
             truncated: None,

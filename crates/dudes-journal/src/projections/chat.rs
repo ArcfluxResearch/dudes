@@ -277,11 +277,11 @@ fn drop_notices(window: &mut Windows, agent: AgentId, sender: AgentId) {
     });
 }
 
-/// The row to drop first, oldest first within a class: a notice, then a mail row, then an
-/// operator row, and an operator row still waiting on delivery last.
+/// The row to drop first, oldest first within a class: a notice or a move line, then a mail row,
+/// then an operator row, and an operator row still waiting on delivery last.
 fn eviction(turns: &[TurnHistory], agent: Option<AgentId>) -> Option<usize> {
     let rank = |view: &ChatTurnView| {
-        if view.notice.is_some() {
+        if view.notice.is_some() || view.moved.is_some() {
             0
         } else if view.cause.is_some() {
             1
@@ -424,6 +424,7 @@ fn push_mail_exchange(
             text: None,
             cause: Some(cause),
             notice: None,
+            moved: None,
             state: ChatTurnState::Waiting,
             reply: None,
             truncated: None,
@@ -1000,6 +1001,7 @@ pub(super) fn apply(
                             reason,
                             limit: decision.refusal_limit(),
                         }),
+                        moved: None,
                         state: ChatTurnState::Ended,
                         reply: None,
                         truncated: None,
@@ -1223,6 +1225,27 @@ pub(super) fn apply(
                 );
             });
         }
+        Record::AgentMoved { agent, to } => push_mail_row(
+            &mut window,
+            lsn,
+            ChatTurnView {
+                reissued: false,
+                agent_id: *agent,
+                turn_id: None,
+                note_lsn: lsn.0.to_string(),
+                text: None,
+                cause: None,
+                notice: None,
+                moved: Some(dudes_proto::ChatMoved {
+                    project: to.workspace.id.clone(),
+                }),
+                state: ChatTurnState::Ended,
+                reply: None,
+                truncated: None,
+                failure: None,
+                ran_models: Vec::new(),
+            },
+        )?,
         Record::AgentRetired { id, .. } => {
             window.turns.retain(|row| row.view.agent_id != *id);
             window.context.retain(|row| row.view.agent_id != *id);
@@ -1354,6 +1377,7 @@ fn reserve(
         text: Some(value.text),
         cause: None,
         notice: None,
+        moved: None,
         state: ChatTurnState::Reserved,
         reply: None,
         truncated: None,
@@ -1655,13 +1679,17 @@ mod tests {
             view: ChatTurnView {
                 reissued: false,
                 agent_id: agent(1),
-                turn_id: (shape != "notice").then(|| TurnId::from_parts(1, u128::from(lsn))),
+                turn_id: (shape != "notice" && shape != "moved")
+                    .then(|| TurnId::from_parts(1, u128::from(lsn))),
                 note_lsn: lsn.to_string(),
                 text: (shape == "operator").then(|| format!("note {lsn}")),
                 cause: (shape == "mail").then_some(ChatCause {
                     sender: Some(sender),
                     thread: None,
                     subject: None,
+                }),
+                moved: (shape == "moved").then(|| dudes_proto::ChatMoved {
+                    project: "website".into(),
                 }),
                 notice: (shape == "notice").then_some(ChatNotice {
                     sender,
@@ -1712,6 +1740,33 @@ mod tests {
         trim_windows(&mut window).unwrap();
         let kept: Vec<_> = window.turns.iter().map(|row| row.issue_lsn.0).collect();
         assert_eq!(kept, [1, 2, 5, 6, 7, 8, 10, 11]);
+    }
+
+    #[test]
+    fn a_move_line_goes_first_when_the_window_is_full_and_no_notice_replacement_drops_it() {
+        let mut window = Windows {
+            turns: vec![row(1, "moved", ChatTurnState::Ended)],
+            context: Vec::new(),
+        };
+        for lsn in 2..=8 {
+            window
+                .turns
+                .push(row(lsn, "operator", ChatTurnState::Ended));
+        }
+        drop_notices(&mut window, agent(1), agent(9));
+        assert_eq!(
+            window.turns.len(),
+            8,
+            "a notice replacement leaves a move line alone"
+        );
+        window.turns.push(row(9, "operator", ChatTurnState::Ended));
+        trim_windows(&mut window).unwrap();
+        let kept: Vec<_> = window.turns.iter().map(|row| row.issue_lsn.0).collect();
+        assert_eq!(
+            kept,
+            [2, 3, 4, 5, 6, 7, 8, 9],
+            "the move line made room, no real turn did"
+        );
     }
 
     fn agent(n: u8) -> AgentId {

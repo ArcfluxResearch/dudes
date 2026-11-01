@@ -72,6 +72,13 @@ function knownProjects(floor: FloorState): readonly { readonly id: string; reado
     .sort((a, b) => a.label.localeCompare(b.label) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+/** The label of a project the page knows, or a plain stand-in when it no longer does. */
+export function projectLabel(floor: FloorState, id: string): string {
+  return knownProjects(floor).find((project) => project.id === id)?.label
+    ?? floor.agents.map((agent) => decodeWorkspace(agent.workspace)).find((space) => space?.id === id)?.label
+    ?? 'another project';
+}
+
 /** One row for each enrolled project, counting each ticket in the project its card names, as the Board does. */
 export function projectRowsOf(floor: FloorState): readonly ProjectRow[] {
   const projects = knownProjects(floor);

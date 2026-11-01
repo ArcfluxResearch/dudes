@@ -32,7 +32,7 @@ import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noPr
 import type { TicketAction } from './model.ts';
 import { decodeWorktree } from '../worktree.ts';
 import { clearTicketChangesDraft, readTicketChangesDraft, writeTicketChangesDraft } from '../view.ts';
-import { agentsFor, ticketActionsOpen } from './TicketBoard.tsx';
+import { agentsFor, movesHereWords, ticketActionsOpen } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
 import { AGENT_SAYS, FROM_LAST_READING, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName, statusSentence } from './words.ts';
 import { StuckActions } from './StuckActions.tsx';
@@ -277,7 +277,11 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   readonly onHire?: (opener: HTMLElement | null) => void;
 }) {
   const ids = useId();
-  const { usable, unrecorded } = agentsFor(floor, project ?? '');
+  const found = agentsFor(floor, project ?? '');
+  const { unrecorded } = found;
+  const elsewhere = mode === 'give' ? found.elsewhere : [];
+  const usable = [...found.usable, ...elsewhere];
+  const nowIn = new Map(elsewhere.map((row) => [row.id, row.now]));
   const [agent, setAgent] = useState(() => usable.find((row) => row.id === card.claimed_by)?.id ?? usable[0]?.id ?? '');
   const [message, setMessage] = useState(() => mode === 'changes' ? readTicketChangesDraft(card.id) : '');
   const currentMessage = useRef(message);
@@ -316,7 +320,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
     ref={handFocusAfterLeave} data-focus-on-leave="card-detail-title" onSubmit={(event) => { void submit(event); }}>
     <Field label="Agent" id={`${ids}-agent`}>
       <Select id={`${ids}-agent`} value={chosen ?? ''} onValueChange={setAgent}
-        options={usable.map((row) => ({ value: row.id, label: row.name }))} />
+        options={usable.map((row) => ({ value: row.id, label: row.name, detail: nowIn.has(row.id) ? movesHereWords(nowIn.get(row.id)!) : undefined }))} />
     </Field>
     {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
     {choosesPriority ? <Field label="Priority" id={`${ids}-priority`}>

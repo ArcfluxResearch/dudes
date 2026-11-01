@@ -102,8 +102,8 @@ fn moved_agents(fixture: &Fixture) -> Vec<(AgentId, dudes_proto::placement::Agen
         .collect()
 }
 
-/// The saved agents projection agrees with one rebuilt from the journal, after a daemon that
-/// moved agents has stopped.
+/// The saved agents and chat projections agree with ones rebuilt from the journal, after a daemon
+/// that moved agents has stopped, and the chat holds one move line for each move.
 fn assert_projection_replays(fixture: &Fixture) {
     let settings = fixture.settings();
     let reader = dudes_journal::Reader::open(&fixture.journal_dir())
@@ -111,13 +111,24 @@ fn assert_projection_replays(fixture: &Fixture) {
         .0;
     let saved =
         dudes_journal::Projections::open(&settings.state_dir.join(duded::boot::PROJECTION_FILE))
-            .unwrap()
-            .agents()
             .unwrap();
     let mut rebuilt =
         dudes_journal::Projections::open(&fixture.runtime.path().join("rebuilt.redb")).unwrap();
     dudes_journal::replay(&reader, &mut rebuilt).unwrap();
-    assert_eq!(rebuilt.agents().unwrap(), saved);
+    assert_eq!(rebuilt.agents().unwrap(), saved.agents().unwrap());
+    assert_eq!(rebuilt.chat().unwrap(), saved.chat().unwrap());
+    let lines: Vec<_> = saved
+        .chat()
+        .unwrap()
+        .turns
+        .into_iter()
+        .filter_map(|turn| Some((turn.agent_id, turn.moved?.project)))
+        .collect();
+    let moves: Vec<_> = moved_agents(fixture)
+        .into_iter()
+        .map(|(agent, to)| (agent, to.workspace.id))
+        .collect();
+    assert_eq!(lines, moves);
 }
 
 /// Restart on the same directories: boot refuses any journal whose moves the history forbids.

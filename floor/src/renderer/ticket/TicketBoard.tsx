@@ -18,7 +18,7 @@ import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { decodeWorkspace } from '../workspace.ts';
 import { agentChoiceSentence, agentName, agentRow, boardColumns, cardWords, DONE_SHOWN, noProjects, otherCards, plainColumnOf, stateWord, TICKET_COLUMNS } from './model.ts';
-import { agentChoice, outcomeSentence, QUEUE_CAP, similarTickets, splitPaste, stateWords, suggestedAgent, titleBytes, titleTooLong, TITLE_COUNT_FROM, TITLE_LIMIT_BYTES } from './composer.ts';
+import { agentChoice, outcomeSentence, QUEUE_CAP, similarTickets, splitPaste, startsNow, stateWords, suggestedAgent, titleBytes, titleTooLong, TITLE_COUNT_FROM, TITLE_LIMIT_BYTES } from './composer.ts';
 import type { PasteSplit } from './composer.ts';
 import type { TicketColumn } from './model.ts';
 import type { Notice } from './ticket.ts';
@@ -83,18 +83,32 @@ export function projectsOf(floor: FloorState): readonly { readonly id: string; r
   }));
 }
 
-/** The agents a ticket in `project` can be given to, and the ones hired before projects were recorded. */
+/**
+ * The agents a ticket in `project` can be given to: the project's own first, then agents who work in another project
+ * and move here when free, then the ones hired before projects were recorded.
+ */
 export function agentsFor(floor: FloorState, project: string): {
   readonly usable: readonly { readonly id: string; readonly name: string }[];
+  readonly elsewhere: readonly { readonly id: string; readonly name: string; readonly now: string }[];
   readonly unrecorded: readonly { readonly id: string; readonly name: string }[];
 } {
   const named = (row: FloorState['agents'][number]) => ({
     id: row.id, name: typeof row.name === 'string' && row.name !== '' ? row.name : 'Unnamed agent',
   });
+  const elsewhere = floor.agents.flatMap((row) => {
+    const space = decodeWorkspace(row.workspace);
+    return space === null || space.id === project ? [] : [{ ...named(row), now: space.label }];
+  });
   return {
     usable: floor.agents.filter((row) => decodeWorkspace(row.workspace)?.id === project).map(named),
+    elsewhere,
     unrecorded: floor.agents.filter((row) => decodeWorkspace(row.workspace) === null).map(named),
   };
+}
+
+/** The line under an agent's name in a give list when the agent works in another project. */
+export function movesHereWords(now: string): string {
+  return `Now in ${now} · Moves here when free`;
 }
 
 export const TicketNoticeHost = createContext<HTMLElement | null>(null);
@@ -187,7 +201,8 @@ function openingDraft(floor: FloorState, projects: readonly { readonly id: strin
   const project = filtered ?? (has(saved.project) ? saved.project : null) ?? (has(last) ? last : null);
   if (project === null) return saved;
   const sameProject = project === saved.project;
-  const wanted = agentsFor(floor, project).usable.some((row) => row.id === browse.agent) ? browse.agent : sameProject ? saved.agent : '';
+  const found = agentsFor(floor, project);
+  const wanted = [...found.usable, ...found.elsewhere].some((row) => row.id === browse.agent) ? browse.agent : sameProject ? saved.agent : '';
   return { ...saved, project, check: sameProject ? saved.check : null, agent: wanted };
 }
 
@@ -241,9 +256,11 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel, requested = 
     : projects.find((entry) => entry.id === chosenProject)?.id ?? null;
   const checks = project === null ? [] : checksFor(floor.checks, project) ?? [];
   const check = chosenCheck === null ? checks[0] ?? null : checks.find((entry) => entry.id === chosenCheck) ?? null;
-  const { usable, unrecorded } = agentsFor(floor, project ?? '');
-  const choices = usable.map((row) => agentChoice(floor, row.id));
-  const suggested = suggestedAgent(choices);
+  const { usable, elsewhere, unrecorded } = agentsFor(floor, project ?? '');
+  const givable = [...usable, ...elsewhere];
+  const nowIn = new Map(elsewhere.map((row) => [row.id, row.now]));
+  const choices = givable.map((row) => agentChoice(floor, row.id, nowIn.get(row.id) ?? null));
+  const suggested = suggestedAgent(choices.filter((choice) => choice.now === null));
   const chosen = choices.find((choice) => choice.id === agent) ?? null;
   const open = ticketActionsOpen(floor);
   const tooLong = noteTooLong(note);
@@ -271,7 +288,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel, requested = 
     event?.preventDefault();
     if (!ready || project === null || check === null) return;
     const sent = draft;
-    const given = agent === '' || !usable.some((row) => row.id === agent) ? null : agent;
+    const given = agent === '' || !givable.some((row) => row.id === agent) ? null : agent;
     const result = await createTicket({
       title, note: toLf(note), project,
       check: { id: check.id, revision: check.revision },
@@ -401,13 +418,14 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel, requested = 
             value: entry.id, label: choiceLabel(entry), short: `Done when: ${entry.label}`,
             mark: entry.mayAlreadyPass ? <TriangleAlert {...ICON} role="img" aria-label="may already be true" className="shrink-0 text-warn" /> : undefined,
           }))} /> : null}
-        {project === null || noProjects(floor) || usable.length === 0 ? null
+        {project === null || noProjects(floor) || givable.length === 0 ? null
           : <Select name="agent" aria-label={chosen === null ? 'Agent' : `Agent: ${chosen.name}`} value={agent} openRequest={asked.agent} className={cn(CHIP, chosen?.full === true && 'border-danger text-danger')} listClassName={CHIP_LIST}
             onValueChange={(value) => editDraft({ agent: value })}
             options={[{ value: '', label: 'Not yet', short: 'Agent: Not yet' },
               ...choices.map((choice) => ({
                 value: choice.id, disabled: choice.full,
-                label: choice.name, detail: `${stateWords(choice)} · ${choice.own ? 'Own copy' : 'Shared folder'}`,
+                label: choice.name,
+                detail: choice.now === null ? `${stateWords(choice)} · ${choice.own ? 'Own copy' : 'Shared folder'}` : startsNow(choice) ? movesHereWords(choice.now) : `${movesHereWords(choice.now)} · ${stateWords(choice)}`,
                 badge: choice.id === suggested ? <Badge state="ready">Suggested</Badge> : undefined,
                 short: `Agent: ${choice.name}${choice.full ? ' (queue full)' : ''}`,
               })),
@@ -417,7 +435,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel, requested = 
       {chosenProject !== null && project === null ? <p className={HINT} role="status">The saved project is no longer available. Choose a project before creating this ticket.</p> : null}
       {noProjects(floor) ? <NoTicketProjectHint floor={floor} />
         : project === null ? <p className={HINT}>Project choices are unavailable. Open Setup to check the project and its completion check.</p>
-          : usable.length === 0 ? <div className="flex flex-wrap items-center gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2" data-no-agent="true">
+          : givable.length === 0 ? <div className="flex flex-wrap items-center gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2" data-no-agent="true">
             <p className={cn(HINT, 'min-w-0 flex-1')}>{agentChoiceSentence(floor, project)}</p>
             {onHire !== undefined && hireSwitchOn(floor)
               ? <Button size="sm" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</Button>

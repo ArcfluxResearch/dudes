@@ -214,6 +214,10 @@ pub struct ChatTurnView {
     #[serde(deserialize_with = "required_nullable")]
     #[schemars(with = "ExplicitNullable<ChatNotice>")]
     pub notice: Option<ChatNotice>,
+    /// The project the agent moved to when this row records a move, and null on every other row.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<ChatMoved>")]
+    pub moved: Option<ChatMoved>,
     /// The `state` value, with explicit null where applicable.
     pub state: ChatTurnState,
     /// The `reply` value, with explicit null where applicable.
@@ -301,6 +305,14 @@ impl ChatNoticeReason {
             Self::ThreadLimit | Self::SenderDayLimit | Self::DayLimit
         )
     }
+}
+
+/// An agent's move to another project, shown as one line in its chat.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChatMoved {
+    /// The id of the project the agent moved to. A reader resolves the label.
+    pub project: String,
 }
 
 /// Longest `failure` text of a [`ChatTurnView`], in bytes.

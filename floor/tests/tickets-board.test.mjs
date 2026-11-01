@@ -424,14 +424,12 @@ test('with no agent hired the Give choice is the sentence and a link to hire', (
   assert.match(withoutHire, /Open Settings to check whether hiring is available\./);
 });
 
-test('an agent in another project is not described as no agent hired', () => {
+test('an agent in another project is offered, not described as no agent hired', () => {
   subscribe(store, { agents: [agent(ADA, 'Ada', { workspace: { id: 'website', label: 'Website' } })] });
   const html = form({ settings: { switches: { hire: true }, workspaces: [{ workspace_id: 'service', label: 'Service' }] } });
-  assert.match(html, /No agent works in Service yet\. Hire one into it, then give this ticket to it\./);
-  assert.match(form({ onboarding: { workspaces: [{ workspaceId: 'service', label: 'Service' }] } }),
-    /No agent works in Service yet\. Hire one into it, then give this ticket to it\./);
   assert.doesNotMatch(html, /No agent yet/);
-  assert.match(html, /<button type="button" class="ticket-hire">Hire an agent<\/button>/);
+  assert.doesNotMatch(html, /No agent works in/);
+  assert.match(html, /Now in Website · Moves here when free/);
 });
 
 test('an agent hired without a project is named when no eligible agent exists', () => {
@@ -443,14 +441,15 @@ test('an agent hired without a project is named when no eligible agent exists', 
   assert.match(html, /<button type="button" class="ticket-hire">Hire an agent<\/button>/);
 });
 
-test('the agent choice lists agents of the project and shows the rest as unavailable', () => {
+test('the agent choice lists agents of the project, then those elsewhere, and shows the unrecorded as unavailable', () => {
   subscribe(store, {
     agents: [agent(), agent(GRACE, 'Grace', { workspace: undefined }), agent('01ARZ3NDEKTSV4RRFFQ69G5FAW', 'Other', { workspace: { id: 'website', label: 'Website' } })],
   });
   const html = form();
   assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span><span><span>Ada<\/span><span><span aria-hidden="true"><\/span>Suggested<\/span><\/span><span>Idle, starts now · Shared folder<\/span><\/span>/);
   assert.match(html, /data-value="01ARZ3NDEKTSV4RRFFQ69G5FAV"[^>]*aria-disabled="true"[^>]*><span><span><span>Grace<\/span><\/span><span>Hired before projects were recorded<\/span><\/span>/);
-  assert.ok(!/>Other</.test(html), 'an agent of another project is not offered');
+  assert.match(html, /data-value="01ARZ3NDEKTSV4RRFFQ69G5FAW"[^>]*><span><span><span>Other<\/span><\/span><span>Now in Website · Moves here when free<\/span><\/span>/);
+  assert.ok(html.indexOf('>Ada<') < html.indexOf('>Other<'), 'the project\'s agents come first');
   assert.match(html, /Grace was hired before projects were recorded, so it can&#x27;t take tickets\./);
 });
 

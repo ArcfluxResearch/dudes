@@ -222,7 +222,10 @@ Set a spending limit when your account bills per use.
 
 - **New ticket.** A title is all it needs. The note, the project, the "Done when" check and the
   agent are optional. The project is asked for only when more than one is enrolled. With no agent
-  hired, the form says so and offers to hire one.
+  hired, the form says so and offers to hire one. The agent list shows the project's agents first. Agents who work in another project follow, marked
+  "Now in <project>" with "Moves here when free", because an idle agent moves to a ticket's project when
+  the ticket starts. A give the daemon refuses shows its reason. Chat shows "Moved to <project>" where
+  the agent moved, and a project card lists the agents there now.
 - **The board.** To do, Working, Ready for you and Done, and a Needs you row for tickets that are
   stuck. Done shows the newest 20. A card shows the title, the agent, its place in the queue or why
   it waits, and in Needs you the sentence that names the next step.
@@ -232,8 +235,8 @@ Set a spending limit when your account bills per use.
   words in a ticket's title, its agent's name and its project's name. The project, agent and status
   filters combine, and the List can group by project, agent or status. Both views follow the filters. A
   ticket in Needs you is never hidden without saying so. Which view, filters and grouping you chose is
-  remembered in this browser, and a search is not. A ticket takes its project from its agent. For one no
-  agent holds yet, the Floor reads the project from the ticket once. Opening `#/board/<project>` in the
+  remembered in this browser, and a search is not. A ticket belongs to the project it was made in, even after its
+  agent moves to another one. Opening `#/board/<project>` in the
   Floor's address shows the Board filtered to that project.
 - **A ticket note is Markdown.** The note shows as formatted text with headings, lists, code, small
   tables and links. Only `http` and `https` links open, in a new tab; raw HTML and images stay as
