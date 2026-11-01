@@ -106,3 +106,19 @@ test('the dialog at the limit says the sentence once', async () => {
     assert.equal(html.split(text).length - 1, 1);
   } finally { await server.close(); }
 });
+
+test('the dialog says nothing about Settings or reloading while it waits for the snapshot after the limit lifts', async () => {
+  applyServerFrame(snapshot({}), getFloorState().epoch);
+  const floor = { ...getFloorState(), phase: 'resyncing', onboarding: null, hireLimit: null, settings: null };
+  const server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-hire-limit'),
+    server: { middlewareMode: true, hmr: false }, appType: 'custom' });
+  try {
+    const { HireWizardView } = await server.ssrLoadModule('/src/renderer/onboarding/HireWizard.tsx');
+    const { getHireState } = await server.ssrLoadModule('/src/renderer/onboarding/hire.ts');
+    const show = (waiting) => renderToStaticMarkup(createElement(HireWizardView, { hire: getHireState(), floor, onClose() {}, waiting }));
+    assert.match(show(false), /Check Engines and Projects in Settings/);
+    const html = show(true);
+    assert.match(html, /Waiting for a snapshot from the daemon\./);
+    assert.doesNotMatch(html, /Settings|Reload/);
+  } finally { await server.close(); }
+});

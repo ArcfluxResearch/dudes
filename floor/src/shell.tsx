@@ -678,7 +678,7 @@ function SignedInShell() {
         }}
         onPointerCancel={() => { backdropPress.current = null; }}>
         {archiveHireKept ? <div className="px-6 pt-4"><Notice tone="warn" role="status">The current Hire is kept. Resolve it before preparing another agent.</Notice></div> : null}
-        <HireWizard floor={floor} onClose={() => closeHire()} onSettings={openSettingsFromHire} />
+        <HireWizard floor={floor} onClose={() => closeHire()} onSettings={openSettingsFromHire} waiting={reopening} />
       </Dialog> : null}
     </main></TicketNoticeHost>
   );
