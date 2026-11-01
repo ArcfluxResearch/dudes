@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use common::{Fixture, ScriptedColumn, ScriptedRunner, SharedHost, TestClock};
 use duded::floor_actions::{EnrolledCheck, Enrollment, Profile};
 use duded::startup::Witness;
+use dudes_proto::diff_stamp::BaselineOutcome;
 use dudes_proto::record::{RecordedWorkspace, samples};
 use dudes_proto::rpc::agent::HireParams;
 use dudes_proto::rpc::cred::OperatorCredential;
@@ -4033,6 +4034,10 @@ fn git_in(repo: &Path, args: &[&str]) {
     );
     let mut full = vec![
         "-c",
+        "maintenance.auto=false",
+        "-c",
+        "gc.auto=0",
+        "-c",
         "user.name=Test",
         "-c",
         "user.email=test@example.com",
@@ -4127,12 +4132,40 @@ fn leftover_from_an_earlier_ticket(
         flow.give_ok(second, cody, None),
         TicketAssignOutcome::Started
     );
-    let (turn, ..) = Flow::await_turn_number(&fixture, 2);
+    let (turn, _, goal, _) = Flow::await_turn_number(&fixture, 2);
+    let baseline = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(_, entry)| match entry.record {
+            Record::TicketBaselineRecorded {
+                goal: recorded,
+                baseline,
+                ..
+            } if recorded == goal => Some(baseline.outcome),
+            _ => None,
+        })
+        .expect("the second round's baseline was journaled before its turn");
+    assert!(
+        matches!(baseline, BaselineOutcome::Captured { .. }),
+        "the second round's baseline must be captured: {baseline:?}"
+    );
     std::thread::sleep(std::time::Duration::from_millis(50));
     end_second(&mut flow, &fixture, turn);
+    let verdict = predicate_verdict(&fixture, turn);
     assert!(
-        !predicate_verdict(&fixture, turn),
-        "the second ticket changed nothing, so its check must fail"
+        !verdict,
+        "the second ticket changed nothing, so its check must fail; baseline {baseline:?}, evidence {:?}",
+        fixture
+            .entries()
+            .into_iter()
+            .find_map(|(_, entry)| match entry.record {
+                Record::PredicateResult {
+                    turn: Some(ended),
+                    evidence,
+                    ..
+                } if ended == turn => Some(evidence),
+                _ => None,
+            })
     );
     then(&mut flow, &fixture, second);
     flow.stop();

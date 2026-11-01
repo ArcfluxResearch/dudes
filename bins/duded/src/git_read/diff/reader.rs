@@ -548,6 +548,10 @@ impl ReviewCapture {
     }
 }
 
+/// How many times a baseline capture reads a repository that moved under it.
+#[cfg(unix)]
+const BASELINE_ATTEMPTS: usize = 3;
+
 /// The unrouted content reader. All child programs use the daemon-owned runner.
 pub struct DiffReader {
     git: super::super::GitReader,
@@ -633,7 +637,7 @@ impl DiffReader {
         #[cfg(unix)]
         {
             let budget = self.budget(cancelled);
-            self.baseline_with_budget(tree, &budget)
+            self.baseline_retrying(tree, &budget)
         }
         #[cfg(not(unix))]
         {
@@ -657,12 +661,32 @@ impl DiffReader {
             .iter()
             .map(|subject| {
                 #[cfg(unix)]
-                let outcome = self.baseline_with_budget(&subject.tree, &budget);
+                let outcome = self.baseline_retrying(&subject.tree, &budget);
                 #[cfg(not(unix))]
                 let outcome = Err(DiffRefusal::UnsupportedPlatform);
                 (subject.repo_id.clone(), outcome)
             })
             .collect()
+    }
+
+    /// A capture is an idempotent read, and any other writer that touches the git directory while
+    /// it runs, such as an editor refreshing the index, makes it read as moved. Reading again
+    /// settles that; a repository that keeps moving ends as unreadable once the attempts or the
+    /// whole-read deadline run out.
+    #[cfg(unix)]
+    fn baseline_retrying(
+        &self,
+        tree: &super::super::Tree,
+        budget: &Budget,
+    ) -> Result<BaselineCapture, DiffRefusal> {
+        let mut outcome = self.baseline_with_budget(tree, budget);
+        for _ in 1..BASELINE_ATTEMPTS {
+            if !matches!(outcome, Err(DiffRefusal::Unreadable)) {
+                break;
+            }
+            outcome = self.baseline_with_budget(tree, budget);
+        }
+        outcome
     }
 
     #[cfg(unix)]
