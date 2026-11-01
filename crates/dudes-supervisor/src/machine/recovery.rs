@@ -578,7 +578,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 return false;
             };
             if matches!(receipt.state, RecoveryClaimState::Consumed { .. }) {
-                return self.recovery_boundary(agent).is_err();
+                return self.no_recovery_is_owed(agent);
             }
             let Ok(facts) = self.world.recovery_facts(&receipt.authorization.binding) else {
                 return false;
@@ -606,7 +606,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 RecoveryClaimState::IssueBound(issue) => {
                     self.live_issues.contains(&issue.issued.work.turn)
                 }
-                RecoveryClaimState::Consumed { .. } => self.recovery_boundary(agent).is_err(),
+                RecoveryClaimState::Consumed { .. } => self.no_recovery_is_owed(agent),
                 RecoveryClaimState::Invalidated { .. } | RecoveryClaimState::Superseded { .. } => {
                     false
                 }
@@ -623,8 +623,25 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         match self.recovery_boundary(agent) {
             Ok(view) => view.required.reason == RecoveryReason::HeldOrPausedFailure,
-            Err(_) => true,
+            Err(_) => !self.hire_refused(&binding),
         }
+    }
+
+    fn no_recovery_is_owed(&self, agent: AgentId) -> bool {
+        self.recovery_boundary(agent).is_err()
+            && !self
+                .recovery_binding(agent)
+                .is_ok_and(|binding| self.hire_refused(&binding))
+    }
+
+    /// Whether the turn was issued under a hire or place other than the agent's current one.
+    /// That is not the absence of a boundary: the journal cannot say what the turn owes, and
+    /// admitting more work would skip the consent a crashed turn is owed.
+    fn hire_refused(&self, binding: &RecoveryBinding) -> bool {
+        matches!(
+            self.world.recovery_facts(binding),
+            Err(RecoveryStateError::Hire)
+        )
     }
 
     pub(super) fn ensure_recovery_admission(

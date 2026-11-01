@@ -656,7 +656,7 @@ where
         .as_ref()
         .ok_or(RecoveryStateError::Binding)?;
     if !repositories.matches_hire(agent.hired_lsn, &agent.repositories) {
-        return Err(RecoveryStateError::Binding.into());
+        return Err(RecoveryStateError::Hire.into());
     }
     let mut issue = initial
         .history()
