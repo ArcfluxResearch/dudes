@@ -234,6 +234,15 @@ pub(super) struct CreatedTicket {
 }
 
 impl CreatedTicket {
+    /// The agent holds this ticket in work, in review or blocked, not merely queued.
+    pub(super) fn is_in_hand_of(&self, agent: AgentId) -> bool {
+        self.holder == Some(agent)
+            && matches!(
+                self.status,
+                CardStatus::Doing | CardStatus::Review | CardStatus::Blocked
+            )
+    }
+
     fn facts(&self) -> RepositoryTicketFacts<'_> {
         RepositoryTicketFacts {
             repositories: &self.repositories,

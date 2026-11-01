@@ -1,5 +1,8 @@
 //! The `agents` table: one row per hired agent, deleted on retire.
 
+use std::collections::BTreeMap;
+
+use dudes_proto::placement::{Here, OtherProjects};
 use dudes_proto::repository::HireRepositories;
 use dudes_proto::{Entry, LiveActivityKind, LoopDecision, Record, TurnOutcome};
 use dudes_types::{
@@ -18,6 +21,10 @@ use crate::error::Result;
 /// to the budget projections, with the rest of the day-bucketed views.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the control flags and the folder's trust are separate journaled facts"
+)]
 pub struct AgentRow {
     /// The agent.
     pub id: AgentId,
@@ -31,7 +38,7 @@ pub struct AgentRow {
     pub accent: Option<dudes_types::AccentColour>,
     /// Recorded hire time.
     pub hired_at: Timestamp,
-    /// Actual immutable hire position.
+    /// The position the agent's current place was recorded at: its hire, or its latest move.
     pub hired_lsn: Lsn,
     /// Role text.
     pub role: String,
@@ -42,8 +49,14 @@ pub struct AgentRow {
     pub department: String,
     /// Which CLI drives it.
     pub provider: Provider,
-    /// Immutable repository authority copied from the hire record.
+    /// The repository authority of the agent's current place: the hire's until an `AgentMoved`.
     pub repositories: HireRepositories,
+    /// Whether the operator vouched for the current folder. Changes only on a move.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub trusted: bool,
+    /// What the agent holds in each project it is not in now, by project id.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub other_projects: OtherProjects,
     /// Where it is in its life.
     pub status: AgentStatus,
     /// Latest journaled fixed activity, separate from lifecycle status.
@@ -143,6 +156,8 @@ impl Default for AgentRow {
             department: String::new(),
             provider: Provider::Claude,
             repositories: HireRepositories::default(),
+            trusted: false,
+            other_projects: OtherProjects::new(),
             status: AgentStatus::Idle,
             live_activity: None,
             mode: Mode::Managed,
@@ -173,6 +188,17 @@ impl Default for AgentRow {
 }
 
 impl AgentRow {
+    /// The agent's own copy, wherever it sits: a move leaves the copy of its hire in a stored
+    /// place, and an agent holds at most one.
+    #[must_use]
+    pub fn own_copy(&self) -> Option<dudes_types::WorktreeId> {
+        self.repositories.primary_worktree().or_else(|| {
+            self.other_projects
+                .values()
+                .find_map(|place| place.repository.worktree())
+        })
+    }
+
     fn settle(&mut self, goal_completed: bool) {
         self.status = if self.mode == Mode::Attached {
             AgentStatus::Attached
@@ -241,6 +267,7 @@ pub(crate) fn apply(
             character: fields.character,
             accent: fields.accent,
             repositories,
+            trusted: fields.trusted,
             max_turns: fields.max_turns,
             max_budget: fields.max_budget,
             model: fields.model.cloned(),
@@ -269,6 +296,18 @@ pub(crate) fn apply(
                 row.model.clone_from(model);
             })
         }
+        Record::AgentMoved { agent, to } => update(table, lsn, *agent, record, |row| {
+            let landed = to.land(Here {
+                repositories: &mut row.repositories,
+                trusted: &mut row.trusted,
+                session: &mut row.session,
+                session_lsn: &mut row.session_lsn,
+                other_projects: &mut row.other_projects,
+            });
+            if landed {
+                row.hired_lsn = lsn;
+            }
+        }),
         Record::AgentRetired { id, .. } => {
             if table.remove(&id.to_bytes())?.is_none() {
                 tracing::warn!(target: "journal", lsn = %lsn, agent = %id, "projection.unknown_agent");

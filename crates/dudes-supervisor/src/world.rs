@@ -27,6 +27,7 @@ mod instructions;
 mod mail_turns;
 mod mail_wakes;
 mod mcp;
+mod placements;
 mod recovery;
 mod repositories;
 mod review;
@@ -37,6 +38,7 @@ pub use dudes_proto::repository_review::TicketReview;
 pub use devices::DeviceRow;
 pub use mail_turns::{Candidate as MailTurnCandidate, Latest as MailTurnLatest};
 pub use mcp::{McpGrant, McpHistoryError, McpPolicy};
+pub use placements::MoveHistoryError;
 pub use worktrees::{TrustGrant, WorktreeRow, WorktreeState};
 
 use dudes_policy::{
@@ -91,10 +93,17 @@ pub struct AgentRow {
     pub department: String,
     /// Which CLI drives it.
     pub provider: Provider,
-    /// The immutable repository authority recorded at hire.
+    /// The repository authority of the agent's current place. It is the hire's until an
+    /// `AgentMoved`, which is the only record that changes it, and then only for a single-folder
+    /// agent.
     pub repositories: HireRepositories,
-    /// Daily ceiling.
+    /// Daily ceiling in force now: the hire's until an `AgentMoved` sets the tighter of the hire's
+    /// and the project's.
     pub budget: AgentBudget,
+    /// The daily ceiling the hire recorded. It never changes, so every move computes from it.
+    pub hired_budget: AgentBudget,
+    /// What the agent holds in each project it is not in now: its folder, trust and conversation.
+    pub other_projects: dudes_proto::placement::OtherProjects,
     /// The provider's sandbox on-switch, as the hire asked for it.
     pub sandbox: Option<bool>,
     /// The vendor-run turn cap recorded at hire, or `None` for no cap. Replayed,
@@ -106,7 +115,7 @@ pub struct AgentRow {
     /// The agent's model override: what the hire named until an operator changes it, or `None`
     /// for the engine's own selection.
     pub model: Option<dudes_types::ModelName>,
-    /// Whether the operator vouched for the repository at hire.
+    /// Whether the operator vouched for the current folder: at hire, until a move.
     pub trusted: bool,
     /// Desired managed-launch names and the immutable recorded hire origin.
     pub mcp: McpPolicy,
@@ -1409,6 +1418,8 @@ impl World {
                         accent: fields.accent,
                         repositories,
                         budget: fields.budget,
+                        hired_budget: fields.budget,
+                        other_projects: BTreeMap::new(),
                         sandbox: fields.sandbox,
                         max_turns: fields.max_turns,
                         max_budget: fields.max_budget,
@@ -1457,6 +1468,7 @@ impl World {
             | Record::WorktreeRemoved { .. } => {
                 self.fold_worktree(&entry.record, lsn);
             }
+            Record::AgentMoved { agent, to } => self.fold_agent_move(lsn, *agent, to),
             Record::AgentRetired { id, .. } => {
                 self.active_folder_users.remove(id);
                 if let Some(row) = self.agents.get_mut(id) {

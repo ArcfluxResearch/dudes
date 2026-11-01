@@ -171,6 +171,13 @@ pub enum RecoveryEvidence {
         /// Digest of the original role bytes.
         role_digest: Hex32,
     },
+    /// A move that made a new place the agent's hire position. Provider and role come from the
+    /// agent's hire and never change, so only the place's own checkout is recorded.
+    Move {
+        /// Recorded checkout identity of the place moved to.
+        #[serde(deserialize_with = "crate::chat::required_nullable")]
+        worktree: Option<WorktreeId>,
+    },
     /// A lease's immutable origin relationship; layout remains in its existing fold.
     Lease {
         /// Recorded parent lease, when present.
@@ -446,6 +453,20 @@ impl RecoveryWitness {
         })
     }
 
+    /// Whether this witness is a hire or a move into the place that `provider` and `worktree`
+    /// name. A move carries no provider, which the agent's row fixes for its whole life.
+    pub(super) fn is_place_of(&self, provider: Provider, worktree: Option<WorktreeId>) -> bool {
+        match &self.evidence {
+            RecoveryEvidence::Hire {
+                provider: hired,
+                worktree: hired_in,
+                ..
+            } => *hired == provider && *hired_in == worktree,
+            RecoveryEvidence::Move { worktree: moved_to } => *moved_to == worktree,
+            _ => false,
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one exhaustive boundary checks the witness kind, owner and semantic payload together"
@@ -545,6 +566,7 @@ impl RecoveryWitness {
                     | K::AgentHiredWithRepositories
                     | K::AgentHiredWithUnconfinedRepositories
             ),
+            (E::Move { .. }, O::Agent(_)) => self.reference.kind == K::AgentMoved,
             (E::Lease { .. }, O::Worktree(_)) => matches!(
                 self.reference.kind,
                 K::WorktreeLeased | K::WorktreeLeasedWithIdentity
@@ -664,11 +686,12 @@ impl RecoveryHistory {
     ) -> Result<Vec<WorktreeId>, RecoveryHistoryError> {
         let source = self.at(binding.hired_lsn)?;
         if source.reference.owner != RecoveryWitnessOwner::Agent(binding.work.agent)
-            || !matches!(&source.evidence, RecoveryEvidence::Hire { provider, worktree, .. } if *provider == binding.provider && *worktree == binding.worktree)
+            || !source.is_place_of(binding.provider, binding.worktree)
         {
             return Err(RecoveryHistoryError::Identity);
         }
         match source.reference.kind {
+            RecordKind::AgentMoved => Ok(binding.worktree.into_iter().collect()),
             RecordKind::AgentHired if source.scoped_hire().is_none() => {
                 Ok(binding.worktree.into_iter().collect())
             }
@@ -1218,6 +1241,12 @@ fn target_evidence(
                 provider: *provider,
                 worktree: *worktree,
                 role_digest: text_digest(role, hash),
+            },
+        )),
+        Record::AgentMoved { agent, to } => Some((
+            O::Agent(*agent),
+            E::Move {
+                worktree: to.worktree,
             },
         )),
         Record::WorktreeLeased { worktree, from, .. }

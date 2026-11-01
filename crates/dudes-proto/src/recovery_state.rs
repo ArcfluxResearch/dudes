@@ -165,6 +165,8 @@ pub enum RecoveryStateError {
     Position,
     /// Required identity, target or current journal fact does not match.
     Binding,
+    /// The turn was issued under a hire or place that is no longer the agent's current one.
+    Hire,
     /// Another origin already names this unresolved work.
     EpisodeAlias,
     /// A request identity already has a durable authorization.

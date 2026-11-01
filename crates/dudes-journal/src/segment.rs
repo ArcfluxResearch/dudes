@@ -776,6 +776,7 @@ mod tests {
             | Record::TicketAssigned { .. }
             | Record::TicketStarted { .. }
             | Record::TicketRemoved { .. }
+            | Record::AgentMoved { .. }
             | Record::ProjectRepositoriesRecorded { .. } => Vec::new(),
         }
     }

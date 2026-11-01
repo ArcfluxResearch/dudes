@@ -36,6 +36,7 @@ pub mod mail_answer;
 pub mod mail_turn;
 pub mod mail_wake;
 pub mod messages;
+pub mod placement;
 pub mod projection;
 pub mod providers;
 pub mod question_history;
