@@ -241,7 +241,7 @@ impl TicketReason {
                 "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery to see what was recorded and choose how to continue. Earlier effects may repeat."
             }
             Self::ProjectUnavailable => {
-                "This project is not set up any more. Enroll it again with `dudes project add`, then Give to agent, or Remove the ticket."
+                "The agent could not start this ticket. Its project may have been removed, or the agent could not move there. Give to agent to try again and see the cause. If the project is gone, enroll it again with `dudes project add`, or Remove the ticket."
             }
             Self::CheckCannotRun => {
                 "The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository. To use a script from the repository, run it through its interpreter, for example `sh test.sh` for a shell script; an agent can still edit that script, so review its changes before you accept the work. Then Give to agent. If the check itself is wrong, Remove this ticket and create it again."

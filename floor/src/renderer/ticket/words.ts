@@ -75,7 +75,7 @@ export function refusalSentence(code: RefusalCode, status: CardRow['status'] | n
 
 const REASONS: Readonly<Record<TicketReason, string>> = Object.freeze({
   recovery_required: "This work was interrupted. Recovery continues the same task. Review recovery to see what was recorded and choose how to continue. Earlier effects may repeat.",
-  project_unavailable: "This ticket’s project is no longer set up. Add the project in Settings, then create a new ticket for it. Keep anything you need from this ticket before removing it.",
+  project_unavailable: "The agent could not start this ticket. Its project may no longer be set up, or the agent could not move there. Give to agent to try again and see the cause. If the project is gone, add it in Settings, then create a new ticket for it. Keep anything you need from this ticket before removing it.",
   check_cannot_run: "The completion check could not run. Its program may be missing or unsafe to run directly. Review the check in the project setup, then try again. If the check changed, remove this ticket and create it again.",
   ceiling_required: "This account bills per use and needs a spending limit. Review the project limits in Settings. Ask the person who set up the project to add a limit before trying again.",
   reserve_missing: "A spending reserve is missing. Set the available dollars and tokens needed to start work under Spending limits in Settings, then try again.",
