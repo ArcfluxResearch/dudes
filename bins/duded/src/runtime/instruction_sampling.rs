@@ -18,7 +18,7 @@ use dudes_proto::repository_instruction::{
 };
 use dudes_supervisor::input::InstructionRequest;
 use dudes_supervisor::{AdoptionKey, Effect, Input, InstructionSource};
-use dudes_types::{AgentId, Mode, ModelSelection, Timestamp, WorktreeId};
+use dudes_types::{AgentId, Mode, ModelSelection, Provider, Timestamp, WorktreeId};
 
 use dudes_supervisor::host::{MAX_OWNED_TARGET_QUERY_ROWS, OwnedTargetState};
 
@@ -34,6 +34,17 @@ use crate::ports::Handle;
 #[path = "instruction_sampling/repository_tests.rs"]
 mod repository_tests;
 
+/// Where an assembled snapshot is used, which decides whether a matching Claude neighbour
+/// raises its own coverage gap.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SampleSite {
+    /// A ticket attempt with no repository binding.
+    Attempt,
+    /// One repository member of a multi-repository attempt, where an observed gap feeds the
+    /// Accept refusal and the projection.
+    RepositoryMember,
+}
+
 pub(super) struct LegacySampleJob {
     pub(super) request: InstructionRequest,
     pub(super) agent: AgentId,
@@ -43,6 +54,7 @@ pub(super) struct LegacySampleJob {
     candidate_context_unknown: bool,
     /// The owner's launch only adds this folder to its working copy.
     added_copy: bool,
+    site: SampleSite,
     pub(super) uncertain_folders: Vec<PathBuf>,
     pub(super) selection: ModelSelection,
     pub(super) baseline: Option<Box<InstructionSnapshot>>,
@@ -1160,7 +1172,9 @@ fn assemble(job: &LegacySampleJob, sampled_at: Timestamp) -> InstructionSnapshot
             unresolved_project_context(&mut participant);
         }
         snapshot.participants.push(participant);
-        if source.agent != job.agent || job.candidate_context_unknown {
+        if job.candidate_context_unknown
+            || (source.agent != job.agent && !is_matching_claude_neighbour(job, &members, source))
+        {
             let _ = snapshot.try_push_gap(InstructionCoverageGap {
                 origin: dudes_proto::InstructionGapOrigin::Observed,
                 reason: InstructionGapKind::ConfigurationUnknown,
@@ -1181,6 +1195,22 @@ fn assemble(job: &LegacySampleJob, sampled_at: Timestamp) -> InstructionSnapshot
     }
     merge_baseline(&mut snapshot, job.baseline.as_deref());
     snapshot
+}
+
+/// A neighbour whose declared inputs are sampled and compared the same way as the ticket agent's
+/// adds nothing the declared gaps do not already say.
+fn is_matching_claude_neighbour(
+    job: &LegacySampleJob,
+    members: &[&InstructionSource],
+    neighbour: &InstructionSource,
+) -> bool {
+    job.site == SampleSite::Attempt
+        && neighbour.provider == Provider::Claude
+        && members.iter().any(|ticket| {
+            ticket.agent == job.agent
+                && ticket.provider == Provider::Claude
+                && ticket.mode == neighbour.mode
+        })
 }
 
 fn unresolved_project_context(participant: &mut InstructionParticipant) {
@@ -1415,6 +1445,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
             membership_unknown: census.membership_unknown,
             candidate_context_unknown: census.candidate_context_unknown,
             added_copy: false,
+            site: SampleSite::Attempt,
             uncertain_folders: census.uncertain_folders.into_iter().collect(),
             selection: selection.clone(),
             baseline: baseline.cloned().map(Box::new),
@@ -1557,6 +1588,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
                     candidate_context_unknown: false,
                     added_copy: grant.policy.confinement() == Confinement::Unconfined
                         && member.repo_id != *grant.repositories.primary_id(),
+                    site: SampleSite::RepositoryMember,
                     uncertain_folders: census.uncertain_folders.iter().cloned().collect(),
                     selection: selection.clone(),
                     baseline: baseline
@@ -1797,6 +1829,7 @@ mod tests {
             membership_unknown: false,
             candidate_context_unknown: false,
             added_copy: false,
+            site: SampleSite::Attempt,
             uncertain_folders: Vec::new(),
             selection: ModelSelection::provider_default(),
             baseline: None,
@@ -1899,6 +1932,166 @@ mod tests {
         }
         sample.queued = Instant::now();
         assemble(&sample, Timestamp::UNIX_EPOCH)
+    }
+
+    /// Whether the ticket agent's snapshot carries an observed gap for its neighbour, with the
+    /// engines and modes the sampler reads from the recorded sources.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn raises_a_neighbour_gap(
+        ticket: (Provider, Mode),
+        neighbour: (Provider, Mode),
+        site: SampleSite,
+        candidate_context_unknown: bool,
+    ) -> bool {
+        let folder = tempfile::tempdir().unwrap();
+        let mut harness = dudes_supervisor::testing::Harness::new();
+        let mut sample = job();
+        sample.candidate_cwd = Some(folder.path().to_path_buf());
+        sample.site = site;
+        sample.candidate_context_unknown = candidate_context_unknown;
+        for (ordinal, (provider, mode)) in [ticket, neighbour].into_iter().enumerate() {
+            let agent = AgentId::from_parts(1, ordinal as u128 + 1);
+            harness
+                .supervisor
+                .handle(
+                    Input::Replayed {
+                        lsn: Lsn(ordinal as u64 + 1),
+                        entry: Entry {
+                            at: Timestamp::UNIX_EPOCH,
+                            record: hired(agent, folder.path()),
+                        },
+                    },
+                    &dudes_supervisor::RecoveryOperation::empty(),
+                )
+                .unwrap();
+            let mut source = harness.supervisor.instruction_source(agent).unwrap();
+            source.provider = provider;
+            source.mode = mode;
+            sample.sources.push(source);
+        }
+        sample.queued = Instant::now();
+        let neighbour_agent = AgentId::from_parts(1, 2);
+        assemble(&sample, Timestamp::UNIX_EPOCH)
+            .gaps
+            .iter()
+            .any(|gap| {
+                gap.origin == dudes_proto::InstructionGapOrigin::Observed
+                    && gap.reason == InstructionGapKind::ConfigurationUnknown
+                    && gap.agent == Some(neighbour_agent)
+            })
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn sampled_skill_folder(skills: usize) -> InstructionSnapshot {
+        let folder = tempfile::tempdir().unwrap();
+        for index in 0..skills {
+            let skill = folder.path().join(format!(".claude/skills/skill-{index}"));
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(skill.join("SKILL.md"), format!("skill {index}\n")).unwrap();
+        }
+        let mut harness = dudes_supervisor::testing::Harness::new();
+        let mut sample = job();
+        sample.candidate_cwd = Some(folder.path().to_path_buf());
+        let agent = sample.agent;
+        harness
+            .supervisor
+            .handle(
+                Input::Replayed {
+                    lsn: Lsn(1),
+                    entry: Entry {
+                        at: Timestamp::UNIX_EPOCH,
+                        record: hired(agent, folder.path()),
+                    },
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
+        sample
+            .sources
+            .push(harness.supervisor.instruction_source(agent).unwrap());
+        sample.queued = Instant::now();
+        instruction_sample::observe(instruction_sample::bounded_seed(assemble(
+            &sample,
+            Timestamp::UNIX_EPOCH,
+        )))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_skills_folder_larger_than_the_sample_budget_overflows_into_a_holding_gap() {
+        let few = sampled_skill_folder(3);
+        assert!(
+            !few.gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::MetadataLimit),
+            "{:?}",
+            few.gaps
+        );
+        let many = sampled_skill_folder(100);
+        assert!(
+            many.inputs.len() < 100 * 2,
+            "sampling stopped at the budget"
+        );
+        assert!(
+            many.gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::MetadataLimit && gap.holds()),
+            "{:?}",
+            many.gaps
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_matching_claude_neighbour_raises_no_gap_and_every_other_pairing_keeps_it() {
+        let claude = (Provider::Claude, Mode::Managed);
+        let gap = |ticket, neighbour| {
+            raises_a_neighbour_gap(ticket, neighbour, SampleSite::Attempt, false)
+        };
+        assert!(!gap(claude, claude));
+        assert!(
+            gap(claude, (Provider::Claude, Mode::Attached)),
+            "an attached neighbour"
+        );
+        assert!(
+            gap((Provider::Claude, Mode::Attached), claude),
+            "an attached ticket agent"
+        );
+        assert!(
+            gap(claude, (Provider::Codex, Mode::Managed)),
+            "a Codex neighbour"
+        );
+        assert!(gap(claude, (Provider::Pi, Mode::Managed)), "a Pi neighbour");
+        assert!(
+            gap((Provider::Codex, Mode::Managed), claude),
+            "a Codex ticket agent"
+        );
+        assert!(
+            gap((Provider::Pi, Mode::Managed), claude),
+            "a Pi ticket agent"
+        );
+        assert!(gap(
+            (Provider::Codex, Mode::Managed),
+            (Provider::Codex, Mode::Managed)
+        ));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_repository_member_or_an_unknown_candidate_keeps_the_neighbour_gap() {
+        let claude = (Provider::Claude, Mode::Managed);
+        assert!(raises_a_neighbour_gap(
+            claude,
+            claude,
+            SampleSite::RepositoryMember,
+            false
+        ));
+        assert!(raises_a_neighbour_gap(
+            claude,
+            claude,
+            SampleSite::Attempt,
+            true
+        ));
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
