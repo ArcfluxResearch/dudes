@@ -186,6 +186,20 @@ struct Sample {
     recording: Option<Vec<(InstructionGapKind, Option<PathBuf>)>>,
 }
 
+/// Files one walk may list before it gives up, because each entry costs time even when it adds
+/// nothing to the inventory.
+const MAX_WALK_FILES: u32 = 16_384;
+
+/// Entries listed between deadline checks.
+const TIME_STRIDE: usize = 128;
+
+/// What one walk root has spent, so a large tree in one root cannot exhaust another root's limit.
+#[derive(Default)]
+struct Scope {
+    directories: u32,
+    files: u32,
+}
+
 /// A descendant tree walked once per sample, with the gaps the walk raised so that every rule
 /// that shares the tree reports them for its own agent and context.
 #[derive(Clone)]
@@ -558,6 +572,7 @@ impl Sample {
         agent: AgentId,
         context: InstructionPathContext,
         directory: &Path,
+        scope: &mut Scope,
     ) -> Option<Vec<fs::DirEntry>> {
         if !self.time(agent, context) {
             return None;
@@ -585,11 +600,21 @@ impl Sample {
             }
         };
         let mut entries = Vec::new();
-        for entry in read {
-            if !self.time(agent, context) {
+        for (index, entry) in read.enumerate() {
+            if index % TIME_STRIDE == 0 && !self.time(agent, context) {
                 return None;
             }
-            if self.usage().descendant_entries == MAX_INSTRUCTION_DESCENDANTS {
+            let is_directory = entry
+                .as_ref()
+                .ok()
+                .and_then(|entry| entry.file_type().ok())
+                .is_some_and(|kind| kind.is_dir());
+            let (spent, cap) = if is_directory {
+                (&mut scope.directories, MAX_INSTRUCTION_DESCENDANTS)
+            } else {
+                (&mut scope.files, MAX_WALK_FILES)
+            };
+            if *spent == cap {
                 self.gap(
                     InstructionGapKind::DescendantLimit,
                     agent,
@@ -598,7 +623,10 @@ impl Sample {
                 );
                 return None;
             }
-            self.snapshot.usage.descendant_entries += 1;
+            *spent += 1;
+            if is_directory && self.usage().descendant_entries < MAX_INSTRUCTION_DESCENDANTS {
+                self.snapshot.usage.descendant_entries += 1;
+            }
             if let Ok(entry) = entry {
                 entries.push(entry);
             } else {
@@ -648,17 +676,21 @@ impl Sample {
     ) -> Vec<PathBuf> {
         let mut pending = VecDeque::from([(root.to_path_buf(), 0_u8)]);
         let mut directories = Vec::new();
+        let mut scope = Scope::default();
         while let Some((directory, depth)) = pending.pop_front() {
             if !self.time(agent, context) {
                 break;
             }
             directories.push(directory.clone());
             self.snapshot.usage.descendant_depth = self.snapshot.usage.descendant_depth.max(depth);
-            let Some(entries) = self.entries(agent, context, &directory) else {
+            let Some(entries) = self.entries(agent, context, &directory, &mut scope) else {
                 break;
             };
             for entry in entries {
                 match entry.file_type() {
+                    Ok(kind)
+                        if kind.is_symlink()
+                            && fs::metadata(entry.path()).is_ok_and(|target| target.is_file()) => {}
                     Ok(kind) if kind.is_symlink() => self.gap(
                         InstructionGapKind::PathUnresolved,
                         agent,
@@ -691,8 +723,10 @@ impl Sample {
     }
 
     fn markdown(&mut self, agent: AgentId, index: u16, inputs: RuleInputs<'_>, directory: &Path) {
+        let mut scope = Scope::default();
         for directory in self.directories(agent, inputs.root.context, directory) {
-            let Some(entries) = self.entries(agent, inputs.root.context, &directory) else {
+            let Some(entries) = self.entries(agent, inputs.root.context, &directory, &mut scope)
+            else {
                 continue;
             };
             for entry in entries {
@@ -1996,7 +2030,7 @@ mod tests {
     fn a_shared_tree_past_the_descendant_limit_reports_the_limit_for_every_rule() {
         let directory = tempfile::tempdir().unwrap();
         for index in 0..=MAX_INSTRUCTION_DESCENDANTS {
-            fs::write(directory.path().join(format!("f{index}")), b"").unwrap();
+            fs::create_dir(directory.path().join(format!("f{index}"))).unwrap();
         }
         let sample = observe(descendant_plan(directory.path(), 3));
         assert!(
@@ -2007,6 +2041,188 @@ mod tests {
         );
         assert!(sample.inventoried.is_empty());
         assert_eq!(sample.usage.descendant_entries, MAX_INSTRUCTION_DESCENDANTS);
+    }
+
+    #[test]
+    fn a_tree_past_the_file_limit_is_not_inventoried() {
+        let directory = tempfile::tempdir().unwrap();
+        std::thread::scope(|scope| {
+            for part in 0..4 {
+                let root = directory.path();
+                scope.spawn(move || {
+                    for index in (part..=MAX_WALK_FILES).step_by(4) {
+                        fs::write(root.join(format!("f{index}")), b"").unwrap();
+                    }
+                });
+            }
+        });
+        let sample = observe(descendant_plan(directory.path(), 1));
+        assert!(
+            sample
+                .gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::DescendantLimit && gap.holds())
+        );
+        assert!(sample.inventoried.is_empty());
+    }
+
+    /// A descendant rule on the project and a rule-directory rule on its ancestors.
+    fn project_and_ancestor_rules(project: &Path) -> InstructionSnapshot {
+        let mut plan = descendant_plan(project, 1);
+        let rules = &mut plan.participants[0].discovery;
+        rules.roots.push(InstructionRoot {
+            path: native(fs::canonicalize(project).unwrap()),
+            kind: InstructionRootKind::Ancestor,
+            context: InstructionPathContext::SharedInput {
+                source: InstructionSharedInput::Ancestor,
+            },
+        });
+        let mut rule = rules.rules[0].clone();
+        rule.root = 1;
+        rule.candidate = InstructionCandidate::MarkdownRules {
+            directory: native(".claude/rules"),
+            scope: InstructionRuleDirectoryScope::Ancestors,
+        };
+        rules.rules.push(rule);
+        plan
+    }
+
+    fn ancestor_rule(parent: &Path) {
+        fs::create_dir_all(parent.join(".claude/rules")).unwrap();
+        fs::write(parent.join(".claude/rules/p.md"), b"ancestor rule").unwrap();
+    }
+
+    fn holding_limits(sample: &InstructionSnapshot) -> Vec<&InstructionCoverageGap> {
+        sample
+            .gaps
+            .iter()
+            .filter(|gap| gap.reason == InstructionGapKind::DescendantLimit && gap.holds())
+            .collect()
+    }
+
+    #[test]
+    fn a_project_walk_past_the_old_entry_count_leaves_the_ancestor_rules_sampled() {
+        let parent = tempfile::tempdir().unwrap();
+        let project = parent.path().join("project");
+        for index in 0..41 {
+            let directory = project.join(format!("d{index}"));
+            fs::create_dir_all(&directory).unwrap();
+            for file in 0..100 {
+                fs::write(directory.join(format!("f{file}.rs")), b"").unwrap();
+            }
+        }
+        ancestor_rule(parent.path());
+        let sample = observe(project_and_ancestor_rules(&project));
+        assert!(holding_limits(&sample).is_empty(), "{:?}", sample.gaps);
+        assert_eq!(sample.inventoried.len(), 2);
+        assert!(sample.inputs.iter().any(|input| {
+            input
+                .path
+                .to_path()
+                .unwrap()
+                .ends_with(".claude/rules/p.md")
+        }));
+        assert!(sample.usage.descendant_entries <= MAX_INSTRUCTION_DESCENDANTS);
+    }
+
+    #[test]
+    fn a_project_walk_past_its_limit_does_not_raise_the_limit_for_the_ancestor_rules() {
+        let parent = tempfile::tempdir().unwrap();
+        let project = parent.path().join("project");
+        for index in 0..=MAX_INSTRUCTION_DESCENDANTS {
+            fs::create_dir_all(project.join(format!("d{index}"))).unwrap();
+        }
+        ancestor_rule(parent.path());
+        let sample = observe(project_and_ancestor_rules(&project));
+        let limits = holding_limits(&sample);
+        assert!(!limits.is_empty());
+        assert!(
+            limits
+                .iter()
+                .all(|gap| gap.context == InstructionPathContext::SharedProject),
+            "{limits:?}"
+        );
+        assert!(sample.inputs.iter().any(|input| {
+            input
+                .path
+                .to_path()
+                .unwrap()
+                .ends_with(".claude/rules/p.md")
+        }));
+    }
+
+    #[test]
+    fn a_file_created_deep_in_a_large_tree_is_found() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..41 {
+            let path = directory.path().join(format!("d{index}"));
+            fs::create_dir(&path).unwrap();
+            for file in 0..100 {
+                fs::write(path.join(format!("f{file}.rs")), b"").unwrap();
+            }
+        }
+        fs::create_dir_all(directory.path().join("d7/a/b/c")).unwrap();
+        let before = observe(descendant_plan(directory.path(), 1));
+        fs::write(directory.path().join("d7/a/b/c/CLAUDE0.md"), b"new").unwrap();
+        let comparison = compare(&before, &observe(descendant_plan(directory.path(), 1)));
+        assert_eq!(comparison.changes.len(), 1);
+        assert!(comparison.gaps.is_empty(), "{:?}", comparison.gaps);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_symlinks_that_do_not_resolve_to_a_file_raise_a_gap_in_the_walk() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        fs::create_dir_all(root.join("sub/real")).unwrap();
+        fs::write(root.join("sub/target.txt"), b"x").unwrap();
+        symlink(root.join("sub/target.txt"), root.join("sub/to-file")).unwrap();
+        let sample = observe(descendant_plan(&root, 1));
+        assert!(sample.gaps.is_empty(), "{:?}", sample.gaps);
+        assert_eq!(sample.inventoried.len(), 1);
+
+        for (name, target) in [
+            ("to-dir", root.join("sub/real")),
+            ("broken", root.join("sub/missing")),
+            ("loop", root.join("sub/loop")),
+        ] {
+            let link = root.join("sub").join(name);
+            symlink(target, &link).unwrap();
+            let sample = observe(descendant_plan(&root, 1));
+            assert!(
+                sample
+                    .gaps
+                    .iter()
+                    .any(|gap| gap.reason == InstructionGapKind::PathUnresolved
+                        && gap.path.as_ref().and_then(|path| path.to_path().ok())
+                            == Some(link.clone())),
+                "{name}: {:?}",
+                sample.gaps
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_a_candidates_own_name_is_still_unresolved() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/target.txt"), b"x").unwrap();
+        let link = root.join("sub/CLAUDE0.md");
+        std::os::unix::fs::symlink(root.join("sub/target.txt"), &link).unwrap();
+        let sample = observe(descendant_plan(&root, 1));
+        assert!(
+            sample
+                .gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::PathUnresolved
+                    && gap.path.as_ref().and_then(|path| path.to_path().ok())
+                        == Some(link.clone())),
+            "{:?}",
+            sample.gaps
+        );
     }
 
     #[test]
