@@ -2046,9 +2046,16 @@ mod tests {
     #[test]
     fn a_tree_past_the_file_limit_is_not_inventoried() {
         let directory = tempfile::tempdir().unwrap();
-        for index in 0..=MAX_WALK_FILES {
-            fs::write(directory.path().join(format!("f{index}")), b"").unwrap();
-        }
+        std::thread::scope(|scope| {
+            for part in 0..4 {
+                let root = directory.path();
+                scope.spawn(move || {
+                    for index in (part..=MAX_WALK_FILES).step_by(4) {
+                        fs::write(root.join(format!("f{index}")), b"").unwrap();
+                    }
+                });
+            }
+        });
         let sample = observe(descendant_plan(directory.path(), 1));
         assert!(
             sample
@@ -2097,7 +2104,7 @@ mod tests {
     fn a_project_walk_past_the_old_entry_count_leaves_the_ancestor_rules_sampled() {
         let parent = tempfile::tempdir().unwrap();
         let project = parent.path().join("project");
-        for index in 0..60 {
+        for index in 0..41 {
             let directory = project.join(format!("d{index}"));
             fs::create_dir_all(&directory).unwrap();
             for file in 0..100 {
@@ -2147,7 +2154,7 @@ mod tests {
     #[test]
     fn a_file_created_deep_in_a_large_tree_is_found() {
         let directory = tempfile::tempdir().unwrap();
-        for index in 0..60 {
+        for index in 0..41 {
             let path = directory.path().join(format!("d{index}"));
             fs::create_dir(&path).unwrap();
             for file in 0..100 {

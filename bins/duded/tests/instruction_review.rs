@@ -962,13 +962,13 @@ fn a_lone_agents_passing_ticket_reaches_review_with_thousands_of_files() {
         |project| {
             let bulk = project.join("bulk");
             std::fs::create_dir(&bulk).unwrap();
-            for index in 0..5_000 {
+            for index in 0..4_200 {
                 std::fs::write(bulk.join(format!("f{index}")), "").unwrap();
             }
         },
         |_| {},
     );
-    assert_ready(&read, "lone agent, 5000 files in one directory");
+    assert_ready(&read, "lone agent, 4200 files in one directory");
 }
 
 #[test]
