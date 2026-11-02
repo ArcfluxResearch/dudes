@@ -955,6 +955,44 @@ fn a_lone_agents_passing_ticket_reaches_review_in_a_larger_repository() {
 }
 
 #[test]
+fn a_lone_agents_passing_ticket_reaches_review_with_thousands_of_files() {
+    let (read, _) = passing_ticket(
+        Placement::Lone,
+        20,
+        |project| {
+            let bulk = project.join("bulk");
+            std::fs::create_dir(&bulk).unwrap();
+            for index in 0..5_000 {
+                std::fs::write(bulk.join(format!("f{index}")), "").unwrap();
+            }
+        },
+        |_| {},
+    );
+    assert_ready(&read, "lone agent, 5000 files in one directory");
+}
+
+#[test]
+fn a_shared_folder_with_more_directories_than_the_walk_allows_holds_the_ticket() {
+    let (read, _) = passing_ticket(
+        Placement::Shared,
+        20,
+        |project| {
+            let wide = project.join("wide");
+            std::fs::create_dir(&wide).unwrap();
+            for index in 0..4_097 {
+                std::fs::create_dir(wide.join(format!("w{index}"))).unwrap();
+            }
+        },
+        |_| {},
+    );
+    assert_eq!(read.card.status, CardStatus::Blocked);
+    assert_eq!(
+        read.ticket.reason,
+        Some(TicketReason::SharedInstructionsUnknown)
+    );
+}
+
+#[test]
 fn an_agent_in_its_own_copy_reaches_review_past_the_old_directory_limit() {
     let (read, _) = passing_ticket(Placement::Copy, 30, |_| {}, |_| {});
     assert_ready(&read, "own copy, 30 directories");

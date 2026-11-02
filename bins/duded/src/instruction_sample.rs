@@ -2108,12 +2108,13 @@ mod tests {
         let sample = observe(project_and_ancestor_rules(&project));
         assert!(holding_limits(&sample).is_empty(), "{:?}", sample.gaps);
         assert_eq!(sample.inventoried.len(), 2);
-        assert!(
-            sample
-                .inputs
-                .iter()
-                .any(|input| input.path.to_path().unwrap().ends_with(".claude/rules/p.md"))
-        );
+        assert!(sample.inputs.iter().any(|input| {
+            input
+                .path
+                .to_path()
+                .unwrap()
+                .ends_with(".claude/rules/p.md")
+        }));
         assert!(sample.usage.descendant_entries <= MAX_INSTRUCTION_DESCENDANTS);
     }
 
@@ -2134,12 +2135,13 @@ mod tests {
                 .all(|gap| gap.context == InstructionPathContext::SharedProject),
             "{limits:?}"
         );
-        assert!(
-            sample
-                .inputs
-                .iter()
-                .any(|input| input.path.to_path().unwrap().ends_with(".claude/rules/p.md"))
-        );
+        assert!(sample.inputs.iter().any(|input| {
+            input
+                .path
+                .to_path()
+                .unwrap()
+                .ends_with(".claude/rules/p.md")
+        }));
     }
 
     #[test]
@@ -2182,9 +2184,12 @@ mod tests {
             symlink(target, &link).unwrap();
             let sample = observe(descendant_plan(&root, 1));
             assert!(
-                sample.gaps.iter().any(|gap| gap.reason
-                    == InstructionGapKind::PathUnresolved
-                    && gap.path.as_ref().and_then(|path| path.to_path().ok()) == Some(link.clone())),
+                sample
+                    .gaps
+                    .iter()
+                    .any(|gap| gap.reason == InstructionGapKind::PathUnresolved
+                        && gap.path.as_ref().and_then(|path| path.to_path().ok())
+                            == Some(link.clone())),
                 "{name}: {:?}",
                 sample.gaps
             );
@@ -2202,9 +2207,12 @@ mod tests {
         std::os::unix::fs::symlink(root.join("sub/target.txt"), &link).unwrap();
         let sample = observe(descendant_plan(&root, 1));
         assert!(
-            sample.gaps.iter().any(|gap| gap.reason
-                == InstructionGapKind::PathUnresolved
-                && gap.path.as_ref().and_then(|path| path.to_path().ok()) == Some(link.clone())),
+            sample
+                .gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::PathUnresolved
+                    && gap.path.as_ref().and_then(|path| path.to_path().ok())
+                        == Some(link.clone())),
             "{:?}",
             sample.gaps
         );
