@@ -776,6 +776,9 @@ impl Sample {
         let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == ErrorKind::NotFound => {
+                if !matches!(source.kind, InstructionSourceKind::Import { .. }) {
+                    return Some(InstructionFingerprint::Absent);
+                }
                 let retained = self.push_input(InstructionInput {
                     path: native,
                     resolved_path: None,
@@ -1788,7 +1791,7 @@ mod tests {
         let plan = fixture(directory.path());
         let before = observe(plan.clone());
         assert!(before.gaps.is_empty(), "{:?}", before.gaps);
-        assert_eq!(before.inputs.len(), 2);
+        assert_eq!(before.inputs.len(), 1);
         assert_eq!(before.inputs[0].path, native(&path));
         assert_eq!(
             serde_json::to_value(before.inputs[0].fingerprint).unwrap(),
@@ -1798,12 +1801,11 @@ mod tests {
                 "bytes": 3
             })
         );
-        assert_eq!(before.inputs[1].fingerprint, InstructionFingerprint::Absent);
         assert!(compare(&before, &observe(plan.clone())).is_unchanged());
         fs::write(&path, b"two").unwrap();
         let after = observe(plan);
         assert!(after.gaps.is_empty(), "{:?}", after.gaps);
-        assert_eq!(after.inputs.len(), 2);
+        assert_eq!(after.inputs.len(), 1);
         assert_eq!(
             serde_json::to_value(after.inputs[0].fingerprint).unwrap(),
             serde_json::json!({
@@ -1869,6 +1871,52 @@ mod tests {
                 .iter()
                 .any(|gap| gap.reason == InstructionGapKind::UninventoriedMember)
         );
+    }
+
+    #[test]
+    fn absent_candidates_are_inventoried_not_stored_and_later_creation_and_deletion_are_known() {
+        let directory = tempfile::tempdir().unwrap();
+        let plan = fixture(directory.path());
+        let empty = observe(plan.clone());
+        assert!(empty.inputs.is_empty());
+        assert_eq!(empty.inventoried.len(), 1);
+        assert!(compare(&empty, &observe(plan.clone())).is_unchanged());
+        fs::write(directory.path().join("AGENTS.md"), b"new").unwrap();
+        let created = observe(plan.clone());
+        assert_eq!(created.inputs.len(), 1);
+        let creation = compare(&empty, &created);
+        assert!(creation.gaps.is_empty(), "{:?}", creation.gaps);
+        assert_eq!(creation.changes.len(), 1);
+        assert_eq!(creation.changes[0].before, InstructionFingerprint::Absent);
+        fs::remove_file(directory.path().join("AGENTS.md")).unwrap();
+        let deletion = compare(&created, &observe(plan));
+        assert!(deletion.gaps.is_empty(), "{:?}", deletion.gaps);
+        assert_eq!(deletion.changes.len(), 1);
+        assert_eq!(deletion.changes[0].after, InstructionFingerprint::Absent);
+    }
+
+    #[test]
+    fn a_sample_written_with_absent_rows_compares_with_one_written_without_them() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("CLAUDE.md"), b"one").unwrap();
+        let plan = fixture(directory.path());
+        let lean = observe(plan.clone());
+        let mut legacy = lean.clone();
+        let mut absent = legacy.inputs[0].clone();
+        absent.path = native(directory.path().join("AGENTS.md"));
+        absent.resolved_path = None;
+        absent.fingerprint = InstructionFingerprint::Absent;
+        legacy.inputs.push(absent);
+        assert!(legacy.validate().is_ok());
+        for (before, after) in [(&legacy, &lean), (&lean, &legacy)] {
+            let comparison = compare(before, after);
+            assert!(comparison.is_unchanged(), "{comparison:?}");
+            assert!(comparison.gaps.is_empty(), "{:?}", comparison.gaps);
+        }
+        fs::write(directory.path().join("AGENTS.md"), b"new").unwrap();
+        let comparison = compare(&legacy, &observe(plan));
+        assert_eq!(comparison.changes.len(), 1);
+        assert!(comparison.gaps.is_empty(), "{:?}", comparison.gaps);
     }
 
     #[test]
@@ -2059,6 +2107,7 @@ mod tests {
     #[test]
     fn duplicate_paths_keep_each_sources_scope_and_conflicting_fingerprints() {
         let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("CLAUDE.md"), b"one").unwrap();
         let mut before = observe(fixture(directory.path()));
         let lease = dudes_types::WorktreeId::from_bytes(1_u128.to_be_bytes());
         let mut peer = before.participants[0].clone();
