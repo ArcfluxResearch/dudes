@@ -791,6 +791,10 @@ fn plain_repository(root: &std::path::Path, dirs: usize) {
     }
 }
 
+#[allow(
+    clippy::disallowed_types,
+    reason = "a fixture repository needs the system git, which the test harness otherwise scripts away"
+)]
 fn commit_repository(root: &std::path::Path) {
     for args in [
         &["init", "-q"][..],
@@ -946,10 +950,8 @@ fn assert_held(read: &TicketReadResult, path: &std::path::Path, what: &str) {
 
 #[test]
 fn a_lone_agents_passing_ticket_reaches_review_in_a_larger_repository() {
-    for dirs in [300] {
-        let (read, _) = passing_ticket(Placement::Lone, dirs, |_| {}, |_| {});
-        assert_ready(&read, &format!("lone agent, {dirs} directories"));
-    }
+    let (read, _) = passing_ticket(Placement::Lone, 300, |_| {}, |_| {});
+    assert_ready(&read, "lone agent, 300 directories");
 }
 
 #[test]
@@ -966,21 +968,21 @@ fn shared_hold(what: &str, changed: &str, mutate: impl FnOnce(&std::path::Path))
 #[test]
 fn an_edited_instruction_file_still_holds_in_a_shared_folder() {
     shared_hold("edit", "CLAUDE.md", |project| {
-        std::fs::write(project.join("CLAUDE.md"), "changed\n").unwrap()
+        std::fs::write(project.join("CLAUDE.md"), "changed\n").unwrap();
     });
 }
 
 #[test]
 fn a_deleted_instruction_file_still_holds_in_a_shared_folder() {
     shared_hold("delete", "CLAUDE.md", |project| {
-        std::fs::remove_file(project.join("CLAUDE.md")).unwrap()
+        std::fs::remove_file(project.join("CLAUDE.md")).unwrap();
     });
 }
 
 #[test]
 fn a_nested_instruction_file_created_in_the_turn_still_holds_in_a_shared_folder() {
     shared_hold("nested", "d1/CLAUDE.md", |project| {
-        std::fs::write(project.join("d1/CLAUDE.md"), "new\n").unwrap()
+        std::fs::write(project.join("d1/CLAUDE.md"), "new\n").unwrap();
     });
 }
 
