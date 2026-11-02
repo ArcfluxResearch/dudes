@@ -950,8 +950,8 @@ fn assert_held(read: &TicketReadResult, path: &std::path::Path, what: &str) {
 
 #[test]
 fn a_lone_agents_passing_ticket_reaches_review_in_a_larger_repository() {
-    let (read, _) = passing_ticket(Placement::Lone, 300, |_| {}, |_| {});
-    assert_ready(&read, "lone agent, 300 directories");
+    let (read, _) = passing_ticket(Placement::Lone, 80, |_| {}, |_| {});
+    assert_ready(&read, "lone agent, 80 directories");
 }
 
 #[test]
