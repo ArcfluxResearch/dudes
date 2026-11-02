@@ -2003,7 +2003,7 @@ mod tests {
                 .supervisor
                 .handle(
                     Input::Replayed {
-                        lsn: Lsn(n as u64),
+                        lsn: Lsn(u64::try_from(n).unwrap()),
                         entry: Entry {
                             at: Timestamp::UNIX_EPOCH,
                             record: hired(agent, folder.path()),
