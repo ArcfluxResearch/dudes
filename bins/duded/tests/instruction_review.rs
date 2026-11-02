@@ -102,7 +102,7 @@ enum Completion {
     Fails,
 }
 
-fn managed_review(changed: bool, completion: Completion, held_controls: bool, delayed: bool) {
+fn managed_review(completion: Completion, held_controls: bool, delayed: bool) {
     let completed = completion == Completion::Passes;
     let fixture = common::Fixture::new();
     let project = fixture.state.path().join("project");
@@ -140,9 +140,7 @@ fn managed_review(changed: bool, completion: Completion, held_controls: bool, de
     };
     let (card, turn) = start_ticket(&fixture, &mut call, agent);
     let started_lsn = assert_sampled_start(&fixture, turn, &instruction);
-    if changed {
-        std::fs::write(&instruction, "changed project instruction\n").unwrap();
-    }
+    std::fs::write(&instruction, "changed project instruction\n").unwrap();
     if !completed && held_controls {
         success(call(Method::LoopPause, json!({"agent":agent})));
     }
@@ -160,15 +158,7 @@ fn managed_review(changed: bool, completion: Completion, held_controls: bool, de
         held_controls,
         gate.as_deref(),
     );
-    assert_exact_review(
-        &fixture,
-        &mut call,
-        card,
-        &read,
-        &instruction,
-        changed,
-        completed,
-    );
+    assert_exact_review(&fixture, &mut call, card, &read, &instruction, completed);
     if let Some(gate) = &gate {
         assert_delayed_completion(&fixture, &running.handle, gate, agent, &read);
     }
@@ -299,9 +289,18 @@ fn start_ticket(
     call: &mut impl FnMut(Method, serde_json::Value) -> Response,
     agent: dudes_types::AgentId,
 ) -> (CardId, dudes_types::TurnId) {
+    start_ticket_in(fixture, call, agent, None)
+}
+
+fn start_ticket_in(
+    fixture: &common::Fixture,
+    call: &mut impl FnMut(Method, serde_json::Value) -> Response,
+    agent: dudes_types::AgentId,
+    project: Option<&str>,
+) -> (CardId, dudes_types::TurnId) {
     let created = success(call(
         Method::TicketCreate,
-        json!({"title":"Owned instruction interval"}),
+        json!({"title":"Owned instruction interval","project":project}),
     ));
     let card: CardId = serde_json::from_value(created["card"].clone()).unwrap();
     success(call(
@@ -442,31 +441,26 @@ fn assert_exact_review(
     card: CardId,
     read: &TicketReadResult,
     instruction: &std::path::Path,
-    changed: bool,
     completed: bool,
 ) {
     let review = read.ticket.instruction_review.as_ref().unwrap();
     assert!(
-        review
-            .gaps
-            .iter()
-            .any(dudes_proto::InstructionCoverageGap::holds),
-        "the idle recorded peer is an observed gap, which holds the ticket"
+        !review.gaps.iter().any(|gap| {
+            gap.origin == dudes_proto::InstructionGapOrigin::Observed
+                && gap.reason == dudes_proto::InstructionGapKind::ConfigurationUnknown
+        }),
+        "an idle Claude peer raises no gap of its own: {:?}",
+        review.gaps
     );
-    assert_eq!(
+    assert!(
         review
             .changed_paths
             .iter()
-            .any(|path| path.path.to_path().ok().as_deref() == Some(instruction)),
-        changed
+            .any(|path| path.path.to_path().ok().as_deref() == Some(instruction))
     );
     assert_eq!(
         read.ticket.reason,
-        Some(if changed {
-            TicketReason::SharedInstructionsChanged
-        } else {
-            TicketReason::SharedInstructionsUnknown
-        })
+        Some(TicketReason::SharedInstructionsChanged)
     );
     let reviews_before = fixture.records().iter().filter(|record| matches!(record, Record::TicketInstructionReviewed { card: reviewed, .. } if *reviewed == card)).count();
     let missing = call(
@@ -664,22 +658,17 @@ fn a_halted_turns_native_boundary_settles_and_frees_its_folder_for_a_peer() {
 
 #[test]
 fn a_real_managed_edit_requires_exact_review_and_acknowledgment_keeps_pause() {
-    managed_review(true, Completion::Fails, true, false);
-}
-
-#[test]
-fn an_unchanged_actual_claude_composer_reports_coverage_unknown_and_preserves_completed_accept() {
-    managed_review(false, Completion::Passes, true, false);
+    managed_review(Completion::Fails, true, false);
 }
 
 #[test]
 fn healthy_unpaused_work_continues_through_ordinary_admission_after_review() {
-    managed_review(true, Completion::Fails, false, false);
+    managed_review(Completion::Fails, false, false);
 }
 
 #[test]
 fn acknowledgment_waits_for_an_inflight_observed_completion_check() {
-    managed_review(true, Completion::Fails, false, true);
+    managed_review(Completion::Fails, false, true);
 }
 
 /// An agent working beside an idle peer, so the project is shared, rewrites one of the engine's
@@ -846,4 +835,380 @@ fn hire_lone_agent(running: &common::Running, project: &std::path::Path) -> dude
 #[test]
 fn a_lone_agents_passing_ticket_reaches_review_past_engine_limits() {
     lone_agent_ticket();
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Lone,
+    NeighbourHiredFirst,
+    NeighbourHiredAfter,
+    /// The ticket agent belongs to another project and moves in beside a resident.
+    Moved,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Midway {
+    Nothing,
+    ThirdAgentHired,
+    NeighbourRetired,
+}
+
+#[derive(Clone, Copy)]
+struct Scenario {
+    layout: Layout,
+    edits: &'static [&'static str],
+    midway: Midway,
+}
+
+struct Outcome {
+    status: CardStatus,
+    reason: Option<TicketReason>,
+    changed: Vec<std::path::PathBuf>,
+    holding: Vec<String>,
+    sentence: Option<String>,
+    root: std::path::PathBuf,
+}
+
+impl Outcome {
+    fn changed_relative(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .changed
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&self.root)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string()
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn assert_ready_with_the_general_note(&self) {
+        assert_eq!(self.status, CardStatus::Review, "{:?}", self.holding);
+        assert_eq!(self.reason, None);
+        assert!(self.holding.is_empty(), "{:?}", self.holding);
+        assert_eq!(
+            self.sentence.as_deref(),
+            Some(
+                "Dudes cannot see Claude's settings in its home folder, plugins or managed policy. It saw no change to the instruction and settings files it can read."
+            )
+        );
+    }
+
+    fn assert_held_for(&self, edits: &[&str]) {
+        assert_eq!(self.status, CardStatus::Blocked, "{:?}", self.holding);
+        assert_eq!(self.reason, Some(TicketReason::SharedInstructionsChanged));
+        let mut wanted: Vec<String> = edits.iter().map(|edit| (*edit).to_owned()).collect();
+        wanted.sort();
+        let mut changed = self.changed_relative();
+        changed.dedup();
+        assert_eq!(changed, wanted);
+    }
+
+    fn assert_ready_without_a_hold(&self) {
+        assert_eq!(self.status, CardStatus::Review, "{:?}", self.changed);
+        assert_eq!(self.reason, None);
+    }
+
+    fn assert_held_by_a_gap(&self) {
+        assert_eq!(self.status, CardStatus::Blocked);
+        assert_eq!(self.reason, Some(TicketReason::SharedInstructionsUnknown));
+        assert!(!self.holding.is_empty());
+    }
+}
+
+fn hire_named(
+    running: &common::Running,
+    project: &std::path::Path,
+    name: &str,
+) -> dudes_types::AgentId {
+    match running
+        .handle
+        .ask(duded::ports::Ask::Hire(Box::new(
+            dudes_proto::rpc::agent::HireParams {
+                trusted: true,
+                name: name.into(),
+                ..common::hire_params(project)
+            },
+        )))
+        .unwrap()
+    {
+        duded::ports::Answered::Hired(result) => result.agent,
+        other => panic!("unexpected hire answer: {other:?}"),
+    }
+}
+
+fn hire_layout(
+    running: &common::Running,
+    layout: Layout,
+    project: &std::path::Path,
+    other: &std::path::Path,
+) -> (dudes_types::AgentId, Option<dudes_types::AgentId>) {
+    match layout {
+        Layout::Lone => (hire_named(running, project, "Ticketer"), None),
+        Layout::NeighbourHiredFirst => {
+            let neighbour = hire_named(running, project, "Neighbour");
+            (hire_named(running, project, "Ticketer"), Some(neighbour))
+        }
+        Layout::NeighbourHiredAfter => {
+            let agent = hire_named(running, project, "Ticketer");
+            (agent, Some(hire_named(running, project, "Neighbour")))
+        }
+        Layout::Moved => {
+            let agent = hire_named(running, project, "Mover");
+            (agent, Some(hire_named(running, other, "Resident")))
+        }
+    }
+}
+
+fn happen_midway(
+    call: &mut impl FnMut(Method, serde_json::Value) -> Response,
+    midway: Midway,
+    folder: &std::path::Path,
+    neighbour: Option<dudes_types::AgentId>,
+) {
+    match midway {
+        Midway::Nothing => {}
+        Midway::ThirdAgentHired => {
+            success(call(
+                Method::AgentHire,
+                serde_json::to_value(dudes_proto::rpc::agent::HireParams {
+                    name: "Late".into(),
+                    trusted: true,
+                    ..common::hire_params(folder)
+                })
+                .unwrap(),
+            ));
+        }
+        Midway::NeighbourRetired => {
+            success(call(
+                Method::AgentRetire,
+                json!({"agent": neighbour.unwrap(), "reason": "leaves mid-turn"}),
+            ));
+        }
+    }
+}
+
+fn settled_outcome(
+    call: &mut impl FnMut(Method, serde_json::Value) -> Response,
+    card: CardId,
+    folder: &std::path::Path,
+) -> Outcome {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let read: TicketReadResult = loop {
+        let read: TicketReadResult =
+            serde_json::from_value(success(call(Method::TicketRead, json!({"card":card}))))
+                .unwrap();
+        let pending = read
+            .ticket
+            .instruction_review
+            .as_ref()
+            .is_some_and(|review| review.pending_comparison);
+        if matches!(read.card.status, CardStatus::Review | CardStatus::Blocked) && !pending {
+            break read;
+        }
+        assert!(Instant::now() < deadline, "the ticket settles: {read:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let review = read.ticket.instruction_review.as_ref();
+    Outcome {
+        status: read.card.status,
+        reason: read.ticket.reason,
+        changed: review
+            .map(|review| {
+                review
+                    .changed_paths
+                    .iter()
+                    .filter_map(|changed| changed.path.to_path().ok())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        holding: review
+            .map(|review| {
+                review
+                    .gaps
+                    .iter()
+                    .filter(|gap| gap.holds())
+                    .map(|gap| format!("{:?}/{:?}", gap.reason, gap.origin))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        sentence: read
+            .ticket
+            .coverage
+            .as_ref()
+            .map(dudes_proto::TicketCoverageNote::sentence),
+        root: folder.to_path_buf(),
+    }
+}
+
+fn run_scenario(scenario: Scenario) -> Outcome {
+    let fixture = common::Fixture::new();
+    let project = fixture.state.path().join("project");
+    let other = fixture.state.path().join("other");
+    let work = fixture.state.path().join("child");
+    let home = fixture.state.path().join("owned-home");
+    for path in [&project, &other, &work, &home] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let project = project.canonicalize().unwrap();
+    let other = other.canonicalize().unwrap();
+    let moved = scenario.layout == Layout::Moved;
+    let folder = if moved {
+        other.clone()
+    } else {
+        project.clone()
+    };
+    for root in [&project, &other] {
+        std::fs::write(root.join("CLAUDE.md"), "initial project instruction\n").unwrap();
+    }
+    for edit in scenario.edits {
+        let target = folder.join(edit);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "{}\n").unwrap();
+    }
+    let command = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/two-roles/bin/claude")
+        .canonicalize()
+        .unwrap();
+    let mut settings = owned_settings(&fixture, &project, &work, &home, true, false);
+    if moved {
+        std::fs::create_dir(other.join(".git")).unwrap();
+        let mut second = settings.enrollment.profiles[0].clone();
+        second.id = "other-project".into();
+        second.label = "Other project".into();
+        second.cwd.clone_from(&other);
+        second.written_cwd.clone_from(&other);
+        settings.enrollment.profiles.push(second);
+    }
+    let (mut running, _) = start_review_daemon(&settings, command, true, false);
+    let (agent, neighbour) = hire_layout(&running, scenario.layout, &project, &other);
+    let mut socket = Client::connect(settings.socket()).unwrap();
+    let credential = || {
+        OperatorCredential::new(
+            std::fs::read_to_string(
+                settings
+                    .runtime_dir
+                    .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let mut call = |method, params| {
+        socket
+            .call_as_operator(method, Some(params), credential())
+            .unwrap()
+    };
+    let (card, turn) =
+        start_ticket_in(&fixture, &mut call, agent, moved.then_some("other-project"));
+    let started_lsn = assert_sampled_start(&fixture, turn, &folder.join("CLAUDE.md"));
+    for edit in scenario.edits {
+        std::fs::write(folder.join(edit), "changed by the ticket agent\n").unwrap();
+    }
+    happen_midway(&mut call, scenario.midway, &folder, neighbour);
+    std::fs::write(work.join("release.1"), "").unwrap();
+    assert_finished_boundary(&fixture, turn, started_lsn);
+    if moved {
+        assert!(
+            fixture.records().iter().any(|record| matches!(record, Record::AgentMoved { agent: moved, .. } if *moved == agent)),
+            "the ticket moved the agent in beside the resident"
+        );
+    }
+    let outcome = settled_outcome(&mut call, card, &folder);
+    drop(socket);
+    running.stop(duded::ExitCause::ShutdownRpc);
+    outcome
+}
+
+const UNCHANGED: Scenario = Scenario {
+    layout: Layout::NeighbourHiredAfter,
+    edits: &[],
+    midway: Midway::Nothing,
+};
+
+#[test]
+fn an_unchanged_ticket_beside_a_claude_neighbour_hired_after_it_is_ready_for_you() {
+    run_scenario(UNCHANGED).assert_ready_with_the_general_note();
+}
+
+#[test]
+fn an_unchanged_ticket_beside_a_claude_neighbour_hired_before_it_is_ready_for_you() {
+    run_scenario(Scenario {
+        layout: Layout::NeighbourHiredFirst,
+        ..UNCHANGED
+    })
+    .assert_ready_with_the_general_note();
+}
+
+#[test]
+fn a_moved_agent_arriving_beside_a_resident_reaches_ready_for_you() {
+    run_scenario(Scenario {
+        layout: Layout::Moved,
+        ..UNCHANGED
+    })
+    .assert_ready_with_the_general_note();
+}
+
+macro_rules! beside_a_neighbour_an_edit_holds_with_its_path {
+    ($($name:ident: $path:literal,)*) => {$(
+        #[test]
+        fn $name() {
+            run_scenario(Scenario { edits: &[$path], ..UNCHANGED }).assert_held_for(&[$path]);
+        }
+    )*};
+}
+
+beside_a_neighbour_an_edit_holds_with_its_path! {
+    editing_a_project_skill_beside_a_neighbour_holds: ".claude/skills/s/SKILL.md",
+    editing_a_project_subagent_beside_a_neighbour_holds: ".claude/agents/a.md",
+    editing_a_project_command_beside_a_neighbour_holds: ".claude/commands/c.md",
+    editing_the_mcp_file_beside_a_neighbour_holds: ".mcp.json",
+    editing_a_nested_memory_file_beside_a_neighbour_holds: "sub/CLAUDE.md",
+    editing_a_rules_file_beside_a_neighbour_holds: ".claude/rules/r.md",
+    editing_the_project_settings_beside_a_neighbour_holds: ".claude/settings.json",
+    editing_the_local_settings_beside_a_neighbour_holds: ".claude/settings.local.json",
+    editing_the_agents_file_beside_a_neighbour_holds: "AGENTS.md",
+    editing_the_memory_file_beside_a_neighbour_holds: "CLAUDE.md",
+}
+
+#[test]
+fn a_third_agent_hired_during_the_turn_holds_the_ticket() {
+    run_scenario(Scenario {
+        midway: Midway::ThirdAgentHired,
+        ..UNCHANGED
+    })
+    .assert_held_by_a_gap();
+}
+
+#[test]
+fn a_neighbour_who_leaves_between_the_samples_holds_the_ticket() {
+    run_scenario(Scenario {
+        midway: Midway::NeighbourRetired,
+        ..UNCHANGED
+    })
+    .assert_held_by_a_gap();
+}
+
+macro_rules! alone_an_edit_reaches_ready_for_you {
+    ($($name:ident: $path:literal,)*) => {$(
+        #[test]
+        fn $name() {
+            run_scenario(Scenario {
+                layout: Layout::Lone,
+                edits: &[$path],
+                midway: Midway::Nothing,
+            })
+            .assert_ready_without_a_hold();
+        }
+    )*};
+}
+
+alone_an_edit_reaches_ready_for_you! {
+    a_lone_agent_editing_a_project_skill_is_not_held: ".claude/skills/s/SKILL.md",
+    a_lone_agent_editing_a_project_subagent_is_not_held: ".claude/agents/a.md",
+    a_lone_agent_editing_a_project_command_is_not_held: ".claude/commands/c.md",
+    a_lone_agent_editing_the_mcp_file_is_not_held: ".mcp.json",
 }

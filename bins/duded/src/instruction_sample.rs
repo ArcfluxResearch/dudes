@@ -1726,6 +1726,24 @@ mod tests {
     }
 
     #[test]
+    fn a_baseline_sampled_before_the_upgrade_keeps_its_neighbour_gap_in_the_comparison() {
+        let directory = tempfile::tempdir().unwrap();
+        let after = fixture(directory.path());
+        let mut before = after.clone();
+        let old_gap = InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
+            reason: InstructionGapKind::ConfigurationUnknown,
+            context: InstructionPathContext::Unresolved,
+            agent: Some("01ARZ3NDEKTSV4RRFFQ69G5FAW".parse().unwrap()),
+            path: None,
+        };
+        assert!(before.try_push_gap(old_gap.clone()));
+        let comparison = compare(&before, &after);
+        assert_eq!(comparison.gaps, [old_gap], "the old gap is journaled again");
+        assert!(comparison.gaps[0].holds());
+    }
+
+    #[test]
     fn net_creation_deletion_and_edit_restore_have_distinct_endpoint_answers() {
         let directory = tempfile::tempdir().unwrap();
         let plan = fixture(directory.path());
