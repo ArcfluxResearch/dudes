@@ -688,6 +688,9 @@ impl Sample {
             };
             for entry in entries {
                 match entry.file_type() {
+                    Ok(kind)
+                        if kind.is_symlink()
+                            && fs::metadata(entry.path()).is_ok_and(|target| target.is_file()) => {}
                     Ok(kind) if kind.is_symlink() => self.gap(
                         InstructionGapKind::PathUnresolved,
                         agent,
@@ -2155,6 +2158,56 @@ mod tests {
         let comparison = compare(&before, &observe(descendant_plan(directory.path(), 1)));
         assert_eq!(comparison.changes.len(), 1);
         assert!(comparison.gaps.is_empty(), "{:?}", comparison.gaps);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_symlinks_that_do_not_resolve_to_a_file_raise_a_gap_in_the_walk() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        fs::create_dir_all(root.join("sub/real")).unwrap();
+        fs::write(root.join("sub/target.txt"), b"x").unwrap();
+        symlink(root.join("sub/target.txt"), root.join("sub/to-file")).unwrap();
+        let sample = observe(descendant_plan(&root, 1));
+        assert!(sample.gaps.is_empty(), "{:?}", sample.gaps);
+        assert_eq!(sample.inventoried.len(), 1);
+
+        for (name, target) in [
+            ("to-dir", root.join("sub/real")),
+            ("broken", root.join("sub/missing")),
+            ("loop", root.join("sub/loop")),
+        ] {
+            let link = root.join("sub").join(name);
+            symlink(target, &link).unwrap();
+            let sample = observe(descendant_plan(&root, 1));
+            assert!(
+                sample.gaps.iter().any(|gap| gap.reason
+                    == InstructionGapKind::PathUnresolved
+                    && gap.path.as_ref().and_then(|path| path.to_path().ok()) == Some(link.clone())),
+                "{name}: {:?}",
+                sample.gaps
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_a_candidates_own_name_is_still_unresolved() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/target.txt"), b"x").unwrap();
+        let link = root.join("sub/CLAUDE0.md");
+        std::os::unix::fs::symlink(root.join("sub/target.txt"), &link).unwrap();
+        let sample = observe(descendant_plan(&root, 1));
+        assert!(
+            sample.gaps.iter().any(|gap| gap.reason
+                == InstructionGapKind::PathUnresolved
+                && gap.path.as_ref().and_then(|path| path.to_path().ok()) == Some(link.clone())),
+            "{:?}",
+            sample.gaps
+        );
     }
 
     #[test]
