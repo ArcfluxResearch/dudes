@@ -63,6 +63,8 @@ fn observe_bounded(
         failures: 0,
         progress,
         budget,
+        walks: BTreeMap::new(),
+        recording: None,
     };
     let participants = sample.snapshot.participants.clone();
     for participant in participants {
@@ -180,6 +182,16 @@ struct Sample {
     failures: u64,
     progress: Option<SampleProgress>,
     budget: Option<batch::Budget>,
+    walks: BTreeMap<PathBuf, Walk>,
+    recording: Option<Vec<(InstructionGapKind, Option<PathBuf>)>>,
+}
+
+/// A descendant tree walked once per sample, with the gaps the walk raised so that every rule
+/// that shares the tree reports them for its own agent and context.
+#[derive(Clone)]
+struct Walk {
+    directories: Vec<PathBuf>,
+    gaps: Vec<(InstructionGapKind, Option<PathBuf>)>,
 }
 
 enum SampleProgress {
@@ -297,6 +309,9 @@ impl Sample {
         context: InstructionPathContext,
     ) {
         self.failures += 1;
+        if let Some(recording) = &mut self.recording {
+            recording.push((reason, path.map(Path::to_path_buf)));
+        }
         let context = path.map_or(context, |path| {
             self.path_context(agent, path, context, InstructionSharedInput::Ancestor)
         });
@@ -601,6 +616,31 @@ impl Sample {
     }
 
     fn directories(
+        &mut self,
+        agent: AgentId,
+        context: InstructionPathContext,
+        root: &Path,
+    ) -> Vec<PathBuf> {
+        if let Some(walk) = self.walks.get(root).cloned() {
+            for (reason, path) in &walk.gaps {
+                self.gap(*reason, agent, path.as_deref(), context);
+            }
+            return walk.directories;
+        }
+        let outer = self.recording.replace(Vec::new());
+        let directories = self.walk(agent, context, root);
+        let gaps = std::mem::replace(&mut self.recording, outer).unwrap_or_default();
+        self.walks.insert(
+            root.to_path_buf(),
+            Walk {
+                directories: directories.clone(),
+                gaps,
+            },
+        );
+        directories
+    }
+
+    fn walk(
         &mut self,
         agent: AgentId,
         context: InstructionPathContext,
@@ -1640,6 +1680,8 @@ mod tests {
             failures: 0,
             progress: None,
             budget: None,
+            walks: BTreeMap::new(),
+            recording: None,
         }
     }
 
@@ -1919,6 +1961,54 @@ mod tests {
         assert!(comparison.gaps.is_empty(), "{:?}", comparison.gaps);
     }
 
+    fn descendant_plan(directory: &Path, rules: usize) -> InstructionSnapshot {
+        let mut plan = fixture(directory);
+        let rule = plan.participants[0].discovery.rules[0].clone();
+        plan.participants[0].discovery.rules = (0..rules)
+            .map(|index| InstructionDiscoveryRule {
+                candidate: InstructionCandidate::Descendant {
+                    directory: native("."),
+                    paths: vec![native(format!("CLAUDE{index}.md"))],
+                },
+                ..rule.clone()
+            })
+            .collect();
+        plan
+    }
+
+    #[test]
+    fn rules_sharing_a_descendant_tree_walk_it_once() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..20 {
+            fs::create_dir_all(directory.path().join(format!("d{index}/e"))).unwrap();
+        }
+        let one = observe(descendant_plan(directory.path(), 1));
+        let four = observe(descendant_plan(directory.path(), 4));
+        assert_eq!(one.usage, four.usage);
+        assert_eq!(four.inventoried.len(), 4);
+        fs::write(directory.path().join("d3/e/CLAUDE2.md"), b"new").unwrap();
+        let comparison = compare(&four, &observe(descendant_plan(directory.path(), 4)));
+        assert_eq!(comparison.changes.len(), 1);
+        assert!(comparison.gaps.is_empty(), "{:?}", comparison.gaps);
+    }
+
+    #[test]
+    fn a_shared_tree_past_the_descendant_limit_reports_the_limit_for_every_rule() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..=MAX_INSTRUCTION_DESCENDANTS {
+            fs::write(directory.path().join(format!("f{index}")), b"").unwrap();
+        }
+        let sample = observe(descendant_plan(directory.path(), 3));
+        assert!(
+            sample
+                .gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::DescendantLimit && gap.holds())
+        );
+        assert!(sample.inventoried.is_empty());
+        assert_eq!(sample.usage.descendant_entries, MAX_INSTRUCTION_DESCENDANTS);
+    }
+
     #[test]
     fn known_changes_survive_a_later_nonregular_candidate() {
         let directory = tempfile::tempdir().unwrap();
@@ -2002,6 +2092,8 @@ mod tests {
             failures: 0,
             progress: None,
             budget: None,
+            walks: BTreeMap::new(),
+            recording: None,
         };
         let root = sample.snapshot.participants[0].discovery.roots[0].clone();
         let agent = sample.snapshot.participants[0].agent;
