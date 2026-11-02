@@ -186,6 +186,12 @@ struct Sample {
     recording: Option<Vec<(InstructionGapKind, Option<PathBuf>)>>,
 }
 
+/// What one walk root has spent, so a large tree in one root cannot exhaust another root's limit.
+#[derive(Default)]
+struct Scope {
+    entries: u32,
+}
+
 /// A descendant tree walked once per sample, with the gaps the walk raised so that every rule
 /// that shares the tree reports them for its own agent and context.
 #[derive(Clone)]
@@ -558,6 +564,7 @@ impl Sample {
         agent: AgentId,
         context: InstructionPathContext,
         directory: &Path,
+        scope: &mut Scope,
     ) -> Option<Vec<fs::DirEntry>> {
         if !self.time(agent, context) {
             return None;
@@ -589,7 +596,7 @@ impl Sample {
             if !self.time(agent, context) {
                 return None;
             }
-            if self.usage().descendant_entries == MAX_INSTRUCTION_DESCENDANTS {
+            if scope.entries == MAX_INSTRUCTION_DESCENDANTS {
                 self.gap(
                     InstructionGapKind::DescendantLimit,
                     agent,
@@ -598,7 +605,10 @@ impl Sample {
                 );
                 return None;
             }
-            self.snapshot.usage.descendant_entries += 1;
+            scope.entries += 1;
+            if self.usage().descendant_entries < MAX_INSTRUCTION_DESCENDANTS {
+                self.snapshot.usage.descendant_entries += 1;
+            }
             if let Ok(entry) = entry {
                 entries.push(entry);
             } else {
@@ -648,13 +658,14 @@ impl Sample {
     ) -> Vec<PathBuf> {
         let mut pending = VecDeque::from([(root.to_path_buf(), 0_u8)]);
         let mut directories = Vec::new();
+        let mut scope = Scope::default();
         while let Some((directory, depth)) = pending.pop_front() {
             if !self.time(agent, context) {
                 break;
             }
             directories.push(directory.clone());
             self.snapshot.usage.descendant_depth = self.snapshot.usage.descendant_depth.max(depth);
-            let Some(entries) = self.entries(agent, context, &directory) else {
+            let Some(entries) = self.entries(agent, context, &directory, &mut scope) else {
                 break;
             };
             for entry in entries {
@@ -691,8 +702,10 @@ impl Sample {
     }
 
     fn markdown(&mut self, agent: AgentId, index: u16, inputs: RuleInputs<'_>, directory: &Path) {
+        let mut scope = Scope::default();
         for directory in self.directories(agent, inputs.root.context, directory) {
-            let Some(entries) = self.entries(agent, inputs.root.context, &directory) else {
+            let Some(entries) = self.entries(agent, inputs.root.context, &directory, &mut scope)
+            else {
                 continue;
             };
             for entry in entries {
@@ -2007,6 +2020,65 @@ mod tests {
         );
         assert!(sample.inventoried.is_empty());
         assert_eq!(sample.usage.descendant_entries, MAX_INSTRUCTION_DESCENDANTS);
+    }
+
+    /// A descendant rule on the project and a rule-directory rule on its ancestors.
+    fn project_and_ancestor_rules(project: &Path) -> InstructionSnapshot {
+        let mut plan = descendant_plan(project, 1);
+        let rules = &mut plan.participants[0].discovery;
+        rules.roots.push(InstructionRoot {
+            path: native(fs::canonicalize(project).unwrap()),
+            kind: InstructionRootKind::Ancestor,
+            context: InstructionPathContext::SharedInput {
+                source: InstructionSharedInput::Ancestor,
+            },
+        });
+        let mut rule = rules.rules[0].clone();
+        rule.root = 1;
+        rule.candidate = InstructionCandidate::MarkdownRules {
+            directory: native(".claude/rules"),
+            scope: InstructionRuleDirectoryScope::Ancestors,
+        };
+        rules.rules.push(rule);
+        plan
+    }
+
+    fn ancestor_rule(parent: &Path) {
+        fs::create_dir_all(parent.join(".claude/rules")).unwrap();
+        fs::write(parent.join(".claude/rules/p.md"), b"ancestor rule").unwrap();
+    }
+
+    fn holding_limits(sample: &InstructionSnapshot) -> Vec<&InstructionCoverageGap> {
+        sample
+            .gaps
+            .iter()
+            .filter(|gap| gap.reason == InstructionGapKind::DescendantLimit && gap.holds())
+            .collect()
+    }
+
+    #[test]
+    fn a_project_walk_past_its_limit_does_not_raise_the_limit_for_the_ancestor_rules() {
+        let parent = tempfile::tempdir().unwrap();
+        let project = parent.path().join("project");
+        for index in 0..=MAX_INSTRUCTION_DESCENDANTS {
+            fs::create_dir_all(project.join(format!("d{index}"))).unwrap();
+        }
+        ancestor_rule(parent.path());
+        let sample = observe(project_and_ancestor_rules(&project));
+        let limits = holding_limits(&sample);
+        assert!(!limits.is_empty());
+        assert!(
+            limits
+                .iter()
+                .all(|gap| gap.context == InstructionPathContext::SharedProject),
+            "{limits:?}"
+        );
+        assert!(
+            sample
+                .inputs
+                .iter()
+                .any(|input| input.path.to_path().unwrap().ends_with(".claude/rules/p.md"))
+        );
     }
 
     #[test]
