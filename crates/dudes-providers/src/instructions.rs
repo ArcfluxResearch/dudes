@@ -612,6 +612,28 @@ fn claude_project(
             imports,
         );
     }
+    for directory in [".claude/skills", ".claude/commands", ".claude/agents"] {
+        declaration.input(
+            root.clone(),
+            DiscoveryRule::MarkdownRules {
+                directory: directory.into(),
+                scope: RuleDirectoryScope::Root,
+            },
+            Activation::Active,
+            evidence,
+            ImportRule::None,
+        );
+    }
+    declaration.input(
+        root.clone(),
+        DiscoveryRule::FixedCandidates {
+            names: names(&[".mcp.json"]),
+            selection: CandidateSelection::All,
+        },
+        Activation::Active,
+        evidence,
+        ImportRule::None,
+    );
 }
 
 fn claude_profile(
@@ -1728,6 +1750,31 @@ mod tests {
     }
 
     #[test]
+    fn claude_project_skills_commands_agents_and_mcp_file_are_fingerprinted_inputs() {
+        let supplied = [EnvVar::new("HOME", "/home/operator")];
+        for mode in [Mode::Managed, Mode::Attached] {
+            let manifest = declaration(&ClaudeAdapter::default(), &ctx(&supplied, true), mode);
+            let has = |wanted: &DiscoveryRule| {
+                manifest.inputs.iter().any(|input| {
+                    matches!(input.root, InstructionRoot::ExecutionDirectory(_))
+                        && input.activation == Activation::Active
+                        && &input.rule == wanted
+                })
+            };
+            for directory in [".claude/skills", ".claude/commands", ".claude/agents"] {
+                assert!(has(&DiscoveryRule::MarkdownRules {
+                    directory: directory.into(),
+                    scope: RuleDirectoryScope::Root,
+                }));
+            }
+            assert!(has(&DiscoveryRule::FixedCandidates {
+                names: names(&[".mcp.json"]),
+                selection: CandidateSelection::All,
+            }));
+        }
+    }
+
+    #[test]
     fn pi_retains_all_five_priority_names_and_global_system_candidates() {
         let supplied = [EnvVar::new("PI_CODING_AGENT_DIR", "profiles/pi")];
         let manifest = declaration(&PiAdapter::default(), &ctx(&supplied, true), Mode::Managed);
@@ -1943,7 +1990,7 @@ mod tests {
         assert!(manifest.gaps.contains(&DeclarationGap::DeclarationLimit));
         assert_eq!(
             manifest.inputs.last().unwrap().root,
-            InstructionRoot::AdditionalDirectory("additional/166".into())
+            InstructionRoot::AdditionalDirectory("additional/165".into())
         );
         assert!(manifest.inputs.iter().any(|input| {
             input.root == InstructionRoot::AdditionalDirectory("additional/0".into())

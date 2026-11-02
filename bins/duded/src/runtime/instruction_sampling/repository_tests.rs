@@ -796,7 +796,10 @@ fn an_added_copy_is_sampled_for_its_skills_and_memory_files() {
         primary.contains(&copies[primary_index].join("CLAUDE.md")),
         "{primary:?}"
     );
-    assert!(!primary.contains(&copies[primary_index].join(".claude/skills/review/SKILL.md")));
+    assert!(
+        primary.contains(&copies[primary_index].join(".claude/skills/review/SKILL.md")),
+        "the primary copy declares its project skills"
+    );
     for (index, member) in start.members.iter().enumerate() {
         if index != primary_index {
             assert_eq!(
