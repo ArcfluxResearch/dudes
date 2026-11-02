@@ -1983,6 +1983,11 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn sampled_skill_folder(skills: usize) -> InstructionSnapshot {
+        sampled_skill_folder_with(skills, 1)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn sampled_skill_folder_with(skills: usize, agents: u128) -> InstructionSnapshot {
         let folder = tempfile::tempdir().unwrap();
         for index in 0..skills {
             let skill = folder.path().join(format!(".claude/skills/skill-{index}"));
@@ -1992,23 +1997,25 @@ mod tests {
         let mut harness = dudes_supervisor::testing::Harness::new();
         let mut sample = job();
         sample.candidate_cwd = Some(folder.path().to_path_buf());
-        let agent = sample.agent;
-        harness
-            .supervisor
-            .handle(
-                Input::Replayed {
-                    lsn: Lsn(1),
-                    entry: Entry {
-                        at: Timestamp::UNIX_EPOCH,
-                        record: hired(agent, folder.path()),
+        for n in 1..=agents {
+            let agent = AgentId::from_parts(1, n);
+            harness
+                .supervisor
+                .handle(
+                    Input::Replayed {
+                        lsn: Lsn(n as u64),
+                        entry: Entry {
+                            at: Timestamp::UNIX_EPOCH,
+                            record: hired(agent, folder.path()),
+                        },
                     },
-                },
-                &dudes_supervisor::RecoveryOperation::empty(),
-            )
-            .unwrap();
-        sample
-            .sources
-            .push(harness.supervisor.instruction_source(agent).unwrap());
+                    &dudes_supervisor::RecoveryOperation::empty(),
+                )
+                .unwrap();
+            sample
+                .sources
+                .push(harness.supervisor.instruction_source(agent).unwrap());
+        }
         sample.queued = Instant::now();
         instruction_sample::observe(instruction_sample::bounded_seed(assemble(
             &sample,
