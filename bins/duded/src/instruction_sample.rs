@@ -186,10 +186,18 @@ struct Sample {
     recording: Option<Vec<(InstructionGapKind, Option<PathBuf>)>>,
 }
 
+/// Files one walk may list before it gives up, because each entry costs time even when it adds
+/// nothing to the inventory.
+const MAX_WALK_FILES: u32 = 16_384;
+
+/// Entries listed between deadline checks.
+const TIME_STRIDE: usize = 128;
+
 /// What one walk root has spent, so a large tree in one root cannot exhaust another root's limit.
 #[derive(Default)]
 struct Scope {
-    entries: u32,
+    directories: u32,
+    files: u32,
 }
 
 /// A descendant tree walked once per sample, with the gaps the walk raised so that every rule
@@ -592,11 +600,21 @@ impl Sample {
             }
         };
         let mut entries = Vec::new();
-        for entry in read {
-            if !self.time(agent, context) {
+        for (index, entry) in read.enumerate() {
+            if index % TIME_STRIDE == 0 && !self.time(agent, context) {
                 return None;
             }
-            if scope.entries == MAX_INSTRUCTION_DESCENDANTS {
+            let is_directory = entry
+                .as_ref()
+                .ok()
+                .and_then(|entry| entry.file_type().ok())
+                .is_some_and(|kind| kind.is_dir());
+            let (spent, cap) = if is_directory {
+                (&mut scope.directories, MAX_INSTRUCTION_DESCENDANTS)
+            } else {
+                (&mut scope.files, MAX_WALK_FILES)
+            };
+            if *spent == cap {
                 self.gap(
                     InstructionGapKind::DescendantLimit,
                     agent,
@@ -605,8 +623,8 @@ impl Sample {
                 );
                 return None;
             }
-            scope.entries += 1;
-            if self.usage().descendant_entries < MAX_INSTRUCTION_DESCENDANTS {
+            *spent += 1;
+            if is_directory && self.usage().descendant_entries < MAX_INSTRUCTION_DESCENDANTS {
                 self.snapshot.usage.descendant_entries += 1;
             }
             if let Ok(entry) = entry {
@@ -2009,7 +2027,7 @@ mod tests {
     fn a_shared_tree_past_the_descendant_limit_reports_the_limit_for_every_rule() {
         let directory = tempfile::tempdir().unwrap();
         for index in 0..=MAX_INSTRUCTION_DESCENDANTS {
-            fs::write(directory.path().join(format!("f{index}")), b"").unwrap();
+            fs::create_dir(directory.path().join(format!("f{index}"))).unwrap();
         }
         let sample = observe(descendant_plan(directory.path(), 3));
         assert!(
@@ -2020,6 +2038,22 @@ mod tests {
         );
         assert!(sample.inventoried.is_empty());
         assert_eq!(sample.usage.descendant_entries, MAX_INSTRUCTION_DESCENDANTS);
+    }
+
+    #[test]
+    fn a_tree_past_the_file_limit_is_not_inventoried() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..=MAX_WALK_FILES {
+            fs::write(directory.path().join(format!("f{index}")), b"").unwrap();
+        }
+        let sample = observe(descendant_plan(directory.path(), 1));
+        assert!(
+            sample
+                .gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::DescendantLimit && gap.holds())
+        );
+        assert!(sample.inventoried.is_empty());
     }
 
     /// A descendant rule on the project and a rule-directory rule on its ancestors.
@@ -2057,6 +2091,30 @@ mod tests {
     }
 
     #[test]
+    fn a_project_walk_past_the_old_entry_count_leaves_the_ancestor_rules_sampled() {
+        let parent = tempfile::tempdir().unwrap();
+        let project = parent.path().join("project");
+        for index in 0..60 {
+            let directory = project.join(format!("d{index}"));
+            fs::create_dir_all(&directory).unwrap();
+            for file in 0..100 {
+                fs::write(directory.join(format!("f{file}.rs")), b"").unwrap();
+            }
+        }
+        ancestor_rule(parent.path());
+        let sample = observe(project_and_ancestor_rules(&project));
+        assert!(holding_limits(&sample).is_empty(), "{:?}", sample.gaps);
+        assert_eq!(sample.inventoried.len(), 2);
+        assert!(
+            sample
+                .inputs
+                .iter()
+                .any(|input| input.path.to_path().unwrap().ends_with(".claude/rules/p.md"))
+        );
+        assert!(sample.usage.descendant_entries <= MAX_INSTRUCTION_DESCENDANTS);
+    }
+
+    #[test]
     fn a_project_walk_past_its_limit_does_not_raise_the_limit_for_the_ancestor_rules() {
         let parent = tempfile::tempdir().unwrap();
         let project = parent.path().join("project");
@@ -2079,6 +2137,24 @@ mod tests {
                 .iter()
                 .any(|input| input.path.to_path().unwrap().ends_with(".claude/rules/p.md"))
         );
+    }
+
+    #[test]
+    fn a_file_created_deep_in_a_large_tree_is_found() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..60 {
+            let path = directory.path().join(format!("d{index}"));
+            fs::create_dir(&path).unwrap();
+            for file in 0..100 {
+                fs::write(path.join(format!("f{file}.rs")), b"").unwrap();
+            }
+        }
+        fs::create_dir_all(directory.path().join("d7/a/b/c")).unwrap();
+        let before = observe(descendant_plan(directory.path(), 1));
+        fs::write(directory.path().join("d7/a/b/c/CLAUDE0.md"), b"new").unwrap();
+        let comparison = compare(&before, &observe(descendant_plan(directory.path(), 1)));
+        assert_eq!(comparison.changes.len(), 1);
+        assert!(comparison.gaps.is_empty(), "{:?}", comparison.gaps);
     }
 
     #[test]
