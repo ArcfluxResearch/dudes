@@ -772,7 +772,8 @@ pub struct InstructionSnapshot {
     pub execution_folder: Option<NativeInstructionPath>,
     /// Frozen recorded folder users and their discovery plans.
     pub participants: Vec<InstructionParticipant>,
-    /// Sampled absent, selected and shadowed candidates.
+    /// Sampled selected and shadowed candidates that exist, and the absent targets of imports. No
+    /// other absent candidate is stored: `inventoried` proves its absence once its rule finished.
     pub inputs: Vec<InstructionInput>,
     /// Families completely inventoried at the starting sample, independent of other gaps.
     /// A failed existing input remains named by a gap path and cannot become a proven creation.

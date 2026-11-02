@@ -63,6 +63,7 @@ impl CheckGate {
 struct ReviewRunner {
     inner: common::ScriptedRunner,
     gate: Option<Arc<CheckGate>>,
+    real: dudes_host::OneShot,
 }
 
 impl duded::predicate::PredicateRunner for ReviewRunner {
@@ -71,6 +72,22 @@ impl duded::predicate::PredicateRunner for ReviewRunner {
         spec: &dudes_providers::launch::LaunchSpec,
         timeout: Duration,
     ) -> std::io::Result<duded::predicate::PredicateOutcome> {
+        if spec.argv.first().is_some_and(|program| {
+            std::path::Path::new(program).file_name() == Some(std::ffi::OsStr::new("git"))
+        }) {
+            return self.real.run(spec, timeout).map(|outcome| match outcome {
+                dudes_host::OneShotOutcome::Finished {
+                    exit,
+                    output_tail,
+                    timed_out,
+                } => duded::predicate::PredicateOutcome::Finished {
+                    exit,
+                    output_tail,
+                    timed_out,
+                },
+                dudes_host::OneShotOutcome::Swept => duded::predicate::PredicateOutcome::Swept,
+            });
+        }
         if let Some(gate) = &self.gate {
             gate.entered.store(true, Ordering::SeqCst);
             let (released, _) = gate
@@ -257,6 +274,7 @@ fn start_review_daemon(
     let predicates = ReviewRunner {
         inner: predicates,
         gate: gate.clone(),
+        real: dudes_host::OneShot::new(),
     };
     let children = duded::ChildEnds::new();
     let mut seams = common::seams(
@@ -752,9 +770,62 @@ fn editing_claudes_local_project_settings_holds_the_ticket() {
     settings_edit_in_a_shared_project(".claude/settings.local.json");
 }
 
-/// A lone agent finishes a passing ticket without touching any instruction file. Every gap left
-/// is a standing engine limit, so the ticket reaches review rather than holding.
-fn lone_agent_ticket() {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    Lone,
+    Shared,
+    Copy,
+}
+
+/// A directory tree of `dirs` directories, each holding one file, under a long path as a real
+/// repository has.
+fn plain_repository(root: &std::path::Path, dirs: usize) {
+    let mut paths = vec![root.to_path_buf()];
+    for index in 1..=dirs {
+        let path = paths[(index - 1) / 8].join(format!("d{index}"));
+        std::fs::create_dir(&path).unwrap();
+        paths.push(path);
+    }
+    for (index, path) in paths.iter().enumerate() {
+        std::fs::write(path.join("mod.rs"), format!("pub fn f{index}() {{}}\n")).unwrap();
+    }
+}
+
+#[allow(
+    clippy::disallowed_types,
+    reason = "a fixture repository needs the system git, which the test harness otherwise scripts away"
+)]
+fn commit_repository(root: &std::path::Path) {
+    for args in [
+        &["init", "-q"][..],
+        &["add", "-A"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ],
+    ] {
+        let output = std::process::Command::new("/usr/bin/git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+}
+
+/// A passing ticket whose agent changes `mutate` says during the turn. Returns the settled ticket.
+fn passing_ticket(
+    placement: Placement,
+    dirs: usize,
+    setup: impl FnOnce(&std::path::Path),
+    mutate: impl FnOnce(&std::path::Path),
+) -> (TicketReadResult, std::path::PathBuf) {
     let fixture = common::Fixture::new();
     let project = fixture.state.path().join("project");
     let work = fixture.state.path().join("child");
@@ -763,15 +834,23 @@ fn lone_agent_ticket() {
         std::fs::create_dir(path).unwrap();
     }
     let project = project.canonicalize().unwrap();
-    let instruction = project.join("CLAUDE.md");
-    std::fs::write(&instruction, "initial project instruction\n").unwrap();
+    plain_repository(&project, dirs);
+    std::fs::write(project.join("CLAUDE.md"), "initial project instruction\n").unwrap();
+    setup(&project);
+    if placement == Placement::Copy {
+        commit_repository(&project);
+    }
     let command = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/two-roles/bin/claude")
         .canonicalize()
         .unwrap();
     let settings = owned_settings(&fixture, &project, &work, &home, true, false);
     let (mut running, _) = start_review_daemon(&settings, command, true, false);
-    let agent = hire_lone_agent(&running, &project);
+    let agent = match placement {
+        Placement::Lone => hire_lone_agent(&running, &project),
+        Placement::Shared => hire_shared_peers(&running, &project),
+        Placement::Copy => hire_in_copy(&settings, &project),
+    };
     let mut socket = Client::connect(settings.socket()).unwrap();
     let credential = || {
         OperatorCredential::new(
@@ -790,41 +869,170 @@ fn lone_agent_ticket() {
             .unwrap()
     };
     let (card, turn) = start_ticket(&fixture, &mut call, agent);
-    let started_lsn = assert_sampled_start(&fixture, turn, &instruction);
+    fixture.await_record("the starting sample", |record| match record {
+        Record::InstructionObservationStarted {
+            owner: dudes_proto::InstructionObservationOwner::Managed { turn: observed, .. },
+            ..
+        } if *observed == turn => Some(()),
+        _ => None,
+    });
+    mutate(&project);
     std::fs::write(work.join("release.1"), "").unwrap();
-    assert_finished_boundary(&fixture, turn, started_lsn);
+    fixture.await_record("the ending comparison", |record| match record {
+        Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::Managed { turn: observed, .. },
+            ..
+        } if *observed == turn => Some(()),
+        _ => None,
+    });
     let deadline = Instant::now() + Duration::from_secs(10);
     let read: TicketReadResult = loop {
         let read: TicketReadResult =
             serde_json::from_value(success(call(Method::TicketRead, json!({"card":card}))))
                 .unwrap();
-        if read.card.status == CardStatus::Review {
+        let pending = read
+            .ticket
+            .instruction_review
+            .as_ref()
+            .is_some_and(|review| review.pending_comparison);
+        if matches!(read.card.status, CardStatus::Review | CardStatus::Blocked) && !pending {
             break read;
         }
         assert!(
             Instant::now() < deadline,
-            "a lone agent's passing ticket reaches review; status {:?}, reason {:?}, gaps {:?}",
-            read.card.status,
-            read.ticket.reason,
-            read.ticket
-                .instruction_review
-                .as_ref()
-                .map(|review| &review.gaps),
+            "the ticket settles; status {:?}",
+            read.card.status
         );
         std::thread::sleep(Duration::from_millis(10));
     };
-    if let Some(review) = &read.ticket.instruction_review {
-        assert!(
-            !review
-                .gaps
-                .iter()
-                .any(dudes_proto::InstructionCoverageGap::holds),
-            "only standing limits remain: {:?}",
-            review.gaps
-        );
-    }
     drop(socket);
     running.stop(duded::ExitCause::ShutdownRpc);
+    (read, project)
+}
+
+fn assert_ready(read: &TicketReadResult, what: &str) {
+    let gaps = read
+        .ticket
+        .instruction_review
+        .as_ref()
+        .map(|review| review.gaps.clone());
+    assert_eq!(
+        read.card.status,
+        CardStatus::Review,
+        "{what}: reason {:?}, gaps {gaps:?}",
+        read.ticket.reason
+    );
+    assert!(
+        !gaps
+            .iter()
+            .flatten()
+            .any(dudes_proto::InstructionCoverageGap::holds),
+        "{what}: only standing limits remain: {gaps:?}"
+    );
+}
+
+fn assert_held(read: &TicketReadResult, path: &std::path::Path, what: &str) {
+    assert_eq!(
+        read.ticket.reason,
+        Some(TicketReason::SharedInstructionsChanged),
+        "{what}"
+    );
+    let review = read.ticket.instruction_review.as_ref().unwrap();
+    assert!(
+        review
+            .changed_paths
+            .iter()
+            .any(|changed| changed.path.to_path().ok().as_deref() == Some(path)),
+        "{what}: changed paths {:?}",
+        review.changed_paths
+    );
+}
+
+#[test]
+fn a_lone_agents_passing_ticket_reaches_review_in_a_larger_repository() {
+    let (read, _) = passing_ticket(Placement::Lone, 80, |_| {}, |_| {});
+    assert_ready(&read, "lone agent, 80 directories");
+}
+
+#[test]
+fn an_agent_in_its_own_copy_reaches_review_past_the_old_directory_limit() {
+    let (read, _) = passing_ticket(Placement::Copy, 30, |_| {}, |_| {});
+    assert_ready(&read, "own copy, 30 directories");
+}
+
+fn shared_hold(what: &str, changed: &str, mutate: impl FnOnce(&std::path::Path)) {
+    let (read, project) = passing_ticket(Placement::Shared, 30, |_| {}, mutate);
+    assert_held(&read, &project.join(changed), what);
+}
+
+#[test]
+fn an_edited_instruction_file_still_holds_in_a_shared_folder() {
+    shared_hold("edit", "CLAUDE.md", |project| {
+        std::fs::write(project.join("CLAUDE.md"), "changed\n").unwrap();
+    });
+}
+
+#[test]
+fn a_deleted_instruction_file_still_holds_in_a_shared_folder() {
+    shared_hold("delete", "CLAUDE.md", |project| {
+        std::fs::remove_file(project.join("CLAUDE.md")).unwrap();
+    });
+}
+
+#[test]
+fn a_nested_instruction_file_created_in_the_turn_still_holds_in_a_shared_folder() {
+    shared_hold("nested", "d1/CLAUDE.md", |project| {
+        std::fs::write(project.join("d1/CLAUDE.md"), "new\n").unwrap();
+    });
+}
+
+#[test]
+fn a_rule_file_created_in_the_turn_still_holds_in_a_shared_folder() {
+    shared_hold("rule", ".claude/rules/r.md", |project| {
+        std::fs::create_dir_all(project.join(".claude/rules")).unwrap();
+        std::fs::write(project.join(".claude/rules/r.md"), "new\n").unwrap();
+    });
+}
+
+#[test]
+fn settings_created_in_the_turn_still_hold_in_a_shared_folder() {
+    for name in ["settings.json", "settings.local.json"] {
+        shared_hold(name, &format!(".claude/{name}"), |project| {
+            std::fs::create_dir_all(project.join(".claude")).unwrap();
+            std::fs::write(project.join(".claude").join(name), "{}\n").unwrap();
+        });
+    }
+}
+
+fn hire_in_copy(
+    settings: &duded::settings::Settings,
+    project: &std::path::Path,
+) -> dudes_types::AgentId {
+    let credential = OperatorCredential::new(
+        std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let params = dudes_proto::rpc::agent::HireParams {
+        trusted: true,
+        checkout: Some(dudes_proto::rpc::agent::Checkout::Worktree),
+        ..common::hire_params(project)
+    };
+    let hired = Client::connect(settings.socket())
+        .unwrap()
+        .call_as_operator(
+            Method::AgentHire,
+            Some(serde_json::to_value(params).unwrap()),
+            credential,
+        )
+        .unwrap();
+    serde_json::from_value::<dudes_proto::rpc::agent::HireResult>(success(hired))
+        .unwrap()
+        .agent
 }
 
 fn hire_lone_agent(running: &common::Running, project: &std::path::Path) -> dudes_types::AgentId {
@@ -841,9 +1049,4 @@ fn hire_lone_agent(running: &common::Running, project: &std::path::Path) -> dude
         duded::ports::Answered::Hired(result) => result.agent,
         other => panic!("unexpected hire answer: {other:?}"),
     }
-}
-
-#[test]
-fn a_lone_agents_passing_ticket_reaches_review_past_engine_limits() {
-    lone_agent_ticket();
 }
