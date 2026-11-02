@@ -95,11 +95,7 @@ fn observe_bounded(
             }
         }
     }
-    assert!(
-        sample.snapshot.validate().is_ok(),
-        "bounded instruction sample must satisfy its carrier contract"
-    );
-    sample.snapshot
+    sample.finish()
 }
 
 pub(crate) fn bounded_seed(mut snapshot: InstructionSnapshot) -> InstructionSnapshot {
@@ -214,6 +210,28 @@ impl Sample {
                 }
             }
         }
+    }
+
+    /// The counters grow after the last size check and the overflow marker raises the limit,
+    /// so the end of a sample can sit just over it. Shed the newest evidence until it is valid again.
+    fn finish(mut self) -> InstructionSnapshot {
+        while self.snapshot.validate().is_err() || !self.fits() {
+            if self.snapshot.inputs.pop().is_none() && self.snapshot.inventoried.pop().is_none() {
+                break;
+            }
+            if !self
+                .snapshot
+                .gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::MetadataLimit)
+            {
+                let _ = self
+                    .snapshot
+                    .try_push_gap(InstructionCoverageGap::metadata_limit());
+            }
+        }
+        debug_assert!(self.snapshot.validate().is_ok());
+        self.snapshot
     }
 
     fn fits(&self) -> bool {
@@ -1547,6 +1565,91 @@ mod tests {
             pid_namespace: None,
             boot: None,
         }
+    }
+
+    fn sample_over_its_limit_by_late_usage() -> Sample {
+        let directory = tempfile::tempdir().unwrap();
+        let mut snapshot = fixture(directory.path());
+        let agent = snapshot.participants[0].agent;
+        let filler = |length: usize| InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
+            reason: InstructionGapKind::ReadFailed,
+            context: InstructionPathContext::SharedProject,
+            agent: Some(agent),
+            path: Some(native("f".repeat(length))),
+        };
+        snapshot.gaps.push(InstructionCoverageGap::metadata_limit());
+        let retained = |snapshot: &InstructionSnapshot, length: usize| {
+            let mut next = snapshot.clone();
+            next.gaps.push(filler(length));
+            next.validate().is_ok().then_some(next)
+        };
+        let input = InstructionInput {
+            path: native("CLAUDE.md"),
+            resolved_path: None,
+            context: InstructionPathContext::SharedProject,
+            source: InstructionInputSource {
+                agent,
+                rule: 0,
+                root: snapshot.participants[0].discovery.roots[0].path.clone(),
+                kind: InstructionSourceKind::Fixed,
+            },
+            activation: InstructionActivation::Active,
+            shadowed: false,
+            fingerprint: InstructionFingerprint::Absent,
+        };
+        loop {
+            let mut next = snapshot.clone();
+            next.inputs.push(input.clone());
+            if next.validate().is_err() {
+                break;
+            }
+            snapshot = next;
+        }
+        assert!(!snapshot.inputs.is_empty());
+        snapshot.inputs.pop();
+        let (mut low, mut high) = (1_usize, 3_000_usize);
+        while low < high {
+            let middle = (low + high).div_ceil(2);
+            if retained(&snapshot, middle).is_some() {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        snapshot = retained(&snapshot, low).expect("a gap fills the room one input left");
+        assert_eq!(snapshot.validate(), Ok(()));
+        snapshot.usage = InstructionSampleUsage {
+            ancestor_steps: MAX_INSTRUCTION_ANCESTORS,
+            descendant_entries: MAX_INSTRUCTION_DESCENDANTS,
+            descendant_depth: MAX_INSTRUCTION_DESCENDANT_DEPTH,
+            import_edges: MAX_INSTRUCTION_IMPORT_EDGES,
+            symlink_hops: 8,
+            source_bytes: MAX_INSTRUCTION_SOURCE_BYTES,
+        };
+        assert!(
+            snapshot.validate().is_err(),
+            "the counters must be what pushes the snapshot over its limit"
+        );
+        Sample {
+            snapshot,
+            deadline: Instant::now() + SAMPLE_DEADLINE,
+            failures: 0,
+            progress: None,
+            budget: None,
+        }
+    }
+
+    #[test]
+    fn counters_that_grow_after_the_last_fit_check_leave_a_valid_snapshot_with_an_overflow_gap() {
+        let finished = sample_over_its_limit_by_late_usage().finish();
+        assert!(finished.validate().is_ok(), "{:?}", finished.validate());
+        assert!(
+            finished
+                .gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::MetadataLimit && gap.holds())
+        );
     }
 
     #[test]
