@@ -62,6 +62,12 @@ with several repositories do not take part in moves, and the give is refused wit
 project's per-agent spending ceiling binds a moved agent while it is there. Trust you grant in one
 project does not reach another.
 
+When two agents share one project folder, even if one of them is idle, a ticket that passes there
+lands in Needs you with "Dudes could not determine whether shared project instructions changed"
+instead of Ready for you, and Accept finishes it. A moved agent shares the folder with the project's
+own agent until it moves away, so this is more common with moves. An agent working in its own copy,
+or alone in the folder, is not affected.
+
 `--agent` takes the agent's name or its id. A name must match exactly one live agent. When no live
 agent has that name, or several do, the command prints a plain sentence (the second lists the
 matching ids) and sends nothing, and you can use an id instead.

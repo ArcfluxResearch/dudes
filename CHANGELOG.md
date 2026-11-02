@@ -11,6 +11,37 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.104.0] - 2026-11-02
+
+### Highlights
+
+- **A browser can hire eight agents a UTC day.** Before, a signed-in Floor session could hire four agents in the whole life of the session, which lasts up to 90 days. After that, Add agent still opened the Hire dialog, but the page said "Hire cannot list your projects right now. Reload the page, and check Settings if this stays", and neither piece of advice helped. Now the count is per UTC day, a restart does not reset it, and retiring an agent does not free a slot. At the limit, Add agent and the Hire dialog say "This browser has hired 8 agents today. You can hire more after <local date and time>." An open page reopens Hire after that time without a reload. A session that the old rule had closed opens again at once. `dudes hire` stays unlimited and operator-only. (#362)
+- **An idle agent of another project moves to the project of the ticket it starts.** Give a ticket to an agent who works in a different project, from the Floor or with `dudes ticket give`, and the agent moves when the ticket starts, so you do not hire a second agent for each project. The agent keeps its role and its memory, keeps a separate conversation in each project, and returns to its own copy of a project's repository if it holds one there. If it holds none, it works in the project's shared folder, and a move never creates a copy. A project's per-agent spending ceiling binds the agent while it is there. (#361, #363, #364, #365, #366)
+- **The Floor shows moves.** The New ticket and Give to agent lists show the project's own agents first, then agents of other projects with "Now in <project> · Moves here when free". The agent's chat gets a muted line, "Moved to <project>", for each move. Project cards list the agents that are there now, and an empty card reads "No agents here right now." After a crash, a moved agent's interrupted turn waits for your recovery choice, as for any other agent, and then continues in the project it moved to. (#363, #365, #366)
+
+### What does not move
+
+- An agent that works in several repositories does not move. Giving it a ticket in another project is refused with "cannot move to <project>: it works in several repositories", and the give list shows it as unavailable. (#366)
+- A project with several repositories takes no moved agent.
+- An agent hired before projects were recorded does not move.
+- An agent moves only when it has no turn, question, goal or unreviewed ticket in its current project. A ticket for an agent that is busy waits.
+- Removing a project, or changing its path, is refused while a live agent holds its own copy there. (#364, #366)
+
+### Known limit
+
+- When two agents share one project folder, even if one of them is idle, a ticket that passes there lands in Needs you with "Dudes could not determine whether shared project instructions changed" instead of Ready for you. Accept finishes it. This rule is older than this release, but moves make it common, because a moved agent shares the folder with the project's own agent until it moves away. An agent working in its own copy, or alone in the folder, is not affected.
+
+### Fixes
+
+- **A ticket baseline is read again when something else touches `.git` during the read.** An editor running `git status`, or a background maintenance run after a commit, made the capture read as moved. The round then recorded no baseline, and the "files changed" check counted every uncommitted file, so a ticket that changed nothing could reach Ready for you on a file an earlier ticket left behind. The read now retries up to three times. A repository that keeps changing still ends as an unavailable baseline. (#360)
+
+### Breaking
+
+- **The first start after the upgrade rebuilds the saved views once.** The projection version moves from 74 to 77. Nothing is lost, and the rebuild runs once.
+- **Reload the browser page after the upgrade.** The browser wire version moves from 11 to 12, so a Floor page left open from 0.103.0 must be reloaded.
+- **Going back to 0.103.0 works only until an agent moves.** 0.103.0 starts on a 0.104.0 journal that holds no move, also when it has to rebuild the saved views, and what you write there is read when you come forward again. After an agent has moved, 0.103.0 refuses to start on that data. The daemon exits with status 1 before it answers or serves the Floor, changes nothing in the journal, and prints `journal required record kind 116 at 3:1268 is not understood`, where the position is that of your journal. `dudes start` reports only that the daemon exited. The message does not say what to do: upgrade to 0.104.0 again and everything is intact.
+- **0.103.0 applies its own hire limit.** It counts four hires for the whole life of a browser session, so a session with four or more hires is closed again there for hiring. Upgrading again reopens it.
+
 ## [0.103.0] - 2026-10-31
 
 ### Highlights
