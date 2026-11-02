@@ -4125,7 +4125,7 @@
           "type": "array"
         },
         "inputs": {
-          "description": "Sampled absent, selected and shadowed candidates.",
+          "description": "Sampled selected and shadowed candidates that exist, and the absent targets of imports. No\nother absent candidate is stored: `inventoried` proves its absence once its rule finished.",
           "items": {
             "$ref": "#/$defs/InstructionInput"
           },
