@@ -232,6 +232,10 @@ pub struct AgentView {
     /// recorded directory equality, not a guard.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shares_checkout: bool,
+    /// The agent works in several repositories, so it stays in its project and takes no ticket from
+    /// another one. Absent otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub several_repositories: bool,
 }
 
 /// What an agent's newest ended turn reported about its own cost and context. Evidence for

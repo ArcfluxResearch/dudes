@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use dudes_proto::{
     BrowserNoteDestination, ChatContextState, ChatContextView, ChatPendingState, ChatPendingView,
     ChatReason, ChatTurnState, ChatTurnView, ChatView, Entry, LoopDecision, MAX_CHAT_BYTES,
-    MAX_CHAT_CONTEXT, MAX_CHAT_CONTEXT_BYTES, MAX_CHAT_CONTEXT_PER_AGENT, MAX_CHAT_PENDING,
-    MAX_CHAT_PENDING_BYTES, MAX_CHAT_PENDING_PER_AGENT, MAX_CHAT_TEXT_BYTES, MAX_CHAT_TURN_BYTES,
-    MAX_CHAT_TURN_BYTES_PER_AGENT, MAX_CHAT_TURNS, MAX_CHAT_TURNS_PER_AGENT, NoteAdmission,
-    NoteContract, Record, TaskContract, TurnOutcome,
+    MAX_CHAT_CONTEXT, MAX_CHAT_CONTEXT_BYTES, MAX_CHAT_CONTEXT_PER_AGENT, MAX_CHAT_MOVES_PER_AGENT,
+    MAX_CHAT_PENDING, MAX_CHAT_PENDING_BYTES, MAX_CHAT_PENDING_PER_AGENT, MAX_CHAT_TEXT_BYTES,
+    MAX_CHAT_TURN_BYTES, MAX_CHAT_TURN_BYTES_PER_AGENT, MAX_CHAT_TURNS, MAX_CHAT_TURNS_PER_AGENT,
+    NoteAdmission, NoteContract, Record, TaskContract, TurnOutcome,
 };
 use dudes_types::{AgentId, GoalId, Lsn, ModelName, TurnId};
 use redb::{ReadableTable, Table};
@@ -279,7 +279,7 @@ fn drop_notices(window: &mut Windows, agent: AgentId, sender: AgentId) {
 
 /// The row to drop first, oldest first within a class: a notice or a move line, then a mail row,
 /// then an operator row, and an operator row still waiting on delivery last.
-fn eviction(turns: &[TurnHistory], agent: Option<AgentId>) -> Option<usize> {
+fn eviction(turns: &[TurnHistory], agent: Option<AgentId>, keep_moves: bool) -> Option<usize> {
     let rank = |view: &ChatTurnView| {
         if view.notice.is_some() || view.moved.is_some() {
             0
@@ -298,6 +298,7 @@ fn eviction(turns: &[TurnHistory], agent: Option<AgentId>) -> Option<usize> {
         .iter()
         .enumerate()
         .filter(|(_, row)| agent.is_none_or(|agent| row.view.agent_id == agent))
+        .filter(|(_, row)| !keep_moves || row.view.moved.is_none())
         .min_by_key(|(index, row)| (rank(&row.view), *index))
         .map(|(index, _)| index)
 }
@@ -320,8 +321,15 @@ fn trim_windows(window: &mut Windows) -> Result<()> {
                 .push(&row.view);
         }
         let mut oversized = None;
+        let mut too_many_moves = false;
         for (agent, same) in by_agent {
-            if same.len() > MAX_CHAT_TURNS_PER_AGENT
+            let moves = same.iter().filter(|view| view.moved.is_some()).count();
+            if moves > MAX_CHAT_MOVES_PER_AGENT {
+                oversized = Some(agent);
+                too_many_moves = true;
+                break;
+            }
+            if same.len() - moves > MAX_CHAT_TURNS_PER_AGENT
                 || history_bytes(&same)? > MAX_CHAT_TURN_BYTES_PER_AGENT
             {
                 oversized = Some(agent);
@@ -330,12 +338,20 @@ fn trim_windows(window: &mut Windows) -> Result<()> {
         }
         let global: Vec<_> = window.turns.iter().map(|row| &row.view).collect();
         if let Some(agent) = oversized {
-            let first = eviction(&window.turns, Some(agent)).expect("oversized agent exists");
+            let first = if too_many_moves {
+                window
+                    .turns
+                    .iter()
+                    .position(|row| row.view.agent_id == agent && row.view.moved.is_some())
+            } else {
+                eviction(&window.turns, Some(agent), true)
+            }
+            .expect("oversized agent exists");
             window.turns.remove(first);
         } else if window.turns.len() > MAX_CHAT_TURNS
             || history_bytes(&global)? > MAX_CHAT_TURN_BYTES
         {
-            let first = eviction(&window.turns, None).expect("rows exist");
+            let first = eviction(&window.turns, None, false).expect("rows exist");
             window.turns.remove(first);
         } else {
             break;
@@ -1743,30 +1759,46 @@ mod tests {
     }
 
     #[test]
-    fn a_move_line_goes_first_when_the_window_is_full_and_no_notice_replacement_drops_it() {
+    fn a_move_line_neither_takes_a_real_turns_place_nor_loses_it() {
         let mut window = Windows {
-            turns: vec![row(1, "moved", ChatTurnState::Ended)],
+            turns: (1..=8)
+                .map(|lsn| row(lsn, "operator", ChatTurnState::Ended))
+                .collect(),
             context: Vec::new(),
         };
-        for lsn in 2..=8 {
-            window
-                .turns
-                .push(row(lsn, "operator", ChatTurnState::Ended));
-        }
+        window.turns.push(row(9, "moved", ChatTurnState::Ended));
         drop_notices(&mut window, agent(1), agent(9));
-        assert_eq!(
-            window.turns.len(),
-            8,
-            "a notice replacement leaves a move line alone"
-        );
-        window.turns.push(row(9, "operator", ChatTurnState::Ended));
         trim_windows(&mut window).unwrap();
         let kept: Vec<_> = window.turns.iter().map(|row| row.issue_lsn.0).collect();
         assert_eq!(
             kept,
-            [2, 3, 4, 5, 6, 7, 8, 9],
-            "the move line made room, no real turn did"
+            [1, 2, 3, 4, 5, 6, 7, 8, 9],
+            "all eight turns and the line"
         );
+        window.turns.push(row(10, "operator", ChatTurnState::Ended));
+        trim_windows(&mut window).unwrap();
+        let kept: Vec<_> = window.turns.iter().map(|row| row.issue_lsn.0).collect();
+        assert_eq!(
+            kept,
+            [2, 3, 4, 5, 6, 7, 8, 9, 10],
+            "a new turn drops the oldest turn, not the line"
+        );
+    }
+
+    #[test]
+    fn a_fifth_move_line_drops_the_oldest_line_and_no_turn() {
+        let mut window = Windows {
+            turns: (1..=8)
+                .map(|lsn| row(lsn, "operator", ChatTurnState::Ended))
+                .collect(),
+            context: Vec::new(),
+        };
+        for lsn in 9..=13 {
+            window.turns.push(row(lsn, "moved", ChatTurnState::Ended));
+        }
+        trim_windows(&mut window).unwrap();
+        let kept: Vec<_> = window.turns.iter().map(|row| row.issue_lsn.0).collect();
+        assert_eq!(kept, [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13]);
     }
 
     fn agent(n: u8) -> AgentId {

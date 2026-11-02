@@ -411,9 +411,9 @@ pub(crate) fn pending_fits(
 pub(crate) fn validate_view(view: &dudes_proto::ChatView) -> Result<()> {
     use dudes_proto::{
         ChatPendingState, ChatTurnState, MAX_CHAT_CONTEXT, MAX_CHAT_CONTEXT_BYTES,
-        MAX_CHAT_CONTEXT_PER_AGENT, MAX_CHAT_PENDING, MAX_CHAT_PENDING_BYTES,
-        MAX_CHAT_PENDING_PER_AGENT, MAX_CHAT_TURN_BYTES, MAX_CHAT_TURN_BYTES_PER_AGENT,
-        MAX_CHAT_TURNS, MAX_CHAT_TURNS_PER_AGENT,
+        MAX_CHAT_CONTEXT_PER_AGENT, MAX_CHAT_MOVES_PER_AGENT, MAX_CHAT_PENDING,
+        MAX_CHAT_PENDING_BYTES, MAX_CHAT_PENDING_PER_AGENT, MAX_CHAT_TURN_BYTES,
+        MAX_CHAT_TURN_BYTES_PER_AGENT, MAX_CHAT_TURNS, MAX_CHAT_TURNS_PER_AGENT,
     };
     if !view.enabled || view.max_text_bytes != MAX_CHAT_TEXT_BYTES {
         bail!("invalid Chat capability");
@@ -429,11 +429,12 @@ pub(crate) fn validate_view(view: &dudes_proto::ChatView) -> Result<()> {
     validate_rows(
         &view.turns,
         MAX_CHAT_TURNS,
-        MAX_CHAT_TURNS_PER_AGENT,
+        MAX_CHAT_TURNS_PER_AGENT + MAX_CHAT_MOVES_PER_AGENT,
         MAX_CHAT_TURN_BYTES,
         Some(MAX_CHAT_TURN_BYTES_PER_AGENT),
         |row| row.agent_id,
     )?;
+    validate_turn_split(&view.turns)?;
     validate_rows(
         &view.context_sent,
         MAX_CHAT_CONTEXT,
@@ -585,6 +586,27 @@ fn valid_text(text: &str) -> Result<()> {
             .any(|c| c.is_control() && !matches!(c, '\t' | '\n'))
     {
         bail!("invalid Chat note text");
+    }
+    Ok(())
+}
+
+/// A move line has its own bound, so the real rows and the move lines are counted apart.
+fn validate_turn_split(turns: &[dudes_proto::ChatTurnView]) -> Result<()> {
+    use dudes_proto::{MAX_CHAT_MOVES_PER_AGENT, MAX_CHAT_TURNS_PER_AGENT};
+    let mut kept = BTreeMap::<AgentId, (usize, usize)>::new();
+    for row in turns {
+        let (real, moves) = kept.entry(row.agent_id).or_default();
+        if row.moved.is_some() {
+            *moves += 1;
+        } else {
+            *real += 1;
+        }
+    }
+    if kept
+        .values()
+        .any(|&(real, moves)| real > MAX_CHAT_TURNS_PER_AGENT || moves > MAX_CHAT_MOVES_PER_AGENT)
+    {
+        bail!("Chat array exceeds its per-agent count");
     }
     Ok(())
 }

@@ -216,6 +216,29 @@ fn each_move_leaves_one_line_in_the_agents_chat_and_a_rebuild_keeps_them() {
 }
 
 #[test]
+fn a_fifth_move_drops_the_oldest_line_and_a_rebuild_agrees() {
+    let mut steps = vec![hired(false)];
+    for project in ["a", "b", "c", "d", "e"] {
+        steps.push(moved(project, &format!("/repo/{project}"), None));
+    }
+    for checkpoint_every in [0, 1] {
+        let dir = tempfile::tempdir().unwrap();
+        write_journal(dir.path(), &steps, checkpoint_every);
+        let live = applied_one_at_a_time(dir.path());
+        let rebuilt = replayed(dir.path());
+        let lines: Vec<_> = rebuilt
+            .chat()
+            .unwrap()
+            .turns
+            .iter()
+            .map(|turn| turn.moved.as_ref().unwrap().project.clone())
+            .collect();
+        assert_eq!(lines, ["b", "c", "d", "e"]);
+        assert_eq!(live.chat().unwrap(), rebuilt.chat().unwrap());
+    }
+}
+
+#[test]
 fn replay_from_the_journal_reaches_what_applying_each_record_reached() {
     for checkpoint_every in [0, 1] {
         let dir = tempfile::tempdir().unwrap();

@@ -485,6 +485,58 @@ fn a_goal_outside_a_ticket_is_refused_with_a_reason_for_an_unconfined_agent() {
 }
 
 #[test]
+fn a_ticket_in_another_project_is_refused_to_a_multi_repository_agent_with_the_reason() {
+    let mut setup = Setup::new();
+    let docs = setup.roots.path().canonicalize().unwrap().join("docs-only");
+    std::fs::create_dir(&docs).unwrap();
+    command(&setup.git, &docs, &["init", "--quiet", "-b", "main"]);
+    let config = setup.settings.operator_config.clone().unwrap();
+    dudes_config::workspace::add(
+        &config,
+        &NewWorkspace::with_defaults(
+            docs,
+            "zdocs".into(),
+            "Docs".into(),
+            dudes_config::check::changed_check(),
+        ),
+    )
+    .unwrap();
+    setup.settings.enrollment = crate::config::load_operator(&config).unwrap().enrollment;
+    let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());
+    let agent = hires.hire(params).unwrap().agent;
+    let mut socket = Client::connect(setup.settings.socket()).unwrap();
+    let created = call(
+        &mut socket,
+        &setup,
+        Method::TicketCreate,
+        json!({"title": "Fix the docs", "project": "zdocs"}),
+    );
+    let card = created.result.expect("the ticket is made")["card"].clone();
+    let read = call(
+        &mut socket,
+        &setup,
+        Method::TicketRead,
+        json!({"card": card}),
+    );
+    let seq = read.result.expect("the ticket reads")["card"]["seq"].clone();
+    let before = setup.fixture.records();
+    let response = call(
+        &mut socket,
+        &setup,
+        Method::TicketAssign,
+        json!({"card": card, "agent": agent, "expected_seq": seq}),
+    );
+    let message = response.error.expect("the give is refused").message;
+    assert!(
+        message.contains("works in several repositories") && message.contains("zdocs"),
+        "{message}"
+    );
+    assert_eq!(setup.fixture.records(), before, "a refusal appends nothing");
+    drop(socket);
+    running.stop(ExitCause::Ended);
+}
+
+#[test]
 fn only_an_unconfined_multi_repository_hire_is_refused_a_goal_outside_a_ticket() {
     let setup = Setup::new();
     let (mut running, hires, params) = setup.start_from(setup.boot_unconfined());

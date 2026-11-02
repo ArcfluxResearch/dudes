@@ -192,7 +192,9 @@ export function decodeChat(value: unknown, agents: readonly { readonly id: strin
       || !current.has(row.agent_id) || !canonicalLsn(row.note_lsn) || row.state !== 'sent_as_context') return null;
     context.push(Object.freeze({ ...row }) as unknown as ContextSent);
   }
-  if (!boundedRows(pending, 20, 128, 131072) || !boundedRows(turns, 8, 64, 524288, 131072)
+  if (!boundedRows(pending, 20, 128, 131072) || !boundedRows(turns, 12, 64, 524288, 131072)
+    || !boundedRows(turns.filter(turn => turn.moved === null), 8, 64, 524288)
+    || !boundedRows(turns.filter(turn => turn.moved !== null), 4, 64, 524288)
     || !boundedRows(context, 20, 128, 16384)) return null;
   const pendingByNote = new Map(pending.map(row => [row.note_lsn, row]));
   const turnsByNote = new Map(turns.map(row => [row.note_lsn, row]));

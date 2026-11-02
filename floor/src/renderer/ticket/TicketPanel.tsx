@@ -32,7 +32,7 @@ import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noPr
 import type { TicketAction } from './model.ts';
 import { decodeWorktree } from '../worktree.ts';
 import { clearTicketChangesDraft, readTicketChangesDraft, writeTicketChangesDraft } from '../view.ts';
-import { agentsFor, movesHereWords, ticketActionsOpen } from './TicketBoard.tsx';
+import { agentsFor, movesHereWords, staysWords, ticketActionsOpen } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
 import { AGENT_SAYS, FROM_LAST_READING, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName, statusSentence } from './words.ts';
 import { StuckActions } from './StuckActions.tsx';
@@ -279,6 +279,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   const ids = useId();
   const found = agentsFor(floor, project ?? '');
   const { unrecorded } = found;
+  const staying = mode === 'give' ? found.staying : [];
   const elsewhere = mode === 'give' ? found.elsewhere : [];
   const usable = [...found.usable, ...elsewhere];
   const nowIn = new Map(elsewhere.map((row) => [row.id, row.now]));
@@ -320,7 +321,8 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
     ref={handFocusAfterLeave} data-focus-on-leave="card-detail-title" onSubmit={(event) => { void submit(event); }}>
     <Field label="Agent" id={`${ids}-agent`}>
       <Select id={`${ids}-agent`} value={chosen ?? ''} onValueChange={setAgent}
-        options={usable.map((row) => ({ value: row.id, label: row.name, detail: nowIn.has(row.id) ? movesHereWords(nowIn.get(row.id)!) : undefined }))} />
+        options={[...usable.map((row) => ({ value: row.id, label: row.name, detail: nowIn.has(row.id) ? movesHereWords(nowIn.get(row.id)!) : undefined })),
+          ...staying.map((row) => ({ value: row.id, label: row.name, detail: staysWords(row.now), disabled: true }))]} />
     </Field>
     {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
     {choosesPriority ? <Field label="Priority" id={`${ids}-priority`}>

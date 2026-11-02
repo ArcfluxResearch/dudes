@@ -116,6 +116,11 @@ function liveFloor(fields = {}) {
 const switches = (project) => ({ answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false,
   hire: true, git: false, renew: false, board: false, diff: false, project });
 
+test('a project with no agent in it says so without claiming anything about how that came to be', () => {
+  const html = renderToStaticMarkup(createElement(ProjectsView, { floor: liveFloor({ agents: [], cards: [], settings: { ...snapshot().settings, switches: switches(true) } }), onOpenBoard() {} }));
+  assert.match(html, /No agents here right now\./);
+});
+
 test('every project is a card with an Open board link, counts that link to the Board and the facts', () => {
   const html = renderToStaticMarkup(createElement(ProjectsView, {
     floor: liveFloor({ settings: { ...snapshot().settings, switches: switches(true) } }), onOpenBoard() {},

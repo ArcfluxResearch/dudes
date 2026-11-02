@@ -163,7 +163,7 @@ export function Select({ options, value, onValueChange, id, name, placeholder = 
         {option.icon === undefined && option.badge === undefined && option.detail === undefined ? <span className="truncate">{option.label}</span>
           : <span className="flex min-w-0 flex-col">
             <span className="flex min-w-0 items-center gap-2">{option.icon}<span className="truncate">{option.label}</span>{option.badge}</span>
-            {option.detail === undefined ? null : <span className="truncate text-caption font-normal text-muted">{option.detail}</span>}
+            {option.detail === undefined ? null : <span className="text-caption font-normal wrap-anywhere text-muted">{option.detail}</span>}
           </span>}
         {at === selected ? <Check {...ICON} className="shrink-0 text-accent" /> : null}
       </div>)}

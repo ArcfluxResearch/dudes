@@ -91,17 +91,22 @@ export function agentsFor(floor: FloorState, project: string): {
   readonly usable: readonly { readonly id: string; readonly name: string }[];
   readonly elsewhere: readonly { readonly id: string; readonly name: string; readonly now: string }[];
   readonly unrecorded: readonly { readonly id: string; readonly name: string }[];
+  /** Agents working in several repositories in another project: they stay there, so they are listed but cannot be chosen. */
+  readonly staying: readonly { readonly id: string; readonly name: string; readonly now: string }[];
 } {
   const named = (row: FloorState['agents'][number]) => ({
     id: row.id, name: typeof row.name === 'string' && row.name !== '' ? row.name : 'Unnamed agent',
   });
-  const elsewhere = floor.agents.flatMap((row) => {
+  const away = floor.agents.flatMap((row) => {
     const space = decodeWorkspace(row.workspace);
-    return space === null || space.id === project ? [] : [{ ...named(row), now: space.label }];
+    return space === null || space.id === project ? [] : [{ ...named(row), now: space.label, stays: row.several_repositories === true }];
   });
+  const elsewhere = away.filter((row) => !row.stays);
+  const staying = away.filter((row) => row.stays);
   return {
     usable: floor.agents.filter((row) => decodeWorkspace(row.workspace)?.id === project).map(named),
     elsewhere,
+    staying,
     unrecorded: floor.agents.filter((row) => decodeWorkspace(row.workspace) === null).map(named),
   };
 }
@@ -109,6 +114,11 @@ export function agentsFor(floor: FloorState, project: string): {
 /** The line under an agent's name in a give list when the agent works in another project. */
 export function movesHereWords(now: string): string {
   return `Now in ${now} · Moves here when free`;
+}
+
+/** The line under an agent's name when it works in several repositories and so stays in its project. */
+export function staysWords(now: string): string {
+  return `Works in several repositories, so it stays in ${now}`;
 }
 
 export const TicketNoticeHost = createContext<HTMLElement | null>(null);
@@ -256,7 +266,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel, requested = 
     : projects.find((entry) => entry.id === chosenProject)?.id ?? null;
   const checks = project === null ? [] : checksFor(floor.checks, project) ?? [];
   const check = chosenCheck === null ? checks[0] ?? null : checks.find((entry) => entry.id === chosenCheck) ?? null;
-  const { usable, elsewhere, unrecorded } = agentsFor(floor, project ?? '');
+  const { usable, elsewhere, unrecorded, staying } = agentsFor(floor, project ?? '');
   const givable = [...usable, ...elsewhere];
   const nowIn = new Map(elsewhere.map((row) => [row.id, row.now]));
   const choices = givable.map((row) => agentChoice(floor, row.id, nowIn.get(row.id) ?? null));
@@ -429,6 +439,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel, requested = 
                 badge: choice.id === suggested ? <Badge state="ready">Suggested</Badge> : undefined,
                 short: `Agent: ${choice.name}${choice.full ? ' (queue full)' : ''}`,
               })),
+              ...staying.map((row) => ({ value: row.id, label: row.name, detail: staysWords(row.now), disabled: true })),
               ...unrecorded.map((row) => ({ value: row.id, label: row.name, detail: 'Hired before projects were recorded', disabled: true }))]} />}
       </div>
       {chosenCheck !== null && check === null && project !== null ? <p className={HINT} role="status">The saved check is no longer available. Choose a check before creating this ticket.</p> : null}

@@ -772,6 +772,10 @@
           ],
           "description": "The vendor-confirmed session for this agent: the id the vendor named back to us, and the\nonly one a later turn may resume. `None` until the vendor confirms one."
         },
+        "several_repositories": {
+          "description": "The agent works in several repositories, so it stays in its project and takes no ticket from\nanother one. Absent otherwise.",
+          "type": "boolean"
+        },
         "shares_checkout": {
           "description": "Another live agent records this agent's working directory too. A display hint computed from\nrecorded directory equality, not a guard.",
           "type": "boolean"

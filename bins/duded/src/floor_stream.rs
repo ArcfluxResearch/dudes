@@ -4691,6 +4691,7 @@ mod tests {
             model: None,
             turn_model: None,
             shares_checkout: false,
+            several_repositories: false,
         }
     }
 

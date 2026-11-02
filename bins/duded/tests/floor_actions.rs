@@ -8942,7 +8942,7 @@ fn browser_workspace_label_survives_enrollment_change_removal_and_replay() {
     let sha = rewrite(&settings, RELOAD_BUDGET);
     let (_, refusal) = operator_reload(&settings, apply(&sha, &[], &["repo_1"], &[]))
         .expect_err("a live hire retains its project");
-    assert!(refusal.contains("live hire still references"), "{refusal}");
+    assert!(refusal.contains("live agent still works in"), "{refusal}");
     assert_eq!(workspace_of(&page), expected);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     settings.enrollment = load_operator(settings.operator_config.as_ref().unwrap())

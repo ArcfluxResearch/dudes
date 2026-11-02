@@ -862,6 +862,7 @@ fn snapshot_is_rebuilt_from_journal() {
         model: None,
         turn_model: None,
         shares_checkout: false,
+        several_repositories: false,
         question_lsn: None,
         control_lsn: None,
     };
